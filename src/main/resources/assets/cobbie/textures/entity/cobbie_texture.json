@@ -1,0 +1,13 @@
+{
+	"format_version": "1.21.4",
+	"textures": {
+		"0": "cobbie:textures/entity/cobbie.png"
+	},
+	"bones": {
+		"body": { "textures": [0] },
+		"head": { "textures": [0] },
+		"arm_left": { "textures": [0] },
+		"arm_right": { "textures": [0] }
+	},
+	"display": {}
+}

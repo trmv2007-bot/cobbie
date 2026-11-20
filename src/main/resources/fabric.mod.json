@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "cobbie",
+  "version": "${version}",
+  "name": "Cobbie",
+  "description": "Your AI friend who lives in your Minecraft world — body, brain, and memory.",
+  "authors": ["Rishi"],
+  "contact": {},
+  "license": "All-Rights-Reserved",
+    "environment": "*",
+  "entrypoints": {
+    "main": ["com.rishi.cobbie.Cobbie"],
+    "client": ["com.rishi.cobbie.client.CobbieClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~26.3",
+    "java": ">=25",
+    "fabric-api": "*"
+  }
+}
