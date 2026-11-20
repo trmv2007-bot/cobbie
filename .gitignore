@@ -1,6 +1,6 @@
 build/
 .gradle/
-config/
+/config/
 *.iml
 out/
 *.log

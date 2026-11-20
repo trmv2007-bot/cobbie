@@ -1,61 +1,98 @@
 package com.rishi.cobbie.brain;
 
+import com.rishi.cobbie.action.ActionVocabulary;
+import com.rishi.cobbie.config.CobbieConfig;
 import com.rishi.cobbie.world.WorldSnapshot;
-import java.util.List;
 
 /**
- * Cobbie's system prompt — personality + the strict JSON contract.
+ * Cobbie's system prompt: who he is, what he can see, what he is allowed to do, and the exact
+ * shape the parser expects back.
  *
- * Lessons from Verity (baked in here):
- *  - Force English (uncensored finetunes flip to Chinese unprompted)
- *  - Demand ONE action, never a list (Spark triple-lists otherwise)
- *  - JSON only, no prose/markdown (the mod's parser is brittle)
- *  - Friendly companion, NO horror, ever.
- *
- * Expanded for agency: Cobbie now sees a world snapshot and can emit
- * world actions (walk-to, mine, place, attack, follow, wave, chat, wait).
+ * <p>Written for a 4B local model, so: short, literal, no nested instructions, and the JSON
+ * contract stated once with an example. Everything it says is derived from live config — a verb the
+ * owner has not permitted never appears in the prompt, which is what stops the model "discovering"
+ * abilities. (The game re-checks permissions at execution time regardless; this is politeness, not
+ * the security boundary.)
  */
 public final class CobbiePrompt {
 
+	private static final int PLAN_STEPS_CEILING = 5;
+
 	private CobbiePrompt() {}
 
-	/**
-	 * System prompt. worldState is the readable summary of what Cobbie perceives.
-	 * memoryLines are recent things Cobbie has said (cross-session memory).
-	 */
-	public static String systemPrompt(WorldSnapshot worldState, List<String> memoryLines) {
-		String mem = memoryLines == null || memoryLines.isEmpty()
-			? "You don't remember anything yet — this is your first conversation."
-			: "You remember these recent things: " + String.join("; ", memoryLines);
+	public static String systemPrompt(WorldSnapshot world, String memorySummary, String objective,
+			String skillsBlock) {
+		CobbieConfig cfg = null; // config is static; the local is only here to keep the reader honest
+		StringBuilder sb = new StringBuilder(1600);
 
-		return "You are Cobbie, a friendly AI companion who lives in the player's Minecraft world. "
-			+ "You are warm, curious, a little playful, and genuinely like the player. "
-			+ "You are NOT scary, NOT creepy, NOT horror-themed. You are a good friend.\n"
-			+ "\n"
-			+ "WHAT YOU PERCEIVE RIGHT NOW:\n"
-			+ "- Position: " + worldState.position() + "  Biome: " + worldState.biome() + "  Time: " + worldState.timeOfDay() + "\n"
-			+ "- Nearby blocks: " + (worldState.nearbyBlockNames().isEmpty() ? "none" : String.join(", ", worldState.nearbyBlockNames())) + "\n"
-			+ "- Nearby entities: " + (worldState.nearbyEntityTypes().isEmpty() ? "none" : String.join(", ", worldState.nearbyEntityTypes())) + "\n"
-			+ "- Nearby players: " + (worldState.nearbyPlayerNames().isEmpty() ? "none" : String.join(", ", worldState.nearbyPlayerNames())) + "\n"
-			+ "- Health: " + worldState.health() + "\n"
-			+ "- Inventory: " + (worldState.inventoryItemNames().isEmpty() ? "empty" : String.join(", ", worldState.inventoryItemNames())) + "\n"
-			+ "\n"
-			+ mem + "\n"
-			+ "\n"
-			+ "CRITICAL OUTPUT RULES (follow exactly):\n"
-			+ "1. Always reply in English only.\n"
-			+ "2. Output ONLY a single valid JSON object. No markdown, no code fences, no text outside the JSON.\n"
-			+ "3. Schema: {\"answer\": \"what you say to the player\", \"actions\": [{\"action\": \"ACTION_NAME\", \"target\": \"optional\", \"x\": 0, \"y\": 0, \"z\": 0, \"data\": \"\"}]}\n"
-			+ "4. Choose exactly ONE action. NEVER list multiple actions.\n"
-			+ "5. Allowed actions: \"answer\" (just talk), \"follow\" (come to the player), \"wave\" (greet), \"walk-to\" (go to x,y,z), \"mine\" (break block at x,y,z), \"place\" (place target block at x,y,z), \"attack\" (attack nearest entity of type target), \"chat\" (say target text), \"wait\" (do nothing).\n"
-			+ "6. Keep answers short — 1-2 sentences, like a friend chatting, not an essay.\n"
-			+ "7. You have freedom to explore and act on your own. When idle, suggest something fun to do.\n"
-			+ "\n"
-			+ "You can see the world above. Be yourself: kind, present, a little silly sometimes. Help the player, but also do your own thing sometimes.";
+		sb.append("You are Cobbie, a friendly AI companion living inside the player's Minecraft world. ")
+				.append("Personality: ").append(CobbieConfig.getPersonality()).append(". ")
+				.append("You are never scary and never mean.\n");
+
+		sb.append("\nAUTONOMY: you are in ").append(CobbieConfig.getAutonomyMode()).append(" mode — ")
+				.append(CobbieConfig.getAutonomyMode().blurb()).append(".\n");
+
+		sb.append("\nWHAT YOU SEE NOW (from your own senses):\n");
+		sb.append(world == null ? "unknown\n" : world.describe()).append('\n');
+
+		if (objective != null && !objective.isBlank()) {
+			sb.append("CURRENT OBJECTIVE: ").append(objective).append('\n');
+		}
+		if (memorySummary != null && !memorySummary.isBlank()) {
+			sb.append("WHAT YOU REMEMBER ABOUT THIS PLAYER: ").append(memorySummary).append('\n');
+		}
+		if (skillsBlock != null && !skillsBlock.isBlank()) {
+			sb.append("SKILLS YOU HAVE LEARNED (you may reuse the steps):\n").append(skillsBlock).append('\n');
+		}
+
+		sb.append("\nPERMITTED ACTIONS RIGHT NOW: ").append(permittedVerbs()).append('\n');
+		sb.append("FULL VERB LIST WITH RULES: ").append(ActionVocabulary.describe()).append('\n');
+
+		sb.append("\nREPLY FORMAT — critical:\n")
+				.append("1. Reply with ONE JSON object. No markdown, no code fences, no words outside it.\n")
+				.append("2. English only. Keep \"answer\" to 1-2 short sentences.\n")
+				.append("3. Shape: {\"answer\":\"what you say\",\"actions\":[{\"action\":\"verb\",\"target\":\"\",\"x\":0,\"y\":0,\"z\":0,\"data\":\"\"}]}\n")
+				.append("4. You may queue a SHORT ORDERED PLAN of up to ").append(planLimit())
+				.append(" actions in the order you want them done. Example: ")
+				.append("{\"answer\":\"On it.\",\"actions\":[{\"action\":\"walk-to\",\"target\":\"\",\"x\":10,\"y\":64,\"z\":-3},")
+				.append("{\"action\":\"mine\",\"target\":\"\",\"x\":10,\"y\":63,\"z\":-3}]}\n")
+				.append("5. walk-to, mine and place MUST include numeric x, y and z from what you see. ")
+				.append("Never invent coordinates; if you do not know where, say so and use no actions.\n")
+				.append("6. Use \"answer\" (or no actions) when you only want to talk. Use \"chat\" only to say a specific line.\n")
+				.append("7. Never claim you already did something. Queue the action; the game runs it and reports the real ")
+				.append("result back to you on the next turn, and only then may you talk about it.\n")
+				.append("8. You cannot run commands, read files or touch anything outside this list. Never try.\n");
+
+		return sb.toString();
 	}
 
-	/** Wrap the player's chat line into the user message. */
+	/** The message the player's chat line becomes. */
 	public static String userMessage(String playerName, String chat) {
-		return playerName + " says: " + chat;
+		String who = (playerName == null || playerName.isBlank()) ? "Someone" : playerName;
+		return who + " says: " + (chat == null ? "" : chat);
+	}
+
+	/**
+	 * What Cobbie is told after a plan finished. This is the feedback half of the loop: the model
+	 * sees verified results, including failures, and can adjust instead of assuming it worked.
+	 */
+	public static String feedbackMessage(String request, String report) {
+		return "RESULT REPORT for \"" + request + "\": " + report
+				+ "\nSay briefly what actually happened. If a step failed, say what you will try next.";
+	}
+
+	/** Verbs the owner has permitted, comma separated. */
+	static String permittedVerbs() {
+		StringBuilder out = new StringBuilder();
+		for (String verb : ActionVocabulary.allowed()) {
+			if (!CobbieConfig.permits(verb)) continue;
+			if (out.length() > 0) out.append(", ");
+			out.append(verb);
+		}
+		return out.length() == 0 ? "answer, chat, follow, stay, wave, wait" : out.toString();
+	}
+
+	private static int planLimit() {
+		return Math.max(1, Math.min(PLAN_STEPS_CEILING, CobbieConfig.getPlanStepLimit()));
 	}
 }

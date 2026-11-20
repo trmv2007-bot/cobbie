@@ -1,474 +1,1262 @@
 package com.rishi.cobbie.entity;
 
+import com.mojang.serialization.Codec;
 import com.rishi.cobbie.Cobbie;
 import com.rishi.cobbie.action.ActionIntent;
+import com.rishi.cobbie.action.ActionOutcome;
+import com.rishi.cobbie.action.ActionVocabulary;
 import com.rishi.cobbie.config.CobbieConfig;
+import com.rishi.cobbie.task.TaskRunner;
+import com.rishi.cobbie.world.WorldPerception;
+import com.rishi.cobbie.world.WorldSnapshot;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.syncher.EntityDataAccessor;
+import net.minecraft.network.syncher.EntityDataSerializers;
+import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.resources.Identifier;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.Container;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
-import net.minecraft.world.entity.ai.goal.*;
-import net.minecraft.world.entity.ai.goal.target.NearestAttackableTargetGoal;
-import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.ai.goal.FloatGoal;
+import net.minecraft.world.entity.ai.goal.Goal;
+import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
+import net.minecraft.world.entity.ai.goal.MeleeAttackGoal;
+import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
 import net.minecraft.world.entity.item.ItemEntity;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.levelgen.Heightmap;
-import net.minecraft.world.phys.AABB;
-import net.minecraft.network.chat.Component;
-import net.minecraft.world.Container;
-import net.minecraft.world.SimpleContainer;
+import net.minecraft.world.entity.monster.Enemy;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.level.storage.ValueInput;
+import net.minecraft.world.level.storage.ValueOutput;
+import net.minecraft.world.phys.AABB;
+
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentLinkedDeque;
 
 /**
- * Cobbie — your AI friend. A peaceful companion that follows you around
- * and acts on the world (move, mine, place, attack, wave, say).
+ * Cobbie: a peaceful, owner-bound AI companion.
  *
- * World mutations are driven through a per-entity action queue processed on
- * the server thread in tick(), guaranteeing thread safety and no duplicate
- * or overlapping actions.
+ * <h2>Threading</h2>
+ * The world is only ever touched from {@link #tick()} on the server thread. The LLM lives on other
+ * threads and reaches him exclusively through {@link #offerPlan} / {@link #enqueue}, which are safe
+ * to call from anywhere. No async callback may mutate blocks, entities or the inventory directly.
  *
- * Inventory is a configurable SimpleContainer, integrated into perception
- * and build/mine behavior.
+ * <h2>Doing things properly</h2>
+ * Actions run through {@link TaskRunner}: he navigates first, and the interaction only fires once
+ * he is genuinely inside {@link CobbieConfig#getInteractionReach()}. Success is decided by reading
+ * the world back afterwards — "the API returned true" is not proof. {@code navigation_range} is how
+ * far he will walk for you; {@code interaction_reach} is how far away he can actually touch a
+ * block. Different numbers, deliberately, and a 48-block "action range" no longer exists.
+ *
+ * <h2>Persistence</h2>
+ * Owner, following state and the inventory are saved with the entity, so unloading a chunk or
+ * relogging keeps him the same Cobbie with the same stuff. The tool he is holding is the real
+ * stack (moved out of the bag, not copied), so nothing duplicates across a save/load cycle.
  */
-public class CobbieEntity extends PathfinderMob {
+public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 
-	// Queue of pending actions from the LLM, processed one per tick on server thread.
-	private final ConcurrentLinkedDeque<ActionIntent> actionQueue = new ConcurrentLinkedDeque<>();
+	private static final EntityDataAccessor<Boolean> DATA_WAVING =
+			SynchedEntityData.defineId(CobbieEntity.class, EntityDataSerializers.BOOLEAN);
 
-	// Currently executing action.
-	private String currentAction = "answer";
-	private BlockPos moveTarget = null;
-	private String placeBlock = null;
-	private BlockPos placePos = null;
-	private String attackType = null;
-	private String sayText = null;
+	private static final int WAVE_TICKS = 40;
+	private static final int STEP_DEADLINE_TICKS = 400;   // 20s per step, then it is abandoned
+	private static final int FOLLOW_REPATH_INTERVAL = 12; // the pathfinder is not free
+	private static final int PICKUP_INTERVAL = 20;
+
+	/** Blocks a companion must never break, whatever the model asks for. */
+	private static final Set<Block> PROTECTED = Set.of(
+			Blocks.BEDROCK, Blocks.BARRIER, Blocks.COMMAND_BLOCK, Blocks.STRUCTURE_BLOCK,
+			Blocks.CHAIN_COMMAND_BLOCK, Blocks.REPEATING_COMMAND_BLOCK, Blocks.JIGSAW,
+			Blocks.END_PORTAL_FRAME);
+
+	/** Blocks that legitimately hang off a wall or lie on the floor. */
+	private static final Set<Block> NO_SUPPORT_NEEDED = Set.of(
+			Blocks.TORCH, Blocks.WALL_TORCH, Blocks.SOUL_TORCH, Blocks.LADDER, Blocks.SNOW,
+			Blocks.TRIPWIRE_HOOK, Blocks.LEVER);
+
+	private static final List<String> TOOL_WORDS =
+			List.of("pickaxe", "axe", "shovel", "hoe", "shears", "sword");
+	private static final List<String> TIER_RANK = List.of(
+			"netherite", "diamond", "iron", "stone", "copper", "golden", "wooden", "wood", "leather");
+
+	/** Saved with the entity. ItemStack.OPTIONAL_CODEC tolerates empty slots. */
+	private static final Codec<List<ItemStack>> ITEM_LIST = ItemStack.OPTIONAL_CODEC.listOf();
+
+	// ---- companion state (persisted) ----
+	private UUID ownerUuid;
 	private boolean following = true;
 
-	// Owner tracking (UUID of the player who spawned Cobbie)
-	private UUID ownerUuid = null;
+	// ---- inventory (the bag; a held tool is a bag slot that has been raised) ----
+	private final Container inventory;
 
-	// Cobbie's personal inventory (configurable size)
-	private final Container inventory = new SimpleContainer(CobbieConfig.getInventorySize());
+	// ---- action execution ----
+	private final TaskRunner tasks;
+	private ActionIntent active;
+	private BlockPos activeTarget;   // where he is walking to
+	private BlockPos workTarget;     // the block he intends to act on once he is in reach
+	private int activeDeadlineTick;
+	private boolean navigatingForAction;
+	private ActionOutcome pendingOutcome;
+
+	// ---- bookkeeping ----
+	private int waveTicksLeft;
+	private int followRepathTick;
+	private int lastPickupTick;
+	private int attackCooldownUntil;
+	private String lastActionResult = "nothing yet";
+	/** Where he stood when the current plan started — the origin skill steps are stored relative to. */
+	private BlockPos planOrigin;
+	/** Items he already failed to take, so he does not claw at them every tick. */
+	private final Set<UUID> skippedItems = new HashSet<>();
 
 	public CobbieEntity(EntityType<? extends PathfinderMob> type, Level level) {
 		super(type, level);
+		this.inventory = new SimpleContainer(Math.max(1, CobbieConfig.getInventorySize()));
+		this.tasks = new TaskRunner(this,
+				CobbieConfig.getPlanStepLimit(),
+				CobbieConfig.getTaskRetryLimit(),
+				CobbieConfig.getTaskTimeoutSeconds() * 1000L);
+		this.setPersistenceRequired(); // a companion must not despawn because you walked away
 	}
 
 	public static AttributeSupplier.Builder createAttributes() {
 		return PathfinderMob.createMobAttributes()
 				.add(Attributes.MAX_HEALTH, 20.0)
-				.add(Attributes.MOVEMENT_SPEED, 0.35)
+				.add(Attributes.MOVEMENT_SPEED, 0.32)
+				.add(Attributes.ATTACK_DAMAGE, 3.0)
 				.add(Attributes.FOLLOW_RANGE, 48.0);
 	}
 
+	// ==================================================================
+	// Goals: exactly one following mechanism (tick-driven, owner-only)
+	// and combat goals that re-check permission every tick.
+	// ==================================================================
+
 	@Override
 	protected void registerGoals() {
-		// Priority 1: float so he doesn't sink in water
 		this.goalSelector.addGoal(1, new FloatGoal(this));
-		// Priority 2: follow the owner — active when following==true
-		this.goalSelector.addGoal(2, new FollowMobGoal(this, 0.6, 4.0f, 2.0f));
-		// Priority 3: look at the player when nearby
-		this.goalSelector.addGoal(3, new LookAtPlayerGoal(this, Player.class, 8.0f));
-		// Priority 4: idle head-look
-		this.goalSelector.addGoal(4, new RandomLookAroundGoal(this));
-		// Priority 5: attack hostile mobs when attackNearest is set (combat allowed)
-		this.targetSelector.addGoal(1, new NearestAttackableTargetGoal<>(this, LivingEntity.class, true, false));
+		this.goalSelector.addGoal(2, new GatedMeleeAttack(this));
+		this.goalSelector.addGoal(4, new LookAtPlayerGoal(this, Player.class, 8.0f));
+		this.goalSelector.addGoal(5, new RandomLookAroundGoal(this));
+		// Deliberately absent: FollowMobGoal (it would trail whoever was nearest, not the owner)
+		// and any unrestricted NearestAttackableTargetGoal (a combat-permission bypass).
+		this.targetSelector.addGoal(1, new OwnerDefenseGoal(this));
 	}
 
-	// ----- Owner tracking -----
+	/** Melee chasing that refuses to run while combat is switched off. */
+	private static final class GatedMeleeAttack extends MeleeAttackGoal {
+		private final CobbieEntity cobbie;
 
-	public void setOwner(UUID uuid) { this.ownerUuid = uuid; }
-	public UUID getOwner() { return ownerUuid; }
-	public boolean isOwner(Player player) { return player != null && ownerUuid != null && player.getUUID().equals(ownerUuid); }
+		GatedMeleeAttack(CobbieEntity cobbie) {
+			super(cobbie, 0.9, true);
+			this.cobbie = cobbie;
+		}
 
-	// ----- Public action API used by CobbieBrain -----
+		@Override
+		public boolean canUse() {
+			return CobbieConfig.isCombatAllowed() && cobbie.getTarget() != null && super.canUse();
+		}
 
-	public void startFollowing() { this.following = true; }
-	public void stopFollowing() { this.following = false; }
-	public boolean isFollowing() { return following; }
+		@Override
+		public boolean canContinueToUse() {
+			return CobbieConfig.isCombatAllowed() && cobbie.getTarget() != null && super.canContinueToUse();
+		}
+	}
 
-	public void wave() { enqueue(new ActionIntent("wave", "", 0, 0, 0, "")); }
+	/** Defensive targeting: hostiles only, and only when they threaten the owner or Cobbie. */
+	private static final class OwnerDefenseGoal extends Goal {
+		private final CobbieEntity cobbie;
+		private int scanCooldown;
 
-	public void moveTo(BlockPos pos) { enqueue(new ActionIntent("walk-to", "", pos.getX(), pos.getY(), pos.getZ(), "")); }
+		OwnerDefenseGoal(CobbieEntity cobbie) {
+			this.cobbie = cobbie;
+		}
 
-	public void mine(BlockPos pos) { enqueue(new ActionIntent("mine", "", pos.getX(), pos.getY(), pos.getZ(), "")); }
+		@Override
+		public boolean canUse() {
+			if (!CobbieConfig.isCombatAllowed()) return false;
+			LivingEntity current = cobbie.getTarget();
+			if (current != null && current.isAlive()) return false;
+			if (--scanCooldown > 0) return false;
+			scanCooldown = 20;
+			return cobbie.findThreatToDefendAgainst() != null;
+		}
+
+		@Override
+		public void start() {
+			LivingEntity threat = cobbie.findThreatToDefendAgainst();
+			if (threat != null) cobbie.setTarget(threat);
+		}
+
+		@Override
+		public boolean canContinueToUse() {
+			if (!CobbieConfig.isCombatAllowed()) return false;
+			LivingEntity target = cobbie.getTarget();
+			return target != null && target.isAlive() && cobbie.isLegalTarget(target);
+		}
+
+		@Override
+		public void stop() {
+			cobbie.setTarget(null);
+		}
+	}
+
+	// ==================================================================
+	// Wave animation (server sets a flag, client animates from it)
+	// ==================================================================
+
+	@Override
+	protected void defineSynchedData(SynchedEntityData.Builder builder) {
+		super.defineSynchedData(builder);
+		builder.define(DATA_WAVING, false);
+	}
+
+	public boolean isWaving() {
+		return Boolean.TRUE.equals(this.entityData.get(DATA_WAVING));
+	}
+
+	/** 0..1 through the greeting cycle; derived from the client's own tick counter. */
+	public float getWavePhase(float partialTick) {
+		return (float) (((this.tickCount + partialTick) % 20.0d) / 20.0d);
+	}
+
+	// ==================================================================
+	// Owner
+	// ==================================================================
+
+	public void setOwner(UUID uuid) {
+		this.ownerUuid = uuid;
+	}
+
+	public UUID getOwner() {
+		return ownerUuid;
+	}
+
+	public boolean isOwner(Player player) {
+		return player != null && ownerUuid != null && player.getUUID().equals(ownerUuid);
+	}
+
+	/** The owner while they are online and in THIS dimension; null otherwise. */
+	public ServerPlayer owner() {
+		if (ownerUuid == null || level() == null) return null;
+		Player found = level().getPlayerByUUID(ownerUuid);
+		return found instanceof ServerPlayer sp ? sp : null;
+	}
+
+	public void startFollowing() {
+		this.following = true;
+	}
+
+	/** "Stay" — stop trailing, stay exactly where he is. */
+	public void stopFollowing() {
+		this.following = false;
+		if (level() != null && !level().isClientSide()) getNavigation().stop();
+	}
+
+	public boolean isFollowing() {
+		return following;
+	}
+
+	// ==================================================================
+	// Entry points for the brain / commands (safe from any thread)
+	// ==================================================================
+
+	/**
+	 * Hand a validated plan to Cobbie.
+	 *
+	 * @return null when accepted, otherwise the reason it was refused, so the caller can say that
+	 *         to the player instead of going quiet
+	 */
+	public String offerPlan(String request, List<ActionIntent> intents) {
+		if (this.isRemoved()) return "I am not around any more";
+		String refusal = tasks.start(request, intents);
+		if (refusal == null) planOrigin = this.blockPosition().immutable();
+		return refusal;
+	}
+
+	/** The plan he is running, or the one that most recently finished (for reporting / learning). */
+	public com.rishi.cobbie.task.TaskPlan lastPlan() {
+		return tasks.plan();
+	}
+
+	public BlockPos planOrigin() {
+		return planOrigin;
+	}
+
+	/** Queue a single action. */
+	public void enqueue(ActionIntent intent) {
+		if (intent == null) return;
+		offerPlan(intent.action(), List.of(intent));
+	}
+
+	public void wave() {
+		this.waveTicksLeft = WAVE_TICKS;
+		this.entityData.set(DATA_WAVING, true);
+	}
+
+	public void say(String text) {
+		enqueue(new ActionIntent(ActionVocabulary.CHAT, text, 0, 0, 0, ""));
+	}
+
+	public void moveTo(BlockPos pos) {
+		enqueue(new ActionIntent(ActionVocabulary.WALK_TO, "", pos.getX(), pos.getY(), pos.getZ(), ""));
+	}
+
+	public void mine(BlockPos pos) {
+		enqueue(new ActionIntent(ActionVocabulary.MINE, "", pos.getX(), pos.getY(), pos.getZ(), ""));
+	}
 
 	public void place(String blockName, BlockPos pos) {
-		enqueue(new ActionIntent("place", blockName, pos.getX(), pos.getY(), pos.getZ(), ""));
+		enqueue(new ActionIntent(ActionVocabulary.PLACE, blockName, pos.getX(), pos.getY(), pos.getZ(), ""));
 	}
 
-	public void attackNearest(String type) { enqueue(new ActionIntent("attack", type, 0, 0, 0, "")); }
-
-	public void say(String text) { enqueue(new ActionIntent("chat", text, 0, 0, 0, "")); }
-
-	/** Queue an action intent for processing on the next idle tick. */
-	public void enqueue(ActionIntent intent) {
-		actionQueue.add(intent);
+	public String currentTaskDescription() {
+		return tasks.currentTaskDescription();
 	}
 
-	// ----- Inventory support -----
-
-	/** Get the item in the first non-empty inventory slot, or null. */
-	public ItemStack getHeldItem() {
-		for (int i = 0; i < inventory.getContainerSize(); i++) {
-			ItemStack stack = inventory.getItem(i);
-			if (!stack.isEmpty()) return stack;
-		}
-		return ItemStack.EMPTY;
+	public String lastActionResult() {
+		return lastActionResult;
 	}
 
-	/** Count how many of a given item registry ID Cobbie has in inventory. */
-	public int countItem(String registryId) {
-		int count = 0;
-		for (int i = 0; i < inventory.getContainerSize(); i++) {
-			ItemStack stack = inventory.getItem(i);
-			if (!stack.isEmpty()) {
-				String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
-				if (registryId.equals(id)) {
-					count += stack.getCount();
-				}
-			}
-		}
-		return count;
+	/** One-shot "here is what actually happened" text when a plan settles. */
+	public String takeTaskReport() {
+		return tasks.takeReport();
 	}
 
-	/** Count items by exact item match (registry ID). */
-	public int countItemExact(ItemStack stack) {
-		if (stack == null || stack.isEmpty()) return 0;
-		int count = 0;
-		for (int i = 0; i < inventory.getContainerSize(); i++) {
-			ItemStack existing = inventory.getItem(i);
-			if (!existing.isEmpty() && existing.is(stack.getItem())) {
-				count += existing.getCount();
-			}
-		}
-		return count;
+	public boolean isBusy() {
+		return tasks.hasActiveTask() || active != null;
 	}
 
-	/** Add an item stack to inventory (returns true if stored). */
-	public boolean addItem(ItemStack stack) {
-		if (stack == null || stack.isEmpty()) return false;
-		for (int i = 0; i < inventory.getContainerSize(); i++) {
-			ItemStack existing = inventory.getItem(i);
-			if (existing.isEmpty()) {
-				inventory.setItem(i, stack.copy());
-				return true;
-			} else if (existing.is(stack.getItem()) && existing.getCount() < existing.getMaxStackSize()) {
-				int space = existing.getMaxStackSize() - existing.getCount();
-				int toAdd = Math.min(stack.getCount(), space);
-				existing.grow(toAdd);
-				stack.shrink(toAdd);
-				if (stack.isEmpty()) return true;
-			}
-		}
-		return false;
+	public boolean cancelTask(String reason) {
+		return tasks.cancel(reason);
 	}
 
-	/** Remove count of item registry ID from inventory. Returns true if enough was available. */
-	public boolean consumeItem(String registryId, int count) {
-		if (count <= 0) return true;
-		if (countItem(registryId) < count) return false;
-		int remaining = count;
-		for (int i = 0; i < inventory.getContainerSize() && remaining > 0; i++) {
-			ItemStack stack = inventory.getItem(i);
-			if (!stack.isEmpty()) {
-				String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
-				if (registryId.equals(id)) {
-					int take = Math.min(stack.getCount(), remaining);
-					stack.shrink(take);
-					remaining -= take;
-				}
-			}
-		}
-		return remaining == 0;
+	public WorldSnapshot perceive() {
+		return WorldPerception.snapshot(this, currentTaskDescription(),
+				active == null ? "idle" : active.action(), lastActionResult);
 	}
 
-	/** Try to pick up a nearby ItemEntity. Returns true if something was collected. */
-	public boolean collectNearbyItems() {
-		if (this.level() == null) return false;
-		boolean collected = false;
-		List<ItemEntity> items = this.level().getEntitiesOfClass(ItemEntity.class,
-				new AABB(this.blockPosition()).inflate(2.5),
-				ItemEntity::isAlive);
-		for (ItemEntity item : items) {
-			ItemStack stack = item.getItem();
-			if (!stack.isEmpty() && addItem(stack)) {
-				stack.shrink(stack.getCount());
-				item.discard();
-				collected = true;
-			}
-		}
-		return collected;
-	}
-
-	// ----- Tick: drive pending actions (server thread only) -----
+	// ==================================================================
+	// Tick — server side only below the guard
+	// ==================================================================
 
 	@Override
 	public void tick() {
 		super.tick();
+		if (level() == null || level().isClientSide()) return;
 
-		// Auto-collect nearby dropped items periodically
-		if (this.tickCount % 20 == 0) {
-			collectNearbyItems();
+		if (waveTicksLeft > 0 && --waveTicksLeft == 0) {
+			this.entityData.set(DATA_WAVING, false);
 		}
 
-		// Owner-following logic (respects follow_distance)
-		if (ownerUuid != null && this.level() != null) {
-			Player owner = this.level().getPlayerByUUID(ownerUuid);
-			if (owner != null && isFollowing()) {
-				double dist = this.distanceToSqr(owner);
-				double followDist = CobbieConfig.getFollowDistance();
-				if (dist > followDist * followDist) {
-					getNavigation().moveTo(owner.getX(), owner.getY(), owner.getZ(), 0.6);
-				} else {
-					getNavigation().stop();
-				}
-			}
+		followOwnerTick();
+
+		ActionOutcome settled = driveActiveStep();
+		if (settled != null) pendingOutcome = settled;
+
+		tasks.tick(System.currentTimeMillis());
+
+		// Push the finished plan's verified report to the brain (chat, memory, skill credit,
+		// learning, and the model's own feedback all hang off that single delivery).
+		String report = tasks.takeReport();
+		if (report != null) {
+			com.rishi.cobbie.brain.CobbieBrain.reportPlanSettled(this, tasks.plan());
 		}
 
-		// If idle and not following, wander occasionally (freedom to explore)
-		if (!following && currentAction.equals("answer") && this.random.nextInt(600) == 0) {
-			if (CobbieConfig.isExplorationAllowed()) {
-				BlockPos wander = this.blockPosition().offset(
-						this.random.nextInt(16) - 8, 0, this.random.nextInt(16) - 8);
-				moveTo(wander);
-			}
+		// Pick up what is already within arm's reach. Quietly, no project attached.
+		if (CobbieConfig.isCollectionAllowed() && this.tickCount - lastPickupTick >= PICKUP_INTERVAL) {
+			lastPickupTick = this.tickCount;
+			collectWithinReach();
 		}
 
-		// If idle, pull the next queued action.
-		if (currentAction.equals("answer")) {
-			ActionIntent next = actionQueue.poll();
-			if (next != null) {
-				startAction(next);
-			}
-		}
-
-		// Drive the current action to completion.
-		switch (currentAction) {
-			case "walk-to" -> {
-				if (moveTarget != null) {
-					getNavigation().moveTo(moveTarget.getX(), moveTarget.getY(), moveTarget.getZ(), 0.6);
-					if (this.blockPosition().closerThan(moveTarget, 1.5)) {
-						moveTarget = null;
-						currentAction = "answer";
-					}
-				} else {
-					currentAction = "answer";
-				}
-			}
-			case "mine" -> {
-				if (moveTarget != null && this.level() != null && CobbieConfig.isMiningAllowed()) {
-					mineBlock(moveTarget);
-					moveTarget = null;
-					currentAction = "answer";
-				} else {
-					currentAction = "answer";
-				}
-			}
-			case "place" -> {
-				if (placeBlock != null && placePos != null && this.level() != null && CobbieConfig.isBuildingAllowed()) {
-					placeBlock(placeBlock, placePos);
-					placeBlock = null;
-					placePos = null;
-					currentAction = "answer";
-				} else {
-					currentAction = "answer";
-				}
-			}
-			case "attack" -> {
-				if (this.level() != null && CobbieConfig.isCombatAllowed()) {
-					attackNearestEntity();
-				}
-				currentAction = "answer";
-			}
-			case "chat" -> {
-				if (sayText != null) {
-					if (this.level() != null && !this.level().isClientSide()) {
-						this.level().players().forEach(p ->
-								p.sendSystemMessage(Component.literal("<Cobbie> " + sayText)));
-					}
-					sayText = null;
-					currentAction = "answer";
-				} else {
-					currentAction = "answer";
-				}
-			}
-			case "follow" -> {
-				// Owner-following handled above
-				currentAction = "answer";
-			}
-			case "wave" -> {
-				currentAction = "answer";
-			}
-			case "answer" -> {
-				// No world action
-			}
+		// Own initiative: creative mode only, idle, allowed to explore, and not asked to stay.
+		if (!isBusy() && !following && pendingOutcome == null
+				&& CobbieConfig.isCreative() && CobbieConfig.permits("explore")
+				&& this.random.nextInt(400) == 0) {
+			exploreSomewhereNearby();
 		}
 	}
 
-	/** Start executing a queued intent. */
-	private void startAction(ActionIntent intent) {
-		switch (intent.action()) {
-			case "follow" -> startFollowing();
-			case "wave" -> { currentAction = "wave"; }
-			case "walk-to" -> { currentAction = "walk-to"; moveTarget = new BlockPos(intent.x(), intent.y(), intent.z()); }
-			case "mine" -> { currentAction = "mine"; moveTarget = new BlockPos(intent.x(), intent.y(), intent.z()); }
-			case "place" -> {
-				currentAction = "place";
-				placeBlock = intent.target();
-				placePos = new BlockPos(intent.x(), intent.y(), intent.z());
+	/** The one and only following mechanism. */
+	private void followOwnerTick() {
+		if (!following || ownerUuid == null) return;
+		ServerPlayer owner = owner();
+		if (owner == null) return; // offline or in another dimension: wait where he is
+
+		double follow = Math.max(1.0, CobbieConfig.getFollowDistance());
+		double distSq = this.distanceToSqr(owner);
+		if (distSq <= follow * follow) {
+			if (this.tickCount % 20 == 0) getNavigation().stop();
+			return;
+		}
+		double navLimit = Math.max(8.0, CobbieConfig.getNavigationRange() * 2.0);
+		if (distSq > navLimit * navLimit) return; // never path across the map for a teleport
+
+		if (this.tickCount - followRepathTick < FOLLOW_REPATH_INTERVAL) return;
+		followRepathTick = this.tickCount;
+		if (!level().isLoaded(owner.blockPosition())) return;
+		getNavigation().moveTo(owner.getX(), owner.getY(), owner.getZ(), 0.85);
+	}
+
+	private void exploreSomewhereNearby() {
+		int range = Math.max(6, Math.min(CobbieConfig.getNavigationRange(), 16));
+		int dx = this.random.nextInt(range * 2 + 1) - range;
+		int dz = this.random.nextInt(range * 2 + 1) - range;
+		BlockPos guess = this.blockPosition().offset(dx, 0, dz);
+		int surface = level().getHeight(Heightmap.Types.MOTION_BLOCKING, guess.getX(), guess.getZ());
+		BlockPos stand = new BlockPos(guess.getX(), surface, guess.getZ());
+		if (!level().isLoaded(stand)) return;
+		offerPlan("looking around a bit",
+				List.of(new ActionIntent(ActionVocabulary.WALK_TO, "",
+						stand.getX(), stand.getY(), stand.getZ(), "")));
+	}
+
+	// ==================================================================
+	// TaskRunner.Executor
+	// ==================================================================
+
+	@Override
+	public ActionOutcome begin(ActionIntent intent) {
+		if (intent == null) return ActionOutcome.fail("wait", "no action given");
+		String verb = intent.action() == null ? "" : intent.action();
+
+		// Execution-time permission check. The parser already did this once; repeating it here is
+		// the point — a plan queued before the owner flipped a switch off must not outrank that.
+		if (!ActionVocabulary.isAllowed(verb)) {
+			return ActionOutcome.fail(verb, "that is not something I can do");
+		}
+		if (!CobbieConfig.permits(verb)) {
+			return ActionOutcome.fail(verb, "my owner has not allowed that");
+		}
+		if (active != null) {
+			return ActionOutcome.fail(verb, "still busy with " + active.action());
+		}
+
+		return switch (verb) {
+			case ActionVocabulary.ANSWER, ActionVocabulary.WAIT -> ActionOutcome.ok(verb, "nothing to do");
+			case ActionVocabulary.CHAT -> speak(intent.target());
+			case ActionVocabulary.WAVE -> {
+				wave();
+				yield ActionOutcome.ok(verb, "waved hello");
 			}
-			case "attack" -> { currentAction = "attack"; attackType = intent.target(); }
-			case "chat" -> { currentAction = "chat"; sayText = intent.target(); }
-			case "answer", "wait" -> { /* no world action */ }
-			default -> Cobbie.LOGGER.warn("Unknown action from LLM: {}", intent.action());
+			case ActionVocabulary.FOLLOW -> {
+				startFollowing();
+				yield ActionOutcome.ok(verb, "following you again");
+			}
+			case ActionVocabulary.STAY -> {
+				stopFollowing();
+				yield ActionOutcome.ok(verb, "staying put");
+			}
+			case ActionVocabulary.EXPLORE -> {
+				exploreSomewhereNearby();
+				yield ActionOutcome.ok(verb, "wandering a little");
+			}
+			case ActionVocabulary.WALK_TO -> startWalk(intent);
+			case ActionVocabulary.MINE -> startMine(intent);
+			case ActionVocabulary.PLACE -> startPlace(intent);
+			case ActionVocabulary.COLLECT -> startCollect(intent);
+			case ActionVocabulary.ATTACK -> startAttack(intent);
+			default -> ActionOutcome.fail(verb, "unhandled verb");
+		};
+	}
+
+	@Override
+	public ActionOutcome poll() {
+		if (pendingOutcome != null) {
+			ActionOutcome done = pendingOutcome;
+			pendingOutcome = null;
+			return done;
+		}
+		if (active == null) return null;
+		return driveActiveStep();
+	}
+
+	@Override
+	public void interrupt() {
+		active = null;
+		activeTarget = null;
+		workTarget = null;
+		navigatingForAction = false;
+		pendingOutcome = null;
+		if (level() != null && !level().isClientSide()) {
+			getNavigation().stop();
+			this.setTarget(null);
 		}
 	}
 
-	// ----- Safe combat targeting (never attack owner or friendlies) -----
+	/** Advance the in-flight step. Non-null return means "this step has settled". */
+	private ActionOutcome driveActiveStep() {
+		if (active == null) return null;
+		String verb = active.action();
 
-	private void attackNearestEntity() {
-		if (this.level() == null) return;
-
-		var targets = this.level().getEntitiesOfClass(LivingEntity.class,
-				new AABB(this.blockPosition()).inflate(16.0),
-				e -> e.isAlive() && e != this
-						&& !(e instanceof Player p && isOwner(p))
-						&& (attackType == null || e.getType().toString().contains(attackType)));
-
-		if (!targets.isEmpty()) {
-			this.setTarget(targets.get(0));
-			Cobbie.LOGGER.info("Cobbie attacking {}", targets.get(0).getName().getString());
+		if (this.tickCount > activeDeadlineTick) {
+			interrupt();
+			return ActionOutcome.fail(verb, "gave up, it was taking too long");
 		}
+
+		// Phase 1: walk into interaction range, then act.
+		if (navigatingForAction) {
+			if (activeTarget == null) {
+				interrupt();
+				return ActionOutcome.fail(verb, "lost track of the target");
+			}
+			if (this.blockPosition().distSqr(activeTarget) <= reachSquared()) {
+				navigatingForAction = false;
+				return performNow();
+			}
+			if (getNavigation().isDone()) {
+				// Path ended and he is still out of range: unreachable from where he is.
+				interrupt();
+				return ActionOutcome.fail(verb, "could not get close enough to " + describe(activeTarget));
+			}
+			return null; // still walking
+		}
+
+		// Phase 2: multi-tick verbs.
+		if (ActionVocabulary.ATTACK.equals(verb)) return attackTick();
+
+		interrupt();
+		return ActionOutcome.ok(verb, "done");
 	}
 
-	// ----- Real world-changing operations (server thread only) -----
+	/** Reached the target position: do the thing we walked there for. */
+	private ActionOutcome performNow() {
+		String verb = active.action();
+		BlockPos work = workTarget != null ? workTarget : activeTarget;
+		return switch (verb) {
+			case ActionVocabulary.WALK_TO -> {
+				clearActive();
+				yield ActionOutcome.ok(verb, "arrived at " + describe(work));
+			}
+			case ActionVocabulary.MINE -> {
+				ActionOutcome outcome = mineBlock(work);
+				clearActive();
+				yield outcome;
+			}
+			case ActionVocabulary.PLACE -> {
+				ActionOutcome outcome = placeBlock(active.target(), work);
+				clearActive();
+				yield outcome;
+			}
+			case ActionVocabulary.COLLECT -> {
+				ActionOutcome outcome = collectAt(work);
+				clearActive();
+				yield outcome;
+			}
+			default -> {
+				clearActive();
+				yield ActionOutcome.ok(verb, "arrived");
+			}
+		};
+	}
 
-	private void mineBlock(BlockPos pos) {
-		if (this.level() == null) return;
+	private void clearActive() {
+		active = null;
+		activeTarget = null;
+		workTarget = null;
+		navigatingForAction = false;
+	}
 
-		// Distance check — respect action_range
-		if (this.blockPosition().distSqr(pos) > Math.pow(CobbieConfig.getActionRange(), 2)) {
-			Cobbie.LOGGER.warn("Cobbie mine target too far: {}", pos);
-			return;
+	private double reachSquared() {
+		double reach = Math.max(1.5, CobbieConfig.getInteractionReach());
+		return reach * reach;
+	}
+
+	private void beginWalking(ActionIntent intent, BlockPos standAt, BlockPos workAt) {
+		active = intent;
+		activeTarget = standAt;
+		workTarget = workAt;
+		navigatingForAction = true;
+		activeDeadlineTick = this.tickCount + STEP_DEADLINE_TICKS;
+		getNavigation().moveTo(standAt.getX(), standAt.getY(), standAt.getZ(), 0.9);
+	}
+
+	// ---- individual verbs ----
+
+	private ActionOutcome speak(String text) {
+		if (text == null || text.isBlank()) return ActionOutcome.fail("chat", "nothing to say");
+		String line = text.length() > 200 ? text.substring(0, 200) : text;
+		// In-world speech, heard by whoever is standing nearby — not a dimension-wide broadcast.
+		for (Player p : level().getEntitiesOfClass(Player.class,
+				new AABB(this.blockPosition()).inflate(32.0))) {
+			p.sendSystemMessage(Component.literal("§e[Cobbie] §f" + line));
+		}
+		return ActionOutcome.ok("chat", "said: " + line);
+	}
+
+	private ActionOutcome startWalk(ActionIntent intent) {
+		BlockPos target = new BlockPos(intent.x(), intent.y(), intent.z());
+		if (!level().isLoaded(target)) return ActionOutcome.fail("walk-to", "that area is not loaded");
+		double navLimit = Math.max(8, CobbieConfig.getNavigationRange());
+		if (this.blockPosition().distSqr(target) > navLimit * navLimit) {
+			return ActionOutcome.fail("walk-to", describe(target) + " is further than I will walk ("
+					+ (int) navLimit + " blocks)");
+		}
+		if (this.blockPosition().closerThan(target, 1.5)) {
+			return ActionOutcome.ok("walk-to", "already at " + describe(target));
+		}
+		beginWalking(intent, target, target);
+		return null; // asynchronous: arrival is verified in poll()
+	}
+
+	private ActionOutcome startMine(ActionIntent intent) {
+		BlockPos pos = new BlockPos(intent.x(), intent.y(), intent.z());
+		if (!level().isLoaded(pos)) return ActionOutcome.fail("mine", "that block is not loaded");
+		BlockState state = level().getBlockState(pos);
+		if (state.isAir()) return ActionOutcome.fail("mine", "there is nothing at " + describe(pos));
+		if (PROTECTED.contains(state.getBlock())) {
+			return ActionOutcome.fail("mine", "I will not break " + blockId(state));
+		}
+		if (this.blockPosition().distSqr(pos) > reachSquared()) {
+			BlockPos stand = standingSpotNear(pos);
+			if (stand == null) return ActionOutcome.fail("mine", "nowhere to stand near " + describe(pos));
+			double navLimit = Math.max(8, CobbieConfig.getNavigationRange());
+			if (this.blockPosition().distSqr(stand) > navLimit * navLimit) {
+				return ActionOutcome.fail("mine", describe(pos) + " is too far away for me to reach");
+			}
+			beginWalking(intent, stand, pos);
+			return null;
+		}
+		return mineBlock(pos);
+	}
+
+	/**
+	 * Break one block with real harvesting semantics: tool-aware loot straight out of the block's
+	 * own loot table, protected-block refusal, durability wear, and a full bag that drops items on
+	 * the ground instead of deleting them.
+	 */
+	private ActionOutcome mineBlock(BlockPos pos) {
+		if (!(level() instanceof ServerLevel serverLevel)) {
+			return ActionOutcome.fail("mine", "no server world");
+		}
+		BlockState state = serverLevel.getBlockState(pos);
+		if (state.isAir()) return ActionOutcome.fail("mine", "nothing there any more");
+		if (PROTECTED.contains(state.getBlock())) {
+			return ActionOutcome.fail("mine", "I will not break " + blockId(state));
+		}
+		if (this.blockPosition().distSqr(pos) > reachSquared()) {
+			return ActionOutcome.fail("mine", describe(pos) + " is out of reach");
 		}
 
-		BlockState state = this.level().getBlockState(pos);
-		if (state.isAir()) {
-			Cobbie.LOGGER.warn("Cobbie mine target is air: {}", pos);
-			return;
+		String id = blockId(state);
+		float hardness = state.getDestroySpeed(serverLevel, pos);
+		if (hardness < 0) return ActionOutcome.fail("mine", id + " cannot be broken");
+
+		ItemStack tool = equipBestToolFor(id);
+		if (hardness > 1.5f && tool.isEmpty()) {
+			return ActionOutcome.fail("mine", "I need a proper tool for " + id + " and have none");
 		}
 
-		// Don't mine bedrock, barrier, command, structure
-		if (state.is(Blocks.BEDROCK) || state.is(Blocks.BARRIER)
-				|| state.is(Blocks.COMMAND_BLOCK) || state.is(Blocks.STRUCTURE_BLOCK)) {
-			Cobbie.LOGGER.warn("Cobbie refused to mine protected block: {}", pos);
-			return;
-		}
+		// Loot comes from the game with the tool actually in hand. Never fabricated.
+		List<ItemStack> drops = Block.getDrops(state, serverLevel, pos, null, this, tool);
 
-		// Collect drops via proper loot table
-		if (this.level() instanceof net.minecraft.server.level.ServerLevel serverLevel) {
-			List<ItemStack> drops = state.getBlock().getDrops(state, serverLevel, pos, null);
+		if (fitsInInventory(drops)) {
+			if (!serverLevel.destroyBlock(pos, false, this, 3)) {
+				return ActionOutcome.fail("mine", "could not break " + id);
+			}
+			int stored = 0;
 			for (ItemStack drop : drops) {
-				if (!drop.isEmpty()) {
-					addItem(drop);
-				}
+				if (!drop.isEmpty()) stored += drop.getCount();
 			}
+			for (ItemStack drop : drops) {
+				add(drop.copy(), inventory);
+			}
+			wearTool(tool);
+			if (!serverLevel.getBlockState(pos).isAir()) {
+				return ActionOutcome.fail("mine", id + " is still standing at " + describe(pos));
+			}
+			return ActionOutcome.ok("mine", "mined " + id + " at " + describe(pos)
+					+ (stored > 0 ? ", stored " + stored + " item(s)" : " (nothing dropped)"));
 		}
-		this.level().destroyBlock(pos, false, this); // false = don't spawn drops (we handle them)
-		Cobbie.LOGGER.info("Cobbie mined {} at {}", state.getBlock().getName().getString(), pos);
+
+		// Not enough room: drop them where they fall rather than deleting the player's goods.
+		if (!serverLevel.destroyBlock(pos, true, this, 3)) {
+			return ActionOutcome.fail("mine", "could not break " + id);
+		}
+		wearTool(tool);
+		return ActionOutcome.ok("mine", "broke " + id + " at " + describe(pos)
+				+ ", but my bag is full so the items are on the ground");
 	}
 
-	private void placeBlock(String blockName, BlockPos pos) {
-		if (this.level() == null) return;
-
-		// Distance check
-		if (this.blockPosition().distSqr(pos) > Math.pow(CobbieConfig.getActionRange(), 2)) {
-			Cobbie.LOGGER.warn("Cobbie place target too far: {}", pos);
-			return;
+	private ActionOutcome startPlace(ActionIntent intent) {
+		BlockPos pos = new BlockPos(intent.x(), intent.y(), intent.z());
+		String refusal = placementRefusal(intent.target(), pos);
+		if (refusal != null) return ActionOutcome.fail("place", refusal);
+		if (this.blockPosition().distSqr(pos) > reachSquared()) {
+			BlockPos stand = standingSpotNear(pos);
+			if (stand == null) return ActionOutcome.fail("place", "nowhere to stand to build at " + describe(pos));
+			double navLimit = Math.max(8, CobbieConfig.getNavigationRange());
+			if (this.blockPosition().distSqr(stand) > navLimit * navLimit) {
+				return ActionOutcome.fail("place", "that spot is too far away to reach");
+			}
+			beginWalking(intent, stand, pos);
+			return null;
 		}
+		return placeBlock(intent.target(), pos);
+	}
 
-		// Don't place inside the player, Cobbie himself, or owner
-		if (this.blockPosition().equals(pos)) {
-			Cobbie.LOGGER.warn("Cobbie refused to place on self: {}", pos);
-			return;
+	/**
+	 * Validated in the order the mission demands: permissions (checked by the caller), border,
+	 * loaded chunk, reach, replacement rules, support, collision, materials.
+	 */
+	private String placementRefusal(String blockName, BlockPos pos) {
+		if (blockName == null || blockName.isBlank()) return "no block name given";
+		BlockState wanted = resolveState(blockName, pos);
+		if (wanted == null) return "I do not know a block called " + blockName;
+		if (!level().isLoaded(pos)) return "that area is not loaded";
+		if (level() instanceof ServerLevel sl && !sl.getWorldBorder().isWithinBounds(pos)) {
+			return "that is outside the world border";
 		}
-
-		// Resolve block from name (registry ID)
-		BlockState state = resolveBlock(blockName);
-		if (state == null) {
-			Cobbie.LOGGER.warn("Cobbie couldn't resolve block: {}", blockName);
-			return;
+		if (this.blockPosition().distSqr(pos) > reachSquared()) {
+			return null; // caller walks him closer first; reach is not a refusal
 		}
-
-		// Consume material from inventory (by registry ID)
-		String blockRegistryId = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
-		if (!consumeItem(blockRegistryId, 1)) {
-			Cobbie.LOGGER.warn("Cobbie has no {} in inventory to place", blockName);
-			return;
+		if (this.blockPosition().equals(pos) || this.blockPosition().equals(pos.above())) {
+			return "I would be standing there";
 		}
-
-		// Don't place inside an existing solid block unless replacing air
-		BlockState existing = this.level().getBlockState(pos);
-		if (!existing.isAir()) {
-			Cobbie.LOGGER.warn("Cobbie place target occupied: {} by {}", pos, existing.getBlock().getName().getString());
-			return;
+		BlockState existing = level().getBlockState(pos);
+		if (!existing.isAir() && !existing.canBeReplaced()) {
+			return describe(pos) + " is occupied by " + blockId(existing);
 		}
-
-		// Support check: don't place floating blocks without support below (except certain blocks)
-		if (!state.getBlock().equals(Blocks.TORCH)
-				&& !state.getBlock().equals(Blocks.WALL_TORCH)
-				&& !state.getBlock().equals(Blocks.LADDER)) {
+		if (!NO_SUPPORT_NEEDED.contains(wanted.getBlock())) {
 			BlockPos below = pos.below();
-			if (this.level().getHeight(Heightmap.Types.MOTION_BLOCKING, below.getX(), below.getZ()) <= below.getY()) {
-				BlockState belowState = this.level().getBlockState(below);
-				if (belowState.isAir()) {
-					Cobbie.LOGGER.warn("Cobbie refused to place floating block at {}", pos);
-					return;
-				}
-			}
+			if (!level().isLoaded(below)) return "the ground under " + describe(pos) + " is not loaded";
+			if (level().getBlockState(below).isAir()) return "nothing to support a block at " + describe(pos);
 		}
-
-		boolean success = this.level().setBlock(pos, state, 3);
-		if (success) {
-			Cobbie.LOGGER.info("Cobbie placed {} at {}", blockName, pos);
-		} else {
-			Cobbie.LOGGER.warn("Cobbie failed to place {} at {}", blockName, pos);
-		}
+		List<LivingEntity> occupants = level().getEntitiesOfClass(LivingEntity.class, new AABB(pos),
+				e -> e.isAlive() && e != this);
+		if (!occupants.isEmpty()) return "something is standing in " + describe(pos);
+		return null;
 	}
 
-	private BlockState resolveBlock(String blockName) {
-		if (blockName == null || blockName.isBlank()) return null;
+	/** Place one block. The material is consumed only AFTER the block is verified to be there. */
+	private ActionOutcome placeBlock(String blockName, BlockPos pos) {
+		String refusal = placementRefusal(blockName, pos);
+		if (refusal != null) return ActionOutcome.fail("place", refusal);
 
-		String name = blockName;
+		BlockState wanted = resolveState(blockName, pos);
+		if (wanted == null) return ActionOutcome.fail("place", "I do not know a block called " + blockName);
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("place", "no server world");
+
+		String itemId = BuiltInRegistries.BLOCK.getKey(wanted.getBlock()).toString();
+		if (countItem(itemId) < 1) return ActionOutcome.fail("place", "I have no " + itemId + " with me");
+
+		boolean placed = serverLevel.setBlock(pos, wanted, 3);
+		BlockState now = serverLevel.getBlockState(pos);
+		if (!placed || !now.is(wanted.getBlock())) {
+			return ActionOutcome.fail("place", "the world would not accept " + itemId + " at " + describe(pos));
+		}
+		consumeItem(itemId, 1);
+		return ActionOutcome.ok("place", "placed " + itemId + " at " + describe(pos));
+	}
+
+	/** Orientation preserved: a block with a facing points toward Cobbie, as if he placed it. */
+	private BlockState resolveState(String blockName, BlockPos pos) {
+		Block block = resolveBlock(blockName);
+		if (block == null) return null;
+		BlockState state = block.defaultBlockState();
+		if (state.hasProperty(BlockStateProperties.HORIZONTAL_FACING)) {
+			state = state.setValue(BlockStateProperties.HORIZONTAL_FACING, facingFrom(pos));
+		}
+		return state;
+	}
+
+	private Direction facingFrom(BlockPos pos) {
+		double dx = this.getX() - (pos.getX() + 0.5);
+		double dz = this.getZ() - (pos.getZ() + 0.5);
+		if (Math.abs(dx) > Math.abs(dz)) return dx > 0 ? Direction.EAST : Direction.WEST;
+		return dz > 0 ? Direction.SOUTH : Direction.NORTH;
+	}
+
+	private Block resolveBlock(String blockName) {
+		if (blockName == null || blockName.isBlank()) return null;
+		String name = blockName.trim().toLowerCase(Locale.ROOT).replace(' ', '_');
 		String namespace = "minecraft";
 		if (name.contains(":")) {
 			String[] parts = name.split(":", 2);
 			namespace = parts[0];
 			name = parts[1];
 		}
+		Block block = BuiltInRegistries.BLOCK.getOptional(Identifier.fromNamespaceAndPath(namespace, name))
+				.orElse(null);
+		return (block == null || block == Blocks.AIR) ? null : block;
+	}
 
-		Identifier id = Identifier.fromNamespaceAndPath(namespace, name);
-		var block = BuiltInRegistries.BLOCK.getOptional(id).orElse(null);
-		if (block != null && block != Blocks.AIR) {
-			return block.defaultBlockState();
+	// ---- collection ----
+
+	private ActionOutcome startCollect(ActionIntent intent) {
+		ItemEntity nearest = nearestCollectable();
+		if (nearest == null) return ActionOutcome.fail("collect", "nothing to pick up around here");
+		BlockPos at = nearest.blockPosition();
+		if (this.blockPosition().distSqr(at) <= reachSquared()) return collectAt(at);
+		double navLimit = Math.max(8, CobbieConfig.getNavigationRange());
+		if (this.blockPosition().distSqr(at) > navLimit * navLimit) {
+			return ActionOutcome.fail("collect", "that item is too far away");
 		}
-
+		beginWalking(intent, at, at);
 		return null;
 	}
 
-	/** Get the inventory container for perception integration. */
+	private ActionOutcome collectAt(BlockPos pos) {
+		List<ItemEntity> items = level().getEntitiesOfClass(ItemEntity.class,
+				new AABB(pos).inflate(2.0), ItemEntity::isAlive);
+		int stacks = 0;
+		for (ItemEntity item : items) {
+			ItemStack world = item.getItem();
+			if (world.isEmpty()) continue;
+			if (skippedItems.contains(item.getUUID())) continue;
+			int before = world.getCount();
+			ItemStack trial = world.copy();
+			if (add(trial, inventory)) {
+				int leftover = trial.getCount();      // what did not fit stays on the ground
+				world.shrink(before - leftover);
+				if (world.isEmpty()) item.discard();
+				stacks++;
+			} else {
+				skippedItems.add(item.getUUID());
+			}
+		}
+		if (stacks == 0) return ActionOutcome.fail("collect", "my bag has no room at " + describe(pos));
+		return ActionOutcome.ok("collect", "picked up " + stacks + " stack(s) at " + describe(pos));
+	}
+
+	/** What is already within arm's reach. No wandering, no pathfinding, no spamming. */
+	private void collectWithinReach() {
+		List<ItemEntity> nearby = level().getEntitiesOfClass(ItemEntity.class,
+				new AABB(this.blockPosition()).inflate(1.6), ItemEntity::isAlive);
+		for (ItemEntity item : nearby) {
+			ItemStack world = item.getItem();
+			if (world.isEmpty() || skippedItems.contains(item.getUUID())) continue;
+			int before = world.getCount();
+			ItemStack trial = world.copy();
+			if (add(trial, inventory)) {
+				world.shrink(before - trial.getCount());
+				if (world.isEmpty()) item.discard();
+			} else {
+				skippedItems.add(item.getUUID());
+				return; // bag full; stop trying every tick
+			}
+		}
+	}
+
+	private ItemEntity nearestCollectable() {
+		double scan = Math.max(4.0, CobbieConfig.getInteractionReach() * 2.0);
+		List<ItemEntity> items = level().getEntitiesOfClass(ItemEntity.class,
+				new AABB(this.blockPosition()).inflate(scan), ItemEntity::isAlive);
+		ItemEntity best = null;
+		double bestDist = Double.MAX_VALUE;
+		for (ItemEntity item : items) {
+			if (item.getItem().isEmpty() || skippedItems.contains(item.getUUID())) continue;
+			double d = item.distanceToSqr(this);
+			if (d < bestDist) {
+				bestDist = d;
+				best = item;
+			}
+		}
+		if (!skippedItems.isEmpty() && this.tickCount % 600 == 0) skippedItems.clear();
+		return best;
+	}
+
+	// ---- combat ----
+
+	LivingEntity findThreatToDefendAgainst() {
+		if (!CobbieConfig.isCombatAllowed()) return null;
+		ServerPlayer owner = owner();
+		List<LivingEntity> around = level().getEntitiesOfClass(LivingEntity.class,
+				new AABB(this.blockPosition()).inflate(16.0), LivingEntity::isAlive);
+		LivingEntity best = null;
+		double bestDist = Double.MAX_VALUE;
+		for (LivingEntity e : around) {
+			if (e == this || !isLegalTarget(e)) continue;
+			boolean threatening = e instanceof Mob asMob
+					&& (asMob.getTarget() == this || (owner != null && asMob.getTarget() == owner));
+			if (!threatening) continue;
+			double d = e.distanceToSqr(this);
+			if (d < bestDist) {
+				bestDist = d;
+				best = e;
+			}
+		}
+		return best;
+	}
+
+	/** The combat safety rules, in exactly one place. */
+	boolean isLegalTarget(LivingEntity e) {
+		if (e == null || !e.isAlive() || e == this) return false;
+		if (e instanceof Player p && isOwner(p)) return false;   // never the owner
+		if (e instanceof Player) {
+			return CobbieConfig.isPlayerCombatAllowed();     // players need their own separate switch
+		}
+		if (!CobbieConfig.isCombatAllowed()) return false;
+		return e instanceof Enemy;                           // hostile mobs only; passives are untouchable
+	}
+
+	private ActionOutcome startAttack(ActionIntent intent) {
+		if (!CobbieConfig.isCombatAllowed()) return ActionOutcome.fail("attack", "combat is switched off");
+		LivingEntity target = chooseAttackTarget(intent.target());
+		if (target == null) return ActionOutcome.fail("attack", "nothing I am allowed to fight is nearby");
+		this.setTarget(target);
+		active = intent;
+		activeTarget = target.blockPosition();
+		navigatingForAction = false;
+		activeDeadlineTick = this.tickCount + STEP_DEADLINE_TICKS;
+		return null; // resolves across ticks in attackTick()
+	}
+
+	private LivingEntity chooseAttackTarget(String typeHint) {
+		double scan = Math.max(8, CobbieConfig.getNavigationRange());
+		List<LivingEntity> around = level().getEntitiesOfClass(LivingEntity.class,
+				new AABB(this.blockPosition()).inflate(scan), LivingEntity::isAlive);
+		String hint = typeHint == null ? "" : typeHint.trim().toLowerCase(Locale.ROOT);
+		LivingEntity best = null;
+		double bestDist = Double.MAX_VALUE;
+		for (LivingEntity e : around) {
+			if (!isLegalTarget(e) || !canAttack(e)) continue;
+			if (!hint.isEmpty()) {
+				String id = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString().toLowerCase(Locale.ROOT);
+				if (!id.contains(hint)) continue;
+			}
+			double d = e.distanceToSqr(this);
+			if (d < bestDist) {
+				bestDist = d;
+				best = e;
+			}
+		}
+		return best;
+	}
+
+	/** Chase and hit, revalidating the target immediately before every swing. */
+	private ActionOutcome attackTick() {
+		LivingEntity target = this.getTarget();
+		if (target == null || !target.isAlive()) {
+			this.setTarget(null);
+			clearActive();
+			return ActionOutcome.ok("attack", "nothing left to fight");
+		}
+		if (!isLegalTarget(target)) {
+			this.setTarget(null);
+			clearActive();
+			return ActionOutcome.fail("attack", "that target is off-limits");
+		}
+		if (isWithinMeleeAttackRange(target) && hasLineOfSight(target)) {
+			if (this.tickCount < attackCooldownUntil) return null;
+			if (!(level() instanceof ServerLevel serverLevel)) {
+				clearActive();
+				return ActionOutcome.fail("attack", "no server world");
+			}
+			attackCooldownUntil = this.tickCount + 16;
+			boolean hit = doHurtTarget(serverLevel, target);
+			if (!hit) return null; // swung and missed; try again inside the deadline
+			ActionOutcome outcome = ActionOutcome.ok("attack", "hit " + target.getName().getString()
+					+ (target.isAlive() ? "" : " and finished it off"));
+			this.setTarget(null);
+			clearActive();
+			return outcome;
+		}
+		getNavigation().moveTo(target, 0.95);
+		return null;
+	}
+
+	// ==================================================================
+	// Inventory: registry-ID identity, stacking, nothing silently lost.
+	// The held tool is a bag slot that has been raised, so counts include it.
+	// ==================================================================
+
 	public Container getInventoryContainer() {
 		return inventory;
+	}
+
+	private String itemId(ItemStack stack) {
+		return BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+	}
+
+	/** Try to store {@code stack} in {@code target}, mutating what did not fit. */
+	private static boolean add(ItemStack stack, Container target) {
+		if (stack == null || stack.isEmpty()) return true;
+		int size = target.getContainerSize();
+		for (int i = 0; i < size && !stack.isEmpty(); i++) {
+			ItemStack existing = target.getItem(i);
+			if (existing.isEmpty() || !ItemStack.isSameItemSameComponents(existing, stack)) continue;
+			int space = existing.getMaxStackSize() - existing.getCount();
+			if (space <= 0) continue;
+			int move = Math.min(space, stack.getCount());
+			existing.grow(move);
+			stack.shrink(move);
+		}
+		for (int i = 0; i < size && !stack.isEmpty(); i++) {
+			if (!target.getItem(i).isEmpty()) continue;
+			ItemStack moved = stack.split(Math.min(stack.getMaxStackSize(), stack.getCount()));
+			if (moved.isEmpty()) return stack.isEmpty();
+			target.setItem(i, moved);
+		}
+		return stack.isEmpty();
+	}
+
+	/** Would all of these fit without anything being destroyed? */
+	private boolean fitsInInventory(List<ItemStack> drops) {
+		if (drops == null || drops.isEmpty()) return true;
+		Container ghost = new SimpleContainer(inventory.getContainerSize());
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ghost.setItem(i, inventory.getItem(i).copy());
+		}
+		boolean all = true;
+		for (ItemStack drop : drops) {
+			if (drop.isEmpty()) continue;
+			if (!add(drop.copy(), ghost)) all = false;
+		}
+		return all;
+	}
+
+	public boolean addItem(ItemStack stack) {
+		return add(stack, inventory);
+	}
+
+	public int countItem(String registryId) {
+		if (registryId == null) return 0;
+		int count = 0;
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (!stack.isEmpty() && registryId.equalsIgnoreCase(itemId(stack))) count += stack.getCount();
+		}
+		ItemStack hand = this.getMainHandItem();
+		if (!hand.isEmpty() && registryId.equalsIgnoreCase(itemId(hand))) count += hand.getCount();
+		return count;
+	}
+
+	/** Consume {@code amount} of a registry id, taking from the bag then the hand. */
+	public boolean consumeItem(String registryId, int amount) {
+		if (amount <= 0) return true;
+		if (countItem(registryId) < amount) return false;
+		int remaining = amount;
+		for (int i = 0; i < inventory.getContainerSize() && remaining > 0; i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty() || !registryId.equalsIgnoreCase(itemId(stack))) continue;
+			int take = Math.min(stack.getCount(), remaining);
+			stack.shrink(take);
+			remaining -= take;
+			if (stack.isEmpty()) inventory.setItem(i, ItemStack.EMPTY);
+		}
+		if (remaining > 0) {
+			ItemStack hand = this.getMainHandItem();
+			if (!hand.isEmpty() && registryId.equalsIgnoreCase(itemId(hand))) {
+				int take = Math.min(hand.getCount(), remaining);
+				hand.shrink(take);
+				remaining -= take;
+				if (hand.isEmpty()) this.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+			}
+		}
+		return remaining == 0;
+	}
+
+	public String describeInventory() {
+		StringBuilder sb = new StringBuilder();
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty()) continue;
+			if (sb.length() > 0) sb.append(", ");
+			sb.append(itemId(stack)).append(" x").append(stack.getCount());
+		}
+		ItemStack hand = this.getMainHandItem();
+		if (!hand.isEmpty()) {
+			if (sb.length() > 0) sb.append(", ");
+			sb.append("(holding ").append(itemId(hand)).append(" x").append(hand.getCount()).append(')');
+		}
+		return sb.length() == 0 ? "empty" : sb.toString();
+	}
+
+	/**
+	 * Pick the best tool for the block kind and raise it into the hand — moving the real stack, so
+	 * there is never a second copy of it.
+	 */
+	private ItemStack equipBestToolFor(String blockId) {
+		ItemStack held = this.getMainHandItem();
+		if (isTool(held) && scores(held, blockId) > 0 && !isBroken(held)) {
+			return held; // already holding something usable
+		}
+		ItemStack best = ItemStack.EMPTY;
+		int bestScore = 0;
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (!isTool(stack) || isBroken(stack)) continue;
+			int score = scores(stack, blockId);
+			if (score > bestScore) {
+				bestScore = score;
+				best = stack;
+			}
+		}
+		if (best.isEmpty()) {
+			if (isTool(held)) this.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+			return ItemStack.EMPTY;
+		}
+		// Stow whatever was in hand, then raise the tool out of the bag.
+		if (!held.isEmpty()) {
+			add(held.copy(), inventory);
+			this.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+		}
+		inventory.setItem(indexOf(best), ItemStack.EMPTY);
+		this.setItemInHand(InteractionHand.MAIN_HAND, best);
+		return best;
+	}
+
+	private int indexOf(ItemStack stack) {
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			if (inventory.getItem(i) == stack) return i;
+		}
+		return 0;
+	}
+
+	private static boolean isTool(ItemStack stack) {
+		if (stack == null || stack.isEmpty()) return false;
+		String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString().toLowerCase(Locale.ROOT);
+		for (String word : TOOL_WORDS) {
+			if (id.contains(word)) return true;
+		}
+		return false;
+	}
+
+	private static boolean isBroken(ItemStack stack) {
+		return stack.isDamageableItem() && stack.getMaxDamage() > 0
+				&& stack.getDamageValue() >= stack.getMaxDamage();
+	}
+
+	/** Higher is better; 0 means "not the right implement for this block". */
+	private static int scores(ItemStack stack, String blockId) {
+		String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString().toLowerCase(Locale.ROOT);
+		int tier = 0;
+		for (int t = 0; t < TIER_RANK.size(); t++) {
+			if (id.contains(TIER_RANK.get(t))) {
+				tier = TIER_RANK.size() - t;
+				break;
+			}
+		}
+		int score = tier;
+		String b = blockId == null ? "" : blockId.toLowerCase(Locale.ROOT);
+		boolean logLike = b.contains("log") || b.contains("planks") || b.contains("fence") || b.contains("wood");
+		boolean stoneLike = b.contains("stone") || b.contains("ore") || b.contains("deepslate")
+				|| b.contains("cobble") || b.contains("granite") || b.contains("diorite") || b.contains("andesite");
+		boolean dirtLike = b.contains("dirt") || b.contains("grass") || b.contains("sand")
+				|| b.contains("gravel") || b.contains("clay");
+		if (logLike && id.contains("axe")) score += 8;
+		else if (stoneLike && id.contains("pickaxe")) score += 8;
+		else if (dirtLike && id.contains("shovel")) score += 8;
+		else if (id.contains("sword")) score += 1;
+		return score;
+	}
+
+	private void wearTool(ItemStack tool) {
+		if (tool == null || tool.isEmpty() || !tool.isDamageableItem()) return;
+		try {
+			tool.hurtAndBreak(1, this, InteractionHand.MAIN_HAND);
+			if (isBroken(tool)) {
+				tool.shrink(1);
+				if (tool.isEmpty()) this.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+			}
+		} catch (Exception e) {
+			Cobbie.LOGGER.debug("Cobbie tool wear skipped: {}", e.toString());
+		}
+	}
+
+	// ==================================================================
+	// Helpers
+	// ==================================================================
+
+	private static String blockId(BlockState state) {
+		return BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+	}
+
+	private static String describe(BlockPos pos) {
+		return pos == null ? "?" : (pos.getX() + " " + pos.getY() + " " + pos.getZ());
+	}
+
+	/** A free block next to the target, with ground under it, that he can stand on and reach. */
+	private BlockPos standingSpotNear(BlockPos target) {
+		BlockPos[] candidates = {
+				target.east(), target.west(), target.north(), target.south(),
+				target.east().above(), target.west().above(), target.north().above(), target.south().above(),
+				target.above(),
+				target.below().east(), target.below().west(), target.below().north(), target.below().south()
+		};
+		BlockPos best = null;
+		double bestDist = Double.MAX_VALUE;
+		for (BlockPos feet : candidates) {
+			BlockPos ground = feet.below();
+			if (!level().isLoaded(feet) || !level().isLoaded(ground)) continue;
+			if (level().getBlockState(ground).isAir()) continue;      // needs something to stand on
+			if (!level().getBlockState(feet).isAir()) continue;        // needs headroom
+			if (!level().getBlockState(feet.above()).isAir()) continue;
+			double d = this.blockPosition().distSqr(feet);
+			if (d < bestDist) {
+				bestDist = d;
+				best = feet;
+			}
+		}
+		return best;
+	}
+
+	// ==================================================================
+	// Persistence
+	// ==================================================================
+
+	@Override
+	protected void addAdditionalSaveData(ValueOutput out) {
+		super.addAdditionalSaveData(out);
+		out.putBoolean("CobbieFollowing", following);
+		if (ownerUuid != null) {
+			out.putLong("CobbieOwnerMost", ownerUuid.getMostSignificantBits());
+			out.putLong("CobbieOwnerLeast", ownerUuid.getLeastSignificantBits());
+		}
+		List<ItemStack> items = new ArrayList<>();
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			items.add(inventory.getItem(i).copy());
+		}
+		try {
+			out.store("CobbieItems", ITEM_LIST, items);
+		} catch (Exception e) {
+			Cobbie.LOGGER.warn("Cobbie could not save his bag: {}", e.toString());
+		}
+	}
+
+	@Override
+	protected void readAdditionalSaveData(ValueInput in) {
+		super.readAdditionalSaveData(in);
+		following = in.getBooleanOr("CobbieFollowing", true);
+
+		Optional<Long> most = in.getLong("CobbieOwnerMost");
+		Optional<Long> least = in.getLong("CobbieOwnerLeast");
+		if (most.isPresent() && least.isPresent()) {
+			ownerUuid = new UUID(most.get(), least.get());
+		}
+
+		try {
+			List<ItemStack> items = in.read("CobbieItems", ITEM_LIST).orElse(List.of());
+			for (int i = 0; i < inventory.getContainerSize(); i++) {
+				ItemStack stack = i < items.size() ? items.get(i) : null;
+				inventory.setItem(i, stack == null || stack.isEmpty() ? ItemStack.EMPTY : stack.copy());
+			}
+		} catch (Exception e) {
+			Cobbie.LOGGER.warn("Cobbie's saved bag could not be read: {}", e.toString());
+		}
 	}
 }

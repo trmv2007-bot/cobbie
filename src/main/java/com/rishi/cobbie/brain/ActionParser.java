@@ -5,71 +5,271 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.rishi.cobbie.action.ActionIntent;
+import com.rishi.cobbie.action.ActionVocabulary;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 
 /**
- * Parses the LLM's reply into Cobbie's action format.
+ * Turns one raw LLM reply into a validated, ordered action plan.
  *
- * Contract (mirrors Verity's, which we learned the hard way):
- *   {"answer": "what Cobbie says", "actions": [{"action": "...", "target": "...", "x": 0, "y": 0, "z": 0, "data": ""}]}
- *
- * NEVER-SILENT RULE: if parsing fails for ANY reason, return a fallback
- * ActionPlan with the raw text as the answer and a single "answer" action.
- * Cobbie must never go quiet — that was Verity's #1 failure.
+ * <p>This is the hostile-input boundary: a local model will happily answer with prose, markdown
+ * fences, half a JSON object, invented verbs or {@code "x": "ten"}. Rules:
+ * <ul>
+ *   <li>Brace matching is depth- and string-aware, so trailing prose or an early {@code {} in
+ *       the answer text cannot truncate or over-extend the payload.</li>
+ *   <li>Every verb must be in {@link ActionVocabulary}; anything else is dropped <em>and
+ *       reported</em> in {@link ActionPlan#problems()} so the model can be told next turn.</li>
+ *   <li>{@code walk-to}/{@code mine}/{@code place} must actually carry numeric x, y and z — no
+ *       silent defaulting to 0,0,0 (which in 0.4.0 meant mining bedrock at world origin).</li>
+ *   <li>At most {@link ActionVocabulary#MAX_ACTIONS} actions; extras are counted as a problem.</li>
+ *   <li>Parsing never throws and never leaves Cobbie mute: worst case is his raw text as the
+ *       answer with a single {@code answer} action.</li>
+ * </ul>
  */
 public final class ActionParser {
 
-	public record ActionPlan(String answer, java.util.List<ActionIntent> actions) {}
+	/** Coordinate sanity. y is deliberately generous to cover the Nether/End height ranges. */
+	private static final int MIN_Y = -128;
+	private static final int MAX_Y = 512;
+	private static final int MAX_HORIZON = 30_000_000;
+	private static final int MAX_ANSWER_CHARS = 900;
+	private static final int MAX_TARGET_CHARS = 120;
+
+	/**
+	 * @param answer   what Cobbie says out loud (never blank)
+	 * @param actions  validated intents, in the order the model asked for them
+	 * @param problems what was rejected, empty when the reply was clean
+	 */
+	public record ActionPlan(String answer, List<ActionIntent> actions, List<String> problems) {
+
+		public ActionPlan {
+			actions = actions == null ? List.of() : List.copyOf(actions);
+			problems = problems == null ? List.of() : List.copyOf(problems);
+		}
+
+		public boolean hasWorldAction() {
+			for (ActionIntent a : actions) {
+				if (ActionVocabulary.isWorldChanging(a.action())) return true;
+			}
+			return false;
+		}
+
+		/** Feed these back to the model so it can correct itself instead of guessing. */
+		public String problemsAsText() {
+			return problems.isEmpty() ? "" : String.join("; ", problems);
+		}
+	}
 
 	private ActionParser() {}
 
 	public static ActionPlan parse(String llmResponse) {
 		if (llmResponse == null || llmResponse.isBlank()) {
-			return new ActionPlan("...", java.util.List.of(new ActionIntent("answer", "", 0, 0, 0, "")));
+			return new ActionPlan("...", List.of(silentAnswer()), List.of("the model returned nothing"));
 		}
 
 		String json = extractJson(llmResponse);
 		if (json == null) {
-			return new ActionPlan(llmResponse.trim(), java.util.List.of(new ActionIntent("answer", "", 0, 0, 0, "")));
+			// No JSON at all: plain chatter. Not an error, but no actions either.
+			return new ActionPlan(clean(llmResponse), List.of(silentAnswer()), List.of());
 		}
 
+		JsonObject root;
 		try {
-			JsonObject root = JsonParser.parseString(json).getAsJsonObject();
-			String answer = root.has("answer") && !root.get("answer").isJsonNull()
-					? root.get("answer").getAsString()
-					: llmResponse.trim();
+			JsonElement parsed = JsonParser.parseString(json);
+			if (!parsed.isJsonObject()) {
+				return new ActionPlan(clean(llmResponse), List.of(silentAnswer()),
+						List.of("reply was JSON but not an object"));
+			}
+			root = parsed.getAsJsonObject();
+		} catch (Exception malformed) {
+			return new ActionPlan(clean(llmResponse), List.of(silentAnswer()),
+					List.of("malformed JSON (" + malformed.getClass().getSimpleName() + ")"));
+		}
 
-			java.util.List<ActionIntent> actions = new java.util.ArrayList<>();
-			if (root.has("actions") && root.get("actions").isJsonArray()) {
-				JsonArray arr = root.getAsJsonArray("actions");
-				for (JsonElement el : arr) {
-					if (el.isJsonObject()) {
-						JsonObject ao = el.getAsJsonObject();
-						String action = ao.has("action") ? ao.get("action").getAsString() : "answer";
-						String target = ao.has("target") ? ao.get("target").getAsString() : "";
-						int x = ao.has("x") ? ao.get("x").getAsInt() : 0;
-						int y = ao.has("y") ? ao.get("y").getAsInt() : 0;
-						int z = ao.has("z") ? ao.get("z").getAsInt() : 0;
-						String data = ao.has("data") ? ao.get("data").getAsString() : "";
-						actions.add(new ActionIntent(action, target, x, y, z, data));
-					}
-				}
+		String answer = clean(root.has("answer") && root.get("answer").isJsonPrimitive()
+				? root.get("answer").getAsString()
+				: llmResponse);
+
+		List<ActionIntent> actions = new ArrayList<>();
+		List<String> problems = new ArrayList<>();
+
+		JsonElement actionsEl = root.get("actions");
+		if (actionsEl == null || actionsEl.isJsonNull()) {
+			actions.add(silentAnswer());
+			return new ActionPlan(answer, actions, problems);
+		}
+		if (!actionsEl.isJsonArray()) {
+			problems.add("\"actions\" must be an array");
+			actions.add(silentAnswer());
+			return new ActionPlan(answer, actions, problems);
+		}
+
+		JsonArray arr = actionsEl.getAsJsonArray();
+		if (arr.size() > ActionVocabulary.MAX_ACTIONS) {
+			problems.add("asked for " + arr.size() + " actions, capped at " + ActionVocabulary.MAX_ACTIONS);
+		}
+		int index = 0;
+		for (JsonElement el : arr) {
+			index++;
+			if (index > ActionVocabulary.MAX_ACTIONS) break;
+			if (!el.isJsonObject()) {
+				problems.add("action #" + index + " is not an object");
+				continue;
 			}
-			if (actions.isEmpty()) {
-				actions.add(new ActionIntent("answer", "", 0, 0, 0, ""));
+			JsonObject o = el.getAsJsonObject();
+			ActionIntent intent = toIntent(o, index, problems);
+			if (intent != null) actions.add(intent);
+		}
+
+		if (actions.isEmpty()) {
+			actions.add(silentAnswer());
+			if (problems.isEmpty()) problems.add("no usable actions in reply");
+		}
+		return new ActionPlan(answer, actions, problems);
+	}
+
+	// ---- one action entry ----
+
+	private static ActionIntent toIntent(JsonObject o, int index, List<String> problems) {
+		JsonElement nameEl = o.get("action");
+		if (nameEl == null || !nameEl.isJsonPrimitive()) {
+			problems.add("action #" + index + " has no \"action\" name");
+			return null;
+		}
+		String raw = nameEl.getAsString();
+		String verb = ActionVocabulary.normalise(raw);
+		if (verb == null) {
+			problems.add("action #" + index + " uses unknown verb \"" + trim(raw, 40) + "\"");
+			return null;
+		}
+
+		String target = "";
+		JsonElement targetEl = o.get("target");
+		if (targetEl != null && targetEl.isJsonPrimitive()) {
+			try {
+				target = trim(targetEl.getAsString(), MAX_TARGET_CHARS);
+			} catch (Exception e) {
+				problems.add("action #" + index + " has a non-text target");
 			}
-			return new ActionPlan(answer, actions);
+		}
+		if ((verb.equals(ActionVocabulary.PLACE) || verb.equals(ActionVocabulary.ATTACK)
+				|| verb.equals(ActionVocabulary.CHAT)) && target.isBlank()) {
+			problems.add("action #" + index + " (" + verb + ") needs a non-empty \"target\"");
+			return null;
+		}
+
+		int x = 0, y = 0, z = 0;
+		if (ActionVocabulary.needsPosition(verb)) {
+			Integer px = coord(o, "x", index, problems);
+			Integer py = coord(o, "y", index, problems);
+			Integer pz = coord(o, "z", index, problems);
+			if (px == null || py == null || pz == null) return null;
+			if (py < MIN_Y || py > MAX_Y) {
+				problems.add("action #" + index + " has y=" + py + " outside the world");
+				return null;
+			}
+			if (Math.abs(px) > MAX_HORIZON || Math.abs(pz) > MAX_HORIZON) {
+				problems.add("action #" + index + " has coordinates outside the map");
+				return null;
+			}
+			x = px;
+			y = py;
+			z = pz;
+			// (0,0,0) is legal but almost always a model mistake — say so without blocking it.
+			if (x == 0 && y == 0 && z == 0) {
+				problems.add("action #" + index + " targets exactly 0 0 0, which is usually wrong");
+			}
+		}
+
+		String data = "";
+		JsonElement dataEl = o.get("data");
+		if (dataEl != null && dataEl.isJsonPrimitive()) {
+			data = trim(dataEl.getAsString(), MAX_TARGET_CHARS);
+		}
+		return new ActionIntent(verb, target, x, y, z, data);
+	}
+
+	/** Required numeric coordinate, or null (with a recorded problem) when absent/unusable. */
+	private static Integer coord(JsonObject o, String key, int index, List<String> problems) {
+		JsonElement el = o.get(key);
+		if (el == null || el.isJsonNull()) {
+			problems.add("action #" + index + " is missing coordinate \"" + key + "\"");
+			return null;
+		}
+		try {
+			if (el.getAsJsonPrimitive().isNumber()) return el.getAsInt();
+			// Models love quoting numbers.
+			return Integer.valueOf(el.getAsString().trim());
 		} catch (Exception e) {
-			return new ActionPlan(llmResponse.trim(), java.util.List.of(new ActionIntent("answer", "", 0, 0, 0, "")));
+			problems.add("action #" + index + " has a non-numeric \"" + key + "\"");
+			return null;
 		}
 	}
 
-	/** Find the outermost {...} block, ignoring any prose around it. */
-	private static String extractJson(String text) {
-		int start = text.indexOf('{');
-		int end = text.lastIndexOf('}');
-		if (start >= 0 && end > start) {
-			return text.substring(start, end + 1);
+	// ---- helpers ----
+
+	private static ActionIntent silentAnswer() {
+		return new ActionIntent(ActionVocabulary.ANSWER, "", 0, 0, 0, "");
+	}
+
+	private static String clean(String text) {
+		if (text == null) return "...";
+		String s = text.replace("\r", " ").trim();
+		// Some models wrap everything in a code fence even when told not to.
+		s = s.replaceAll("(?s)^```[a-zA-Z]*\\s*", "").replaceAll("(?s)\\s*```$", "").trim();
+		if (s.isEmpty()) return "...";
+		s = s.replaceAll("\\s+", " ");
+		return s.length() > MAX_ANSWER_CHARS ? s.substring(0, MAX_ANSWER_CHARS) + "..." : s;
+	}
+
+	private static String trim(String s, int max) {
+		if (s == null) return "";
+		String v = s.trim();
+		return v.length() > max ? v.substring(0, max) : v;
+	}
+
+	/**
+	 * First balanced {@code {...}} in the text, ignoring braces inside JSON strings.
+	 * Returns null when there is no complete object.
+	 */
+	static String extractJson(String text) {
+		if (text == null) return null;
+		String s = text;
+		int start = s.indexOf('{');
+		if (start < 0) return null;
+
+		int depth = 0;
+		boolean inString = false;
+		boolean escaped = false;
+		for (int i = start; i < s.length(); i++) {
+			char c = s.charAt(i);
+			if (inString) {
+				if (escaped) {
+					escaped = false;
+				} else if (c == '\\') {
+					escaped = true;
+				} else if (c == '"') {
+					inString = false;
+				}
+				continue;
+			}
+			if (c == '"') {
+				inString = true;
+			} else if (c == '{') {
+				depth++;
+			} else if (c == '}') {
+				depth--;
+				if (depth == 0) return s.substring(start, i + 1);
+			}
 		}
+		// Unbalanced: try the fenced-object case where the model cut off mid-stream.
 		return null;
+	}
+
+	/** Lower-case verb list, used in the prompt and by tests. */
+	public static String allowedVerbs() {
+		return ActionVocabulary.describe().toLowerCase(Locale.ROOT);
 	}
 }

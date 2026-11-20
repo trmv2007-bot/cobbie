@@ -1,121 +1,149 @@
 package com.rishi.cobbie.command;
 
+import com.mojang.brigadier.context.CommandContext;
 import com.rishi.cobbie.Cobbie;
+import com.rishi.cobbie.brain.CobbieBrain;
+import com.rishi.cobbie.brain.OllamaDiscovery;
 import com.rishi.cobbie.config.CobbieConfig;
 import com.rishi.cobbie.entity.CobbieEntities;
+import com.rishi.cobbie.entity.CobbieEntity;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.EntitySpawnReason;
-import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.level.entity.EntityTypeTest;
 import net.minecraft.world.phys.Vec3;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
-import java.util.concurrent.CompletableFuture;
+
+import java.util.List;
 
 /**
- * /spawncobbie command — spawns Cobbie near the player, assigns the spawning
- * player as owner, shows "Connecting..." above his head while the LLM is being
- * reached, then says "I'm Ready To Play" once the AI model responds.
+ * {@code /spawncobbie} — summon your companion and connect him to the AI.
+ *
+ * <p>Sequence, and why it is ordered this way: the entity is created and owned first (so he exists
+ * even if the AI is down), then the configured provider is probed <em>asynchronously</em> through
+ * {@link OllamaDiscovery} — the same code path {@code /cobbie status} uses, so the two can never
+ * disagree. While that is in flight his nameplate reads "Connecting...". Every nameplate change and
+ * chat message is pushed back onto the server thread; nothing here touches the world from a worker
+ * thread.
+ *
+ * <p>The nameplate after the probe is honest about which of the four things happened: model ready,
+ * server reachable but model unconfirmed, model missing (with the exact tag to configure and what
+ * is actually installed), or server unreachable.
  */
-public class SpawnCobbieCommand {
+public final class SpawnCobbieCommand {
+
+	private SpawnCobbieCommand() {}
 
 	public static void register() {
-		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
-			dispatcher.register(Commands.literal("spawncobbie").executes(ctx -> {
-				CommandSourceStack source = ctx.getSource();
-				if (!(source.getEntity() instanceof ServerPlayer player)) {
-					source.sendFailure(Component.literal("Only players can use this command."));
-					return 0;
-				}
+		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
+				dispatcher.register(Commands.literal("spawncobbie").executes(SpawnCobbieCommand::run)));
+	}
 
-				try {
-					var level = player.level();
-					var pos = player.position();
+	private static int run(CommandContext<CommandSourceStack> ctx) {
+		CommandSourceStack source = ctx.getSource();
+		ServerPlayer player = source.getPlayer();
+		if (player == null) {
+			source.sendFailure(Component.literal("Only a player can spawn a companion."));
+			return 0;
+		}
+		if (!(player.level() instanceof ServerLevel level)) {
+			source.sendFailure(Component.literal("No server world to spawn into."));
+			return 0;
+		}
 
-					// Spawn Cobbie near the player
-					com.rishi.cobbie.entity.CobbieEntity cobbie = CobbieEntities.COBBIE.create((ServerLevel) level, EntitySpawnReason.COMMAND);
-					if (cobbie == null) {
-						source.sendFailure(Component.literal("Failed to create Cobbie entity."));
-						return 0;
-					}
+		String name = player.getGameProfile().name();
+		if (!CobbieConfig.mayUse(name)) {
+			source.sendFailure(Component.literal("Cobbie is restricted to the players in "
+					+ "allowed_players (config/cobbie.json)."));
+			return 0;
+		}
 
-					// Assign the spawning player as owner
-					cobbie.setOwner(player.getUUID());
+		// Duplicate / limit protection: no stacking a horde of companions on one owner.
+		int limit = Math.max(1, CobbieConfig.getMaxCobbiesPerPlayer());
+		List<? extends CobbieEntity> already = level.getEntities(
+				EntityTypeTest.forClass(CobbieEntity.class), e -> player.getUUID().equals(e.getOwner()));
+		if (already.size() >= limit) {
+			source.sendFailure(Component.literal("You already have " + already.size()
+					+ " companion(s) — the limit is " + limit + ". Talk to him instead."));
+			return 0;
+		}
 
-					// Set connecting status above head
-					cobbie.setCustomName(Component.literal("§eConnecting..."));
-					cobbie.setCustomNameVisible(true);
-					cobbie.setPos(pos.x + 2.0, pos.y, pos.z + 2.0);
+		CobbieEntity cobbie = CobbieEntities.COBBIE.create(level, EntitySpawnReason.COMMAND);
+		if (cobbie == null) {
+			source.sendFailure(Component.literal("The game refused to create the companion entity."));
+			return 0;
+		}
 
-					if (!((ServerLevel) level).addFreshEntity(cobbie)) {
-						source.sendFailure(Component.literal("Failed to spawn Cobbie in the world."));
-						return 0;
-					}
+		cobbie.setOwner(player.getUUID());
+		cobbie.startFollowing();
+		cobbie.setCustomName(Component.literal("Cobbie"));
+		cobbie.setCustomNameVisible(true);
+		Vec3 at = player.position();
+		cobbie.setPos(at.x + 2.0, at.y, at.z + 2.0);
+		if (!level.addFreshEntity(cobbie)) {
+			source.sendFailure(Component.literal("Could not place the companion in this world."));
+			return 0;
+		}
+		Cobbie.LOGGER.info("Cobbie spawned, owned by {}", name);
+		player.sendSystemMessage(Component.literal("§e[Cobbie] §7Connecting to the AI..."));
 
-					Cobbie.LOGGER.info("Cobbie spawned and owned by {}", player.getName().getString());
+		connectAsync(cobbie, player, level.getServer());
+		return 1;
+	}
 
-					// Test LLM connection asynchronously (Ollama /api/tags)
-					testLlmConnection().thenAccept(connected -> {
-						if (connected && cobbie.isAlive()) {
-							cobbie.setCustomName(Component.literal("Cobbie"));
-							cobbie.setCustomNameVisible(true);
-							player.sendSystemMessage(Component.literal("§aI'm Ready To Play"));
-							Cobbie.LOGGER.info("Cobbie spawned and LLM connected for player {}", player.getName().getString());
-						} else if (cobbie.isAlive()) {
-							cobbie.setCustomName(Component.literal("§cCobbie (LLM offline)"));
-							cobbie.setCustomNameVisible(true);
-							player.sendSystemMessage(Component.literal("§cCobbie spawned but LLM is not reachable. Check config/cobbie.json"));
-							Cobbie.LOGGER.warn("Cobbie spawned but LLM unreachable for player {}", player.getName().getString());
-						}
-					}).exceptionally(ex -> {
-						Cobbie.LOGGER.warn("LLM connection test threw exception: {}", ex.getMessage());
-						if (cobbie.isAlive()) {
-							cobbie.setCustomName(Component.literal("§cCobbie (LLM error)"));
-							cobbie.setCustomNameVisible(true);
-						}
-						return null;
-					});
-
-					return 1;
-				} catch (Exception e) {
-					Cobbie.LOGGER.error("Cobbie spawn command failed", e);
-					source.sendFailure(Component.literal("§cError: " + e.getMessage()));
-					return 0;
-				}
-			}));
+	/** Probe the configured provider off-thread, then report through the nameplate + chat. */
+	private static void connectAsync(CobbieEntity cobbie, ServerPlayer player, MinecraftServer server) {
+		cobbie.setCustomName(Component.literal("§eConnecting..."));
+		OllamaDiscovery.probeConfiguredAsync().thenAccept(probe -> {
+			CobbieBrain.noteProbe(probe);
+			server.execute(() -> apply(cobbie, player, probe));
+		}).exceptionally(ex -> {
+			Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+			OllamaDiscovery.Probe failed = new OllamaDiscovery.Probe(
+					com.rishi.cobbie.brain.ConnectionState.REQUEST_FAILED, List.of(), null, cause.toString());
+			server.execute(() -> apply(cobbie, player, failed));
+			return null;
 		});
 	}
 
-	/** Ping the LLM base URL via GET /api/tags to check connectivity. */
-	private static CompletableFuture<Boolean> testLlmConnection() {
-		return CompletableFuture.supplyAsync(() -> {
-			try {
-				String url = CobbieConfig.getBaseUrl();
-				if (url == null || url.isBlank()) return false;
-				if (!url.endsWith("/")) url = url + "/";
-				url = url + "api/tags";
+	private static void apply(CobbieEntity cobbie, ServerPlayer player, OllamaDiscovery.Probe probe) {
+		if (cobbie.isRemoved() || player.isRemoved()) return;
 
-				HttpClient client = HttpClient.newBuilder()
-						.connectTimeout(Duration.ofSeconds(CobbieConfig.getConnectTimeoutSeconds()))
-						.build();
-				HttpRequest request = HttpRequest.newBuilder()
-						.uri(URI.create(url))
-						.timeout(Duration.ofSeconds(CobbieConfig.getReadTimeoutSeconds()))
-						.GET()
-						.build();
-				HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-				return response.statusCode() == 200;
-			} catch (Exception e) {
-				Cobbie.LOGGER.warn("LLM connection test failed: {}", e.getMessage());
-				return false;
+		switch (probe.state()) {
+			case MODEL_AVAILABLE -> {
+				cobbie.setCustomName(Component.literal("§eCobbie"));
+				cobbie.setCustomNameVisible(true);
+				cobbie.wave();
+				player.sendSystemMessage(Component.literal("§aI'm Ready To Play"));
+				player.sendSystemMessage(Component.literal("§7(model " + probe.matchedModel() + ")"));
 			}
-		});
+			case CONNECTED -> {
+				cobbie.setCustomName(Component.literal("§6Cobbie (model unconfirmed)"));
+				player.sendSystemMessage(Component.literal("§6" + probe.describe()
+						+ ". I can still try to talk — set \"model\" in config/cobbie.json if I stay quiet."));
+			}
+			case MODEL_MISSING -> {
+				cobbie.setCustomName(Component.literal("§6Cobbie (model missing)"));
+				player.sendSystemMessage(Component.literal("§6My configured model \""
+						+ CobbieConfig.getModel() + "\" is not installed."));
+				player.sendSystemMessage(Component.literal("§7Installed: "
+						+ (probe.models().isEmpty() ? "none" : String.join(", ", probe.models()))));
+				player.sendSystemMessage(Component.literal("§7Set \"model\" to one of those, or run: "
+						+ "ollama pull " + CobbieConfig.getModel()));
+			}
+			default -> {
+				cobbie.setCustomName(Component.literal("§cCobbie (LLM offline)"));
+				player.sendSystemMessage(Component.literal("§cCobbie is here, but the AI is unreachable — "
+						+ probe.describe()));
+				player.sendSystemMessage(Component.literal("§7Check Ollama is running on "
+						+ CobbieConfig.getBaseUrl() + " (ollama serve), then /cobbie reload"));
+			}
+		}
+		Cobbie.LOGGER.info("Cobbie connection state for {}: {} ({})",
+				player.getGameProfile().name(), probe.state(), probe.error());
 	}
 }

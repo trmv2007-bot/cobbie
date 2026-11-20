@@ -1,74 +1,154 @@
 package com.rishi.cobbie.brain;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.rishi.cobbie.Cobbie;
 import com.rishi.cobbie.config.CobbieConfig;
-import com.google.gson.*;
+
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
 
 /**
- * Ollama connectivity and model discovery through GET /api/tags.
- * Verifies the configured model is installed before reporting the AI as ready.
+ * The ONE connection-probe implementation in the mod.
+ *
+ * <p>Everything that needs to know "is the AI reachable, and is my model installed" calls
+ * {@link #probeConfiguredAsync()} — the spawn command, {@code /cobbie status} and the brain's
+ * health tracking all share it, so they can never disagree. Provider-aware: Ollama lists models at
+ * {@code GET /api/tags} ({@code models[].name}), OpenAI-compatible servers at
+ * {@code GET /v1/models} ({@code data[].id}).
+ *
+ * <p>A probe must never run on the server thread — use the async form from game code.
  */
 public final class OllamaDiscovery {
 
-	private static final Gson GSON = new Gson();
+	/** Outcome of one probe. */
+	public record Probe(ConnectionState state, List<String> models, String matchedModel, String error) {
+
+		public boolean healthy() {
+			return state.healthy();
+		}
+
+		public boolean modelInstalled() {
+			return state == ConnectionState.MODEL_AVAILABLE;
+		}
+
+		/** Short, honest line for chat. Never contains a key. */
+		public String describe() {
+			return switch (state) {
+				case MODEL_AVAILABLE -> "AI ready — model " + matchedModel + " is loaded on " + models.size() + " installed model(s)";
+				case CONNECTED -> "AI reachable, but I could not confirm my model is installed";
+				case MODEL_MISSING -> "AI reachable but my model is not installed" + (models.isEmpty()
+						? " (no models found — try: ollama pull " + CobbieConfig.getModel() + ")"
+						: " — installed: " + String.join(", ", models));
+				case DISCONNECTED -> "AI server not configured";
+				case CONNECTING -> "checking the AI server...";
+				case REQUEST_FAILED -> "AI request failed: " + (error == null ? "unknown reason" : error);
+			};
+		}
+	}
+
+	private static final Probe NOT_CONFIGURED =
+			new Probe(ConnectionState.DISCONNECTED, List.of(), null, "no base URL configured");
 
 	private OllamaDiscovery() {}
 
-	/** Result of a discovery probe. */
-	public record DiscoveryResult(boolean connected, List<String> models, boolean modelFound, String error) {}
+	/** Probe using whatever is currently in {@link CobbieConfig}. Off the game thread. */
+	public static CompletableFuture<Probe> probeConfiguredAsync() {
+		return CompletableFuture.supplyAsync(() -> probeConfigured());
+	}
 
-	/** Probe the Ollama server for connectivity and model list. */
-	public static DiscoveryResult discover() {
-		String baseUrl = CobbieConfig.getBaseUrl();
-		if (baseUrl == null || baseUrl.isBlank()) {
-			return new DiscoveryResult(false, List.of(), false, "no base URL configured");
-		}
-		if (!baseUrl.endsWith("/")) baseUrl = baseUrl + "/";
+	/** Blocking probe against the live config. Call only from a worker thread. */
+	public static Probe probeConfigured() {
+		return probe(CobbieConfig.getBaseUrl(), CobbieConfig.getProvider(), CobbieConfig.getModel(),
+				CobbieConfig.getApiKey(), CobbieConfig.getConnectTimeoutSeconds(),
+				CobbieConfig.getReadTimeoutSeconds());
+	}
 
-		String model = CobbieConfig.getModel();
+	/**
+	 * Blocking probe against explicit settings.
+	 *
+	 * <p>{@link ConnectionState#CONNECTED} means "server answered"; only
+	 * {@link ConnectionState#MODEL_AVAILABLE} means "and my model is there". Never substitutes a
+	 * different model just because one exists.
+	 */
+	public static Probe probe(String baseUrl, String provider, String model, String apiKey,
+			int connectTimeoutSeconds, int readTimeoutSeconds) {
+		if (baseUrl == null || baseUrl.isBlank()) return NOT_CONFIGURED;
 
-		HttpClient client = HttpClient.newBuilder()
-				.connectTimeout(Duration.ofSeconds(CobbieConfig.getConnectTimeoutSeconds()))
-				.build();
+		String base = LlmClient.origin(baseUrl) + "/";   // same paste-safe normaliser the client uses
+		String prov = provider == null || provider.isBlank() ? "ollama" : provider.trim().toLowerCase(Locale.ROOT);
+		String url = base + (prov.startsWith("openai") ? "v1/models" : "api/tags");
 
 		try {
-			HttpRequest request = HttpRequest.newBuilder()
-					.uri(URI.create(baseUrl + "api/tags"))
-					.timeout(Duration.ofSeconds(Math.max(5, CobbieConfig.getConnectTimeoutSeconds())))
-					.GET()
+			HttpClient client = HttpClient.newBuilder()
+					.connectTimeout(Duration.ofSeconds(Math.max(1, connectTimeoutSeconds)))
 					.build();
-
-			HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-
-			if (response.statusCode() != 200) {
-				return new DiscoveryResult(false, List.of(), false,
-						"HTTP " + response.statusCode());
+			HttpRequest.Builder req = HttpRequest.newBuilder()
+					.uri(URI.create(url))
+					.timeout(Duration.ofSeconds(Math.max(2, readTimeoutSeconds)))
+					.GET();
+			if (apiKey != null && !apiKey.isBlank()) {
+				req.header("Authorization", "Bearer " + apiKey);
+			}
+			HttpResponse<String> resp = client.send(req.build(), HttpResponse.BodyHandlers.ofString());
+			if (resp.statusCode() != 200) {
+				return new Probe(ConnectionState.REQUEST_FAILED, List.of(), null,
+						"HTTP " + resp.statusCode() + " from " + url);
 			}
 
-			JsonObject root = JsonParser.parseString(response.body()).getAsJsonObject();
-			JsonArray modelsArray = root.getAsJsonArray("models");
-			List<String> models = new ArrayList<>();
-			if (modelsArray != null) {
-				for (JsonElement el : modelsArray) {
-					JsonObject obj = el.getAsJsonObject();
-					String name = obj.has("name") ? obj.get("name").getAsString() : "";
-					if (!name.isEmpty()) models.add(name);
+			List<String> models = parseModelNames(resp.body(), prov);
+			if (models.isEmpty()) {
+				// Reachable server, nothing listed (or an unparsable body): say so, don't guess.
+				return new Probe(ConnectionState.CONNECTED, List.of(), null,
+						"server answered but listed no models");
+			}
+			String match = ConnectionState.findModel(model, models);
+			if (match == null) {
+				return new Probe(ConnectionState.MODEL_MISSING, models, null,
+						"configured model '" + model + "' is not installed");
+			}
+			return new Probe(ConnectionState.MODEL_AVAILABLE, models, match, null);
+		} catch (Exception e) {
+			String msg = e.getClass().getSimpleName() + ": " + e.getMessage();
+			Cobbie.LOGGER.warn("Cobbie AI probe failed against {}: {}", url, msg);
+			return new Probe(ConnectionState.DISCONNECTED, List.of(), null, msg);
+		}
+	}
+
+	/** {@code models[].name} for Ollama, {@code data[].id} for OpenAI-compatible servers. */
+	static List<String> parseModelNames(String body, String provider) {
+		List<String> out = new ArrayList<>();
+		try {
+			JsonObject root = JsonParser.parseString(body).getAsJsonObject();
+			JsonArray arr = null;
+			String field = "name";
+			if (root.has("models") && root.get("models").isJsonArray()) {
+				arr = root.getAsJsonArray("models");
+			} else if (root.has("data") && root.get("data").isJsonArray()) {
+				arr = root.getAsJsonArray("data");
+				field = "id";
+			}
+			if (arr == null) return out;
+			for (JsonElement el : arr) {
+				if (!el.isJsonObject()) continue;
+				JsonObject o = el.getAsJsonObject();
+				if (o.has(field) && o.get(field).isJsonPrimitive()) {
+					String name = o.get(field).getAsString().trim();
+					if (!name.isEmpty() && !out.contains(name)) out.add(name);
 				}
 			}
-
-			boolean modelFound = models.contains(model);
-			return new DiscoveryResult(true, models, modelFound, null);
-
-		} catch (Exception e) {
-			Cobbie.LOGGER.warn("Ollama discovery failed: {}", e.getMessage());
-			return new DiscoveryResult(false, List.of(), false, e.getMessage());
+		} catch (Exception malformed) {
+			Cobbie.LOGGER.warn("Cobbie could not parse the model list: {}", malformed.toString());
 		}
+		return out;
 	}
 }
