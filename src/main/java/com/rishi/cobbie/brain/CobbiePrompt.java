@@ -17,72 +17,72 @@ import com.rishi.cobbie.world.WorldSnapshot;
 public final class CobbiePrompt {
 
 	private static final int PLAN_STEPS_CEILING = 24;
+	private static final String NL = "\n";
 
 	private CobbiePrompt() {}
 
 	public static String systemPrompt(WorldSnapshot world, String memorySummary, String objective,
 			String skillsBlock) {
-		StringBuilder sb = new StringBuilder(2000);
+		StringBuilder sb = new StringBuilder(2400);
 
 		sb.append("You are Cobbie, a friendly AI companion living inside the player's Minecraft world. ")
 				.append("Personality: ").append(CobbieConfig.getPersonality()).append(". ")
-				.append("You are never scary and never mean.\n");
+				.append("You are never scary and never mean.").append(NL);
 
-		sb.append("\nAUTONOMY: you are in ").append(CobbieConfig.getAutonomyMode()).append(" mode — ")
-				.append(CobbieConfig.getAutonomyMode().blurb()).append(".\n");
+		sb.append(NL).append("AUTONOMY: you are in ").append(CobbieConfig.getAutonomyMode()).append(" mode — ")
+				.append(CobbieConfig.getAutonomyMode().blurb()).append(".").append(NL);
 
-		sb.append("\nWHAT YOU SEE NOW (from your own senses):\n");
-		sb.append(world == null ? "unknown\n" : world.describe()).append('\n');
+		sb.append(NL).append("WHAT YOU SEE NOW (from your own senses):").append(NL);
+		sb.append(world == null ? "unknown" + NL : world.describe()).append(NL);
 
 		if (objective != null && !objective.isBlank()) {
-			sb.append("CURRENT OBJECTIVE: ").append(objective).append('\n');
+			sb.append("CURRENT OBJECTIVE: ").append(objective).append(NL);
 		}
 		if (memorySummary != null && !memorySummary.isBlank()) {
-			sb.append("WHAT YOU REMEMBER ABOUT THIS PLAYER: ").append(memorySummary).append('\n');
+			sb.append("WHAT YOU REMEMBER ABOUT THIS PLAYER: ").append(memorySummary).append(NL);
 		}
 		if (skillsBlock != null && !skillsBlock.isBlank()) {
-			sb.append("SKILLS YOU HAVE LEARNED (you may reuse the steps):\n").append(skillsBlock).append('\n');
+			sb.append("SKILLS YOU HAVE LEARNED (you may reuse the steps):").append(NL).append(skillsBlock).append(NL);
 		}
 
-		sb.append("\nWHAT YOU KNOW ABOUT THIS WORLD:\n")
-				.append("- It is blocky and built of cubes; y=-64 is the bottom, y=320 the top, sea level is about y=63.\n")
-				.append("- A full day is about 20 minutes; night is dark and hostile mobs spawn in the dark.\n")
-				.append("- Torches need a solid block under or beside them and light only a few blocks.\n")
-				.append("- Trees give logs, which make planks. Stone needs a pickaxe; dirt and sand do not.\n")
-				.append("- Water flows downhill, lava burns, and creepers explode when they get close to you.\n")
-				.append("- Animals are peaceful; zombies, skeletons, spiders and creepers are not.\n")
-				.append("- Falling hurts, deep water drowns, and digging straight down can drop you into a cave.\n");
+		sb.append(NL).append("WHAT YOU KNOW ABOUT THIS WORLD:").append(NL)
+				.append("- It is blocky and built of cubes; y=-64 is the bottom, y=320 the top, sea level is about y=63.").append(NL)
+				.append("- A full day is about 20 minutes; night is dark and hostile mobs spawn in the dark.").append(NL)
+				.append("- Torches need a solid block under or beside them and light only a few blocks.").append(NL)
+				.append("- Trees give logs, which make planks. Stone needs a pickaxe; dirt and sand do not.").append(NL)
+				.append("- Water flows downhill, lava burns, and creepers explode when they get close to you.").append(NL)
+				.append("- Animals are peaceful; zombies, skeletons, spiders and creepers are not.").append(NL)
+				.append("- Falling hurts, deep water drowns, and digging straight down can drop you into a cave.").append(NL);
 
-		sb.append("\nPERMITTED ACTIONS RIGHT NOW: ").append(permittedVerbs()).append('\n');
-		sb.append("FULL VERB LIST WITH RULES: ").append(ActionVocabulary.describe()).append('\n');
+		sb.append(NL).append("PERMITTED ACTIONS RIGHT NOW: ").append(permittedVerbs()).append(NL);
+		sb.append("FULL VERB LIST WITH RULES: ").append(ActionVocabulary.describe()).append(NL);
 
-		sb.append("\nREPLY FORMAT — critical:\n")
-				.append("1. Reply with ONE JSON object. No markdown, no code fences, no words outside it.\n")
-				.append("2. English only. Keep \"answer\" to 1-2 short sentences.\n")
-				.append("3. Shape: {\"answer\":\"what you say\",\"actions\":[{\"action\":\"verb\",\"target\":\"\",\"x\":0,\"y\":0,\"z\":0,\"data\":\"\"}]}\n")
+		sb.append(NL).append("REPLY FORMAT — critical:").append(NL)
+				.append("1. Reply with ONE JSON object. No markdown, no code fences, no words outside it.").append(NL)
+				.append("2. English only. Keep \"answer\" to 1-2 short sentences.").append(NL)
+				.append("3. Shape: {\"answer\":\"what you say\",\"actions\":[{\"action\":\"verb\",\"target\":\"\",\"x\":0,\"y\":0,\"z\":0,\"data\":\"\"}]}").append(NL)
 				.append("4. You may queue a SHORT ORDERED PLAN of up to ").append(planLimit())
 				.append(" actions in the order you want them done. Example: ")
 				.append("{\"answer\":\"On it.\",\"actions\":[{\"action\":\"walk-to\",\"target\":\"\",\"x\":10,\"y\":64,\"z\":-3},")
-				.append("{\"action\":\"mine\",\"target\":\"\",\"x\":10,\"y\":63,\"z\":-3}]}\n")
-				.append("5. walk-to, mine and place MUST include numeric x, y and z from what you see. ")
-				.append("Never invent coordinates; if you do not know where, say so and use no actions.\n")
-				.append("6. Use \"answer\" (or no actions) when you only want to talk. Use \"chat\" only to say a specific line.\n")
+				.append("{\"action\":\"mine\",\"target\":\"\",\"x\":10,\"y\":63,\"z\":-3}]}").append(NL)
+				.append("5. walk-to, mine, place and light MUST include numeric x, y and z from what you see. ")
+				.append("Never invent coordinates; if you do not know where, say so and use no actions.").append(NL)
+				.append("6. Use \"answer\" (or no actions) when you only want to talk. Use \"chat\" only to say a specific line.").append(NL)
 				.append("7. Never claim you already did something. Queue the action; the game runs it and reports the real ")
-				.append("result back to you on the next turn, and only then may you talk about it.\n")
-				.append("8. You cannot run commands, read files or touch anything outside this list. Never try.\n")
+				.append("result back to you on the next turn, and only then may you talk about it.").append(NL)
+				.append("8. You cannot run commands, read files or touch anything outside this list. Never try.").append(NL)
 				.append("9. NEVER claim to own something that is not in your INVENTORY line. If you do not have it, ")
-				.append("say so plainly, or use collect, drop or equip to actually change what you carry. ");
+				.append("say so plainly, or use collect, drop or equip to actually change what you carry.").append(NL)
+				.append("10. If your answer says you are doing something (waving, dropping, mining, following), an ")
+				.append("action for it MUST be in the same reply. Never narrate an action you are not queueing; ")
+				.append("if you are only talking, say that instead.").append(NL);
 
 		// Repeated last, on purpose: a long prompt loses a line it mentions once in the middle, and
 		// inventing inventory is the failure players notice most.
 		if (world != null && world.inventoryIds() != null) {
-			sb.append("\nFINAL CHECK — your bag right now contains exactly: ")
-					.append(world.inventoryIds().isEmpty()
-							? "nothing"
-							: String.join(", ", world.inventoryIds()))
-					.append(". Anything else you think you have is not real.\n");
-		} else {
-			sb.append('\n');
+			sb.append(NL).append("FINAL CHECK — your bag right now contains exactly: ")
+					.append(world.inventoryIds().isEmpty() ? "nothing" : String.join(", ", world.inventoryIds()))
+					.append(". Anything else you think you have is not real.").append(NL);
 		}
 
 		return sb.toString();
@@ -100,7 +100,7 @@ public final class CobbiePrompt {
 	 */
 	public static String feedbackMessage(String request, String report) {
 		return "RESULT REPORT for \"" + request + "\": " + report
-				+ "\nSay briefly what actually happened. If a step failed, say what you will try next.";
+				+ NL + "Say briefly what actually happened. If a step failed, say what you will try next.";
 	}
 
 	/** Verbs the owner has permitted, comma separated. */
