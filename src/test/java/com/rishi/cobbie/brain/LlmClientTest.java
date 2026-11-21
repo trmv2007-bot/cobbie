@@ -92,6 +92,33 @@ class LlmClientTest {
 		return future.get(10, TimeUnit.SECONDS);
 	}
 
+	// ---- reasoning leakage ----
+
+	@Test
+	void unterminatedThinkingBlockNeverReachesTheAnswer() throws Exception {
+		// Seen live on lfm2.5:8b once it had real world knowledge to reason about: the token limit
+		// cut the reply mid-thought, leaving "<​think>..." with no closing tag around the JSON.
+		reset(200, "{\"message\":{\"content\":\"<​think> We need to answer as Cobbie. "
+				+ "{\\\"answer\\\":\\\"Hello there!\\\",\\\"actions\\\":[]}\"}}");
+		LlmClient.Result r = await(ollama("", 1).completeOnce("system", "hi"));
+
+		assertTrue(r.success(), r.error());
+		assertFalse(r.content().contains("think"), "reasoning leaked: " + r.content());
+		assertFalse(r.content().contains("We need to answer"), "reasoning leaked: " + r.content());
+		assertTrue(r.content().startsWith("{"), "the JSON payload must survive: " + r.content());
+	}
+
+	@Test
+	void closedThinkingBlockIsRemovedEntirely() throws Exception {
+		reset(200, "{\"message\":{\"content\":\"<​think>private​ musings<​/think>"
+				+ "{\\\"answer\\\":\\\"Hi\\\",\\\"actions\\\":[]}\"}}");
+		LlmClient.Result r = await(ollama("", 1).completeOnce("system", "hi"));
+
+		assertTrue(r.success(), r.error());
+		assertFalse(r.content().contains("private"), "reasoning leaked: " + r.content());
+		assertTrue(r.content().contains("\"answer\""), r.content());
+	}
+
 	// ---- endpoint selection ----
 
 	@Test

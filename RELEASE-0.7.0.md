@@ -1,10 +1,10 @@
 # Cobbie 0.7.0 — lfm2.5:8b, a real settings screen, two new abilities, built-in skills
 
 Target: Minecraft Java **26.3**, Fabric Loader **0.19.5**, Fabric API **0.162.0+26.3**, Java **25**.
-Artifact: `cobbie-0.7.0.jar` (212,847 bytes), built by `./gradlew clean build`.
+Artifact: `cobbie-0.7.0.jar` (213,494 bytes), built by `./gradlew clean build`.
 
 **Model:** `lfm2.5:8b` is now the default and the model everything below was verified against.
-**Unit tests:** 89, 0 failures. **In-game tests:** 11, all green.
+**Unit tests:** 91, 0 failures. **In-game tests:** 11, all green.
 
 ## What is new
 
@@ -55,6 +55,12 @@ unlabelled. Now:
 Verified by `CobbieConfigUiTest` (opens, renders, closes) with screenshots written to
 `build/run/clientGameTest/screenshots/`.
 
+### 3b. What he knows about the world
+His prompt now carries a short, accurate block of Minecraft knowledge: world height and sea level, how
+long a day is and that mobs spawn in the dark, that torches need support, that stone needs a pickaxe,
+that creepers explode, that falling and deep water hurt. Two of these he was getting wrong by omission
+rather than by stupidity — he had no notion of the y range and no idea torches are supported blocks.
+
 ### 4. Two new abilities
 | Verb | Does | Verified by |
 |---|---|---|
@@ -75,6 +81,15 @@ or delete:
 `cobbie do wave hello` now runs a real plan through the same TaskRunner as everything else.
 
 ## Bugs fixed in this release
+
+0. **Reasoning blocks reached the player's chat.** Giving the model real world knowledge made it start
+   reasoning first, and lfm2.5:8b wraps that in a `think` block which, once the reply hit the token
+   limit, had no closing tag. The stripper also carried a zero-width space inside its own regex, so it
+   never matched a normalised reply. Both fixed: reasoning is stripped whether or not it is terminated,
+   an unterminated block keeps whatever JSON follows it, and two unit tests pin the closed and
+   truncated cases. The chat test now also refuses any reply containing reasoning, and counts replies
+   before sending so a stale answer in persisted memory can never be mistaken for a fresh one — that
+   mistake hid this bug for three runs.
 
 1. **Skill lookup could never find a saved skill by the name a player types.** Saving normalised
    `"wave hello"` to `wave-hello`; lookup only lower-cased, so `cobbie do wave hello` answered "I do
@@ -97,7 +112,7 @@ combat ok: zombie health 19.0, sheep untouched at 8.0, owner alive
 persistence ok: same uuid, same owner, stone intact at 7
 commands ok: stay drift=0.00, follow 8.54 -> 6.45
 follow ok: distance 14.18 -> 12.17
-chat ok: reply length=96 "Hello there, friend! I'm Cobbie, happy to be here with you — what would you like to do together?"
+chat ok: reply length=53 "Hello TestPlayer! I'm here to help you in this world."
 ```
 
 ## Still not verified

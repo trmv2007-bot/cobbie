@@ -45,6 +45,15 @@ public final class CobbiePrompt {
 			sb.append("SKILLS YOU HAVE LEARNED (you may reuse the steps):\n").append(skillsBlock).append('\n');
 		}
 
+		sb.append("\nWHAT YOU KNOW ABOUT THIS WORLD:\n")
+				.append("- It is blocky and built of cubes; y=-64 is the bottom, y=320 the top, sea level is about y=63.\n")
+				.append("- A full day is about 20 minutes; night is dark and hostile mobs spawn in the dark.\n")
+				.append("- Torches need a solid block under or beside them and light only a few blocks.\n")
+				.append("- Trees give logs, which make planks. Stone needs a pickaxe; dirt and sand do not.\n")
+				.append("- Water flows downhill, lava burns, and creepers explode when they get close to you.\n")
+				.append("- Animals are peaceful; zombies, skeletons, spiders and creepers are not.\n")
+				.append("- Falling hurts, deep water drowns, and digging straight down can drop you into a cave.\n");
+
 		sb.append("\nPERMITTED ACTIONS RIGHT NOW: ").append(permittedVerbs()).append('\n');
 		sb.append("FULL VERB LIST WITH RULES: ").append(ActionVocabulary.describe()).append('\n');
 

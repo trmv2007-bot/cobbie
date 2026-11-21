@@ -322,14 +322,28 @@ public final class LlmClient {
 		}
 	}
 
-	/** Remove any <think>...</think> or <thinking>...</thinking> blocks from model output. */
+	/**
+	 * Remove reasoning blocks from model output.
+	 *
+	 * <p>Ollama models sometimes inject a zero-width space inside the tags, and a reply cut off by the
+	 * token limit leaves the block unterminated — either way the reasoning ends up in the player's
+	 * chat unless it is stripped here. An unterminated block keeps whatever JSON follows it.
+	 */
 	private static String stripThinking(String text) {
 		if (text == null) return null;
-		// Remove <think>...</think> (case-insensitive, handles nested newlines)
-		String out = text.replaceAll("(?is)<think>.*?</think>", "");
-		// Remove <thinking>...</thinking>
+		String out = text.replaceAll("[\u200B-\u200D\uFEFF]", "");
 		out = out.replaceAll("(?is)<thinking>.*?</thinking>", "");
-		// Trim leading/trailing whitespace left behind
+		out = out.replaceAll("(?is)<think>.*?</think>", "");
+		out = out.replaceAll("(?is)<reasoning>.*?</reasoning>", "");
+
+		// An unterminated block (reply cut off by the token limit) keeps whatever JSON follows it.
+		String lower = out.toLowerCase(java.util.Locale.ROOT);
+		int open = lower.indexOf("<think");
+		if (open < 0) open = lower.indexOf("<reasoning");
+		if (open >= 0) {
+			int json = out.indexOf('{', open);
+			out = json >= 0 ? out.substring(json) : "";
+		}
 		return out.trim();
 	}
 

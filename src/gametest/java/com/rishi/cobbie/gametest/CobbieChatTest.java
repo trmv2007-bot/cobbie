@@ -33,11 +33,15 @@ public final class CobbieChatTest implements FabricClientGameTest {
 
             UUID ownerId = server.computeOnServer(s -> CobbieTestSupport.owner(s).getUUID());
 
+            // Memory persists between runs, so count the replies that already exist: a stale answer
+            // from an earlier session must never be mistaken for a reply to this message.
+            int before = server.computeOnServer(s -> replyCount(ownerId));
+
             // Send the message the way a player does, through the real chat channel.
             context.runOnClient(mc -> mc.getConnection().sendChat(PROMPT));
 
             try {
-                server.waitFor(s -> hasReply(ownerId), 1800);
+                server.waitFor(s -> replyCount(ownerId) > before, 1800);
             } catch (Throwable t) {
                 ConnectionState state = CobbieBrain.lastState();
                 String detail = CobbieBrain.lastStateDetail();
@@ -46,18 +50,22 @@ public final class CobbieChatTest implements FabricClientGameTest {
                         + " detail=" + detail + " history=" + history, t);
             }
 
-            String answer = server.computeOnServer(s -> CobbieMemory.history(ownerId, 4).stream()
+            String answer = server.computeOnServer(s -> CobbieMemory.history(ownerId, 40).stream()
                     .filter(m -> "assistant".equals(m.role()))
                     .reduce((a, b) -> b)
                     .map(CobbieMemory.Message::content)
                     .orElse(""));
+            if (answer.contains("think>") || answer.contains("We need to respond")) {
+                throw new AssertionError("Reasoning leaked into the reply: " + answer);
+            }
             System.out.println("[gametest] chat ok: reply length=" + answer.length()
                     + " first line=\"" + answer.lines().findFirst().orElse("") + "\"");
         }
     }
 
-    private static boolean hasReply(UUID ownerId) {
-        return CobbieMemory.history(ownerId, 4).stream()
-                .anyMatch(m -> "assistant".equals(m.role()) && !m.content().isBlank());
+    private static int replyCount(UUID ownerId) {
+        return (int) CobbieMemory.history(ownerId, 40).stream()
+                .filter(m -> "assistant".equals(m.role()) && !m.content().isBlank())
+                .count();
     }
 }
