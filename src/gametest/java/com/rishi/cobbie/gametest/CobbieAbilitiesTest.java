@@ -99,9 +99,11 @@ public final class CobbieAbilitiesTest implements FabricClientGameTest {
                 return null;
             });
 
+            // Deliberately un-namespaced: the model writes "diamond", not "minecraft:diamond", and a
+            // namespaced-only match made him deny carrying things he was holding.
             String dropRefusal = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
                     .offerPlan("drop all your diamonds",
-                            List.of(new ActionIntent(ActionVocabulary.DROP, "minecraft:diamond", 0, 0, 0, "all"))));
+                            List.of(new ActionIntent(ActionVocabulary.DROP, "diamond", 0, 0, 0, "all"))));
             if (dropRefusal != null) throw new AssertionError("drop refused: " + dropRefusal);
 
             try {

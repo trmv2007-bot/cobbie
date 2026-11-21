@@ -475,11 +475,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 			this.setItemSlot(slot, ItemStack.EMPTY);
 			dropped += worn.getCount();
 		}
+		int handed = 0;
 		if (!corpse.isEmpty()) {
 			// Items spawned from a dying entity never reach the world in this build (they are
 			// accepted and then absent), so his bag goes to his owner instead of onto the floor.
 			// Verified through the owner's inventory, which is the path `give` already proves.
-			int handed = 0;
 			if (owner != null) {
 				for (ItemStack stack : corpse) {
 					if (owner.getInventory().add(stack)) handed += stack.getCount();
@@ -493,8 +493,15 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 		if (dropped > 0) {
 			Cobbie.LOGGER.info("Cobbie died carrying {} item(s); dropped them at {}", dropped, this.blockPosition());
 			if (owner != null) {
-				owner.sendSystemMessage(Component.literal("§e[Cobbie] §fI died at " + this.blockPosition()
-						+ " — everything I was carrying is in your inventory."));
+				// Say what actually happened: claiming a handover that did not happen is worse than
+				// losing the items.
+				String where = "I died at " + this.blockPosition() + " — ";
+				String what = handed == dropped
+						? "everything I was carrying is in your inventory."
+						: handed > 0
+								? "I passed you " + handed + " of my " + dropped + " items; the rest did not fit."
+								: "I could not pass you anything — your inventory had no room.";
+				owner.sendSystemMessage(Component.literal("§e[Cobbie] §f" + where + what));
 			}
 		}
 	}
@@ -830,6 +837,19 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 	}
 
 	/**
+	 * "netherite_pickaxe" and "minecraft:netherite_pickaxe" are the same item. Models write both, so
+	 * matching on the full registry id alone made him deny carrying things he was holding.
+	 */
+	private boolean matchesItem(String wanted, ItemStack stack) {
+		if (stack == null || stack.isEmpty()) return false;
+		if (wanted == null || wanted.isBlank()) return true;
+		String id = itemId(stack);
+		String ask = wanted.trim().toLowerCase(Locale.ROOT).replace(' ', '_');
+		if (ask.contains(":")) return ask.equals(id);
+		return id.equals(ask) || id.endsWith(":" + ask);
+	}
+
+	/**
 	 * Wear or hold something from his bag. Armour goes to the slot the game says it belongs in, any
 	 * other item to the hand; whatever was there before goes back in the bag rather than vanishing,
 	 * and the result is verified by reading the slot back.
@@ -841,7 +861,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 		for (int i = 0; i < inventory.getContainerSize() && chosen.isEmpty(); i++) {
 			ItemStack stack = inventory.getItem(i);
 			if (stack.isEmpty()) continue;
-			if (wanted.isEmpty() || wanted.equalsIgnoreCase(itemId(stack)) || wanted.endsWith(stack.getItem().toString())) {
+			if (matchesItem(wanted, stack)) {
 				chosen = stack;
 			}
 		}
@@ -882,8 +902,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 		for (int i = 0; i < inventory.getContainerSize() && from.isEmpty(); i++) {
 			ItemStack stack = inventory.getItem(i);
 			if (stack.isEmpty()) continue;
-			if (wanted.isEmpty() || wanted.endsWith(stack.getItem().toString())
-					|| wanted.equalsIgnoreCase(itemId(stack))) {
+			if (matchesItem(wanted, stack)) {
 				from = stack;
 			}
 		}
@@ -936,7 +955,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 		for (int i = 0; i < inventory.getContainerSize() && gift.isEmpty(); i++) {
 			ItemStack stack = inventory.getItem(i);
 			if (stack.isEmpty()) continue;
-			if (wanted.isEmpty() || wanted.equalsIgnoreCase(itemId(stack))) {
+			if (matchesItem(wanted, stack)) {
 				gift = stack.copyWithCount(1);
 			}
 		}
