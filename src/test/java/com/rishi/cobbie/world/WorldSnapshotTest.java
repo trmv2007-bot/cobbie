@@ -114,7 +114,7 @@ class WorldSnapshotTest {
 	@Test
 	void listsAreCappedPerSection() {
 		List<BlockNote> blocks = new ArrayList<>();
-		for (int i = 0; i < 25; i++) {
+		for (int i = 0; i < WorldSnapshot.MAX_BLOCKS + 10; i++) {
 			blocks.add(new BlockNote("minecraft:stone_" + i, i, 64, i, i, true));
 		}
 		String text = new WorldSnapshot("minecraft:overworld", "plains", 0L, false, false, 0, 64, 0,

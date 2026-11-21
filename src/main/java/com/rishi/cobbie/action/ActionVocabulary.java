@@ -16,7 +16,7 @@ import java.util.Set;
 public final class ActionVocabulary {
 
 	/** Hard ceiling on how many actions one reply may queue. */
-	public static final int MAX_ACTIONS = 8;
+	public static final int MAX_ACTIONS = 32;
 
 	public static final String ANSWER = "answer";
 	public static final String CHAT = "chat";

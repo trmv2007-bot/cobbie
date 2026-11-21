@@ -180,10 +180,25 @@ class ActionParserTest {
 	}
 
 	@Test
+	void aTwentyStepPlanIsAcceptedRatherThanCappedAtEight() {
+		StringBuilder sb = new StringBuilder("{\"answer\":\"big job\",\"actions\":[");
+		for (int i = 0; i < 20; i++) {
+			if (i > 0) sb.append(',');
+			sb.append("{\"action\":\"walk-to\",\"target\":\"\",\"x\":").append(i)
+					.append(",\"y\":64,\"z\":0}");
+		}
+		sb.append("]}");
+		ActionPlan plan = ActionParser.parse(sb.toString());
+
+		assertEquals(20, plan.actions().size(), "the action ceiling is 32 now, so 20 must survive");
+		assertTrue(plan.problems().isEmpty(), plan.problems().toString());
+	}
+
+	@Test
 	void overlongAnswerIsTruncatedRatherThanSentWhole() {
-		String huge = "x".repeat(4000);
+		String huge = "x".repeat(9000);
 		ActionPlan plan = ActionParser.parse("{\"answer\":\"" + huge + "\",\"actions\":[{\"action\":\"answer\","
 				+ "\"target\":\"\",\"x\":0,\"y\":0,\"z\":0}]}");
-		assertTrue(plan.answer().length() <= 1000, "answer should be capped, was " + plan.answer().length());
+		assertTrue(plan.answer().length() <= 4100, "answer should be capped, was " + plan.answer().length());
 	}
 }

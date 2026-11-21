@@ -38,14 +38,14 @@ import java.util.Set;
 public final class SkillRegistry {
 
 	// ----- limits: keep the JSON small and the prompt block smaller -----
-	public static final int MAX_SKILLS = 32;
-	public static final int MAX_STEPS = 12;
-	public static final int MAX_NAME = 40;
-	public static final int MAX_DESCRIPTION = 160;
-	public static final int MAX_TARGET = 60;
-	public static final int MAX_DATA = 60;
-	public static final int PROMPT_CHAR_CAP = 600;
-	public static final int MAX_PROMPT_SKILLS = 6;
+	public static final int MAX_SKILLS = 256;
+	public static final int MAX_STEPS = 32;
+	public static final int MAX_NAME = 64;
+	public static final int MAX_DESCRIPTION = 400;
+	public static final int MAX_TARGET = 120;
+	public static final int MAX_DATA = 120;
+	public static final int PROMPT_CHAR_CAP = 3000;
+	public static final int MAX_PROMPT_SKILLS = 20;
 	public static final int DEFAULT_MATCH_LIMIT = 3;
 
 	/** The only step actions the task executor knows how to run. */

@@ -16,7 +16,7 @@ import com.rishi.cobbie.world.WorldSnapshot;
  */
 public final class CobbiePrompt {
 
-	private static final int PLAN_STEPS_CEILING = 5;
+	private static final int PLAN_STEPS_CEILING = 24;
 
 	private CobbiePrompt() {}
 

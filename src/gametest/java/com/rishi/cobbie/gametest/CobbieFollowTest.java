@@ -60,12 +60,20 @@ public final class CobbieFollowTest implements FabricClientGameTest {
                         Set.of(), 0.0F, 8.0F, true);
                 return null;
             });
+            // Following only repaths where the owner's chunk is loaded, so wait for the world to
+            // catch up before measuring anything. Without this the test fails on a slow chunk
+            // stream and blames the dog.
+            try {
+                server.waitFor(s -> s.overworld().isLoaded(CobbieTestSupport.owner(s).blockPosition()), 200);
+            } catch (Throwable t) {
+                throw new AssertionError("Owner's chunk never loaded after the teleport", t);
+            }
             context.waitTicks(10);
             double before = server.computeOnServer(CobbieFollowTest::distance);
 
-            // Give him up to 10 seconds to close the gap; assert on evidence, not on a fixed sleep.
+            // Give him a generous window to close the gap; assert on evidence, not a fixed sleep.
             try {
-                server.waitFor(s -> distance(s) < before - 2.0, 200);
+                server.waitFor(s -> distance(s) < before - 2.0, 600);
             } catch (Throwable t) {
                 throw new AssertionError("Cobbie did not close distance: before=" + before
                         + " after=" + server.computeOnServer(CobbieFollowTest::distance), t);

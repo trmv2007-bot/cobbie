@@ -144,24 +144,24 @@ public class CobbieConfigScreen extends Screen {
         textField("api_key", "API Key (blank = none)", "");
         numberField("temperature", "Temperature", 0.0, 2.0, 0.1);
         intField("max_tokens", "Max Tokens", 32, 8192, 100);
-        intField("connect_timeout", "Connect Timeout (s)", 1, 60, 1);
+        intField("connect_timeout", "Connect Timeout (s)", 1, 120, 1);
         intField("read_timeout", "Read Timeout (s)", 5, 600, 10);
-        intField("max_retries", "Max Retries", 0, 3, 1);
+        intField("max_retries", "Max Retries", 0, 8, 1);
 
         header("Personality");
         textField("personality", "Personality", "warm, curious, a little playful");
         enumField("autonomy_mode", "Autonomy", new String[]{"OFF", "ASSISTIVE", "CREATIVE"});
 
         header("Behaviour");
-        intField("plan_step_limit", "Plan Step Limit", 1, 8, 1);
-        intField("task_retry_limit", "Task Retry Limit", 0, 3, 1);
-        intField("max_concurrent_requests", "Max Concurrent Requests", 1, 8, 1);
-        intField("task_timeout_seconds", "Task Timeout (s)", 15, 600, 15);
+        intField("plan_step_limit", "Plan Step Limit", 1, 24, 1);
+        intField("task_retry_limit", "Task Retry Limit", 0, 8, 1);
+        intField("max_concurrent_requests", "Max Concurrent Requests", 1, 16, 1);
+        intField("task_timeout_seconds", "Task Timeout (s)", 15, 3600, 60);
 
         header("Movement");
-        numberField("follow_distance", "Follow Distance", 1.0, 32.0, 0.5);
-        intField("navigation_range", "Navigation Range", 4, 64, 4);
-        numberField("interaction_reach", "Interaction Reach", 1.0, 8.0, 0.5);
+        numberField("follow_distance", "Follow Distance", 1.0, 64.0, 0.5);
+        intField("navigation_range", "Navigation Range", 4, 256, 8);
+        numberField("interaction_reach", "Interaction Reach", 1.0, 16.0, 0.5);
 
         header("Permissions");
         boolField("mining_allowed", "Mining");
@@ -174,7 +174,7 @@ public class CobbieConfigScreen extends Screen {
         header("Chat");
         enumField("chat_mode", "Chat Mode", new String[]{"MENTION", "OWNER_MENTION", "ALWAYS_LISTEN", "ALLOWLIST"});
         textField("allowed_players", "Allowed Players (comma separated)", "");
-        intField("chat_cooldown_ms", "Reply Cooldown (ms)", 200, 10000, 100);
+        intField("chat_cooldown_ms", "Reply Cooldown (ms)", 0, 10000, 100);
 
         header("Memory");
         boolField("memory_enabled", "Memory Enabled");
@@ -182,9 +182,9 @@ public class CobbieConfigScreen extends Screen {
         boolField("persistent_memory", "Persistent Memory");
 
         header("Entity");
-        intField("inventory_size", "Inventory Slots", 1, 36, 1);
+        intField("inventory_size", "Inventory Slots", 1, 54, 1);
         boolField("only_allowlisted_players", "Gated To Allowlist");
-        intField("max_cobbies_per_player", "Max Cobbies Per Player", 1, 4, 1);
+        intField("max_cobbies_per_player", "Max Cobbies Per Player", 1, 16, 1);
     }
 
     // ---- row builders ----

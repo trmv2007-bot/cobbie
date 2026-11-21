@@ -43,12 +43,12 @@ public record WorldSnapshot(
         String lastActionResult) {
 
 	/** Sampling / output caps, shared by WorldPerception and describe(). */
-	public static final int MAX_BLOCKS = 10;
-	public static final int MAX_ENTITIES = 10;
-	public static final int MAX_PLAYERS = 8;
-	public static final int MAX_INVENTORY = 8;
-	public static final int MAX_DESC_CHARS = 1200;
-	public static final int MAX_FIELD_CHARS = 90;
+	public static final int MAX_BLOCKS = 40;
+	public static final int MAX_ENTITIES = 32;
+	public static final int MAX_PLAYERS = 16;
+	public static final int MAX_INVENTORY = 54;
+	public static final int MAX_DESC_CHARS = 6000;
+	public static final int MAX_FIELD_CHARS = 240;
 
 	public record BlockNote(String id, int x, int y, int z, double distance, boolean solid) {}
 

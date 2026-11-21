@@ -83,7 +83,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 			SynchedEntityData.defineId(CobbieEntity.class, EntityDataSerializers.BOOLEAN);
 
 	private static final int WAVE_TICKS = 40;
-	private static final int STEP_DEADLINE_TICKS = 400;   // 20s per step, then it is abandoned
+	private static final int STEP_DEADLINE_TICKS = 1200;  // 60s per step, then it is abandoned
 	private static final double ARRIVE_RADIUS = 1.5;      // "I have walked there", not "I can touch it"
 	private static final int WALK_GRACE_TICKS = 10;       // let the navigator compute before judging it
 	private static final int MAX_WALK_REPATHS = 3;         // then repair a dropped path, a few times

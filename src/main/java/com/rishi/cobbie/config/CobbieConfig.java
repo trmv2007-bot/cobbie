@@ -182,20 +182,20 @@ public final class CobbieConfig {
 		llmProvider = normProvider(str(root, "provider", llmProvider));
 		temperature = dbl(root, "temperature", temperature, 0.0, 2.0);
 		maxTokens = integer(root, "max_tokens", maxTokens, 32, 8192);
-		connectTimeoutSeconds = integer(root, "connect_timeout", connectTimeoutSeconds, 1, 30);
+		connectTimeoutSeconds = integer(root, "connect_timeout", connectTimeoutSeconds, 1, 120);
 		readTimeoutSeconds = integer(root, "read_timeout", readTimeoutSeconds, 5, 600);
-		maxRetries = integer(root, "max_retries", maxRetries, 0, 3);
+		maxRetries = integer(root, "max_retries", maxRetries, 0, 8);
 
 		personality = str(root, "personality", personality);
 		autonomyMode = AutonomyMode.parse(str(root, "autonomy_mode", autonomyMode.name()), autonomyMode);
-		planStepLimit = integer(root, "plan_step_limit", planStepLimit, 1, 8);
-		taskRetryLimit = integer(root, "task_retry_limit", taskRetryLimit, 0, 3);
-		maxConcurrentRequests = integer(root, "max_concurrent_requests", maxConcurrentRequests, 1, 8);
-		taskTimeoutSeconds = integer(root, "task_timeout_seconds", taskTimeoutSeconds, 15, 600);
+		planStepLimit = integer(root, "plan_step_limit", planStepLimit, 1, 24);
+		taskRetryLimit = integer(root, "task_retry_limit", taskRetryLimit, 0, 8);
+		maxConcurrentRequests = integer(root, "max_concurrent_requests", maxConcurrentRequests, 1, 16);
+		taskTimeoutSeconds = integer(root, "task_timeout_seconds", taskTimeoutSeconds, 15, 3600);
 
-		followDistance = dbl(root, "follow_distance", followDistance, 1.0, 32.0);
-		navigationRange = integer(root, "navigation_range", navigationRange, 4, 64);
-		interactionReach = dbl(root, "interaction_reach", interactionReach, 1.0, 8.0);
+		followDistance = dbl(root, "follow_distance", followDistance, 1.0, 64.0);
+		navigationRange = integer(root, "navigation_range", navigationRange, 4, 256);
+		interactionReach = dbl(root, "interaction_reach", interactionReach, 1.0, 16.0);
 
 		miningAllowed = bool(root, "mining_allowed", miningAllowed);
 		buildingAllowed = bool(root, "building_allowed", buildingAllowed);
@@ -205,7 +205,7 @@ public final class CobbieConfig {
 		collectionAllowed = bool(root, "collection_allowed", collectionAllowed);
 
 		chatMode = ChatMode.parse(str(root, "chat_mode", chatMode.name()), chatMode);
-		chatCooldownMs = integer(root, "chat_cooldown_ms", chatCooldownMs, 200, 10000);
+		chatCooldownMs = integer(root, "chat_cooldown_ms", chatCooldownMs, 0, 10000);
 		allowedPlayers.clear();
 		if (root.has("allowed_players") && root.get("allowed_players").isJsonArray()) {
 			for (var el : root.getAsJsonArray("allowed_players")) {
@@ -219,9 +219,9 @@ public final class CobbieConfig {
 		maxChatHistory = integer(root, "max_chat_history", maxChatHistory, 0, 200);
 		persistentMemory = bool(root, "persistent_memory", persistentMemory);
 
-		inventorySize = integer(root, "inventory_size", inventorySize, 1, 36);
+		inventorySize = integer(root, "inventory_size", inventorySize, 1, 54);
 		gatedToAllowlist = bool(root, "only_allowlisted_players", gatedToAllowlist);
-		maxCobbiesPerPlayer = integer(root, "max_cobbies_per_player", maxCobbiesPerPlayer, 1, 4);
+		maxCobbiesPerPlayer = integer(root, "max_cobbies_per_player", maxCobbiesPerPlayer, 1, 16);
 	}
 
 	// ---- tolerant readers, each one clamps and warns ----

@@ -34,7 +34,7 @@ public final class ActionParser {
 	private static final int MIN_Y = -128;
 	private static final int MAX_Y = 512;
 	private static final int MAX_HORIZON = 30_000_000;
-	private static final int MAX_ANSWER_CHARS = 900;
+	private static final int MAX_ANSWER_CHARS = 4000;
 	private static final int MAX_TARGET_CHARS = 120;
 
 	/**

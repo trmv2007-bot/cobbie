@@ -263,4 +263,15 @@ class SkillRegistryTest {
 		assertFalse(SkillRegistry.isAllowedAction(""));
 		assertFalse(SkillRegistry.isAllowedAction(null));
 	}
+
+	@Test
+	void aLongSkillIsAcceptedRatherThanCappedAtTwelveSteps() {
+		List<ActionStep> steps = new java.util.ArrayList<>();
+		for (int i = 0; i < 20; i++) {
+			steps.add(new ActionStep("walk-to", "", i, 64, 0, "rel"));
+		}
+		assertTrue(SkillRegistry.saveSkill("long walk", "twenty steps", steps));
+		assertTrue(SkillRegistry.get("long walk").isPresent());
+	}
+
 }
