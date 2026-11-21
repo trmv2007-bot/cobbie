@@ -13,15 +13,13 @@ repositories {
 	mavenCentral()
 }
 
-loom {
-	// No splitEnvironmentSourceSets: single sourceset so the client entrypoint
-	// class is on the main classpath (avoids client-entrypoint ClassNotFoundException).
-	mods {
-		"cobbie" {
-			sourceSet sourceSets.main
-		}
-	}
-}
+// No splitEnvironmentSourceSets: single sourceset so the client entrypoint class is on the main
+// classpath (avoids client-entrypoint ClassNotFoundException).
+//
+// No explicit `loom { mods { "cobbie" { ... } } }` block: Loom 1.17 auto-discovers the mod from
+// src/main/resources/fabric.mod.json and registers it against the main source set. Declaring it by
+// hand as well makes fabricApi.configureTests fail with "Cannot add a ModSettings with name
+// 'cobbie' as a ModSettings with that name already exists."
 
 dependencies {
 	// To change the versions see the gradle.properties file
@@ -42,6 +40,24 @@ dependencies {
 test {
 	useJUnitPlatform()
 }
+
+// In-game tests. The client gametest harness boots a real Fabric 26.3 client, creates a world,
+// drives it, screenshots it and asserts — the only tier that proves an in-game behaviour.
+// Tests live in src/gametest/java (Loom creates that source set, not src/clientGameTest).
+// Run with: ./gradlew runClientGameTest
+fabricApi {
+	configureTests {
+		createSourceSet = true
+		modId = "cobbie"
+		enableGameTests = true
+		enableClientGameTests = true
+		eula = true
+		clearRunDirectory = false
+		username = "TestPlayer"
+	}
+}
+
+// Tests are expected in src/gametest/java (Loom creates that source set, not src/clientGameTest).
 
 processResources {
 	inputs.property "version", project.version

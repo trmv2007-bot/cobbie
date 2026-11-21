@@ -79,18 +79,19 @@ public final class ActionParser {
 		try {
 			JsonElement parsed = JsonParser.parseString(json);
 			if (!parsed.isJsonObject()) {
-				return new ActionPlan(clean(llmResponse), List.of(silentAnswer()),
+				return new ActionPlan(salvageAnswer(llmResponse), List.of(silentAnswer()),
 						List.of("reply was JSON but not an object"));
 			}
 			root = parsed.getAsJsonObject();
 		} catch (Exception malformed) {
-			return new ActionPlan(clean(llmResponse), List.of(silentAnswer()),
+			// The model fumbled its braces. Its words are still in there: show those, never the payload.
+			return new ActionPlan(salvageAnswer(llmResponse), List.of(silentAnswer()),
 					List.of("malformed JSON (" + malformed.getClass().getSimpleName() + ")"));
 		}
 
 		String answer = clean(root.has("answer") && root.get("answer").isJsonPrimitive()
 				? root.get("answer").getAsString()
-				: llmResponse);
+				: salvageAnswer(llmResponse));
 
 		List<ActionIntent> actions = new ArrayList<>();
 		List<String> problems = new ArrayList<>();
@@ -212,6 +213,45 @@ public final class ActionParser {
 
 	private static ActionIntent silentAnswer() {
 		return new ActionIntent(ActionVocabulary.ANSWER, "", 0, 0, 0, "");
+	}
+
+
+	/**
+	 * Last resort for a payload too broken to parse: lift the text of the {@code answer} field out
+	 * of it. A friend who replies with {@code {"answer":"hi","actions":[}]}} is still saying hello;
+	 * a friend who replies with braces is a JSON parser with a mouth.
+	 */
+	private static String salvageAnswer(String raw) {
+		if (raw == null || raw.isBlank()) return "...";
+		int key = raw.indexOf("\"answer\"");
+		if (key >= 0) {
+			int colon = raw.indexOf(':', key + "\"answer\"".length());
+			int quote = colon < 0 ? -1 : raw.indexOf('"', colon + 1);
+			if (quote >= 0) {
+				StringBuilder text = new StringBuilder();
+				boolean escaped = false;
+				for (int i = quote + 1; i < raw.length(); i++) {
+					char c = raw.charAt(i);
+					if (escaped) {
+						text.append(c == 'n' ? ' ' : c);
+						escaped = false;
+					} else if (c == '\\') {
+						escaped = true;
+					} else if (c == '"') {
+						break;
+					} else {
+						text.append(c);
+					}
+				}
+				if (!text.toString().isBlank()) return clean(text.toString());
+			}
+		}
+		// No answer field at all: drop the JSON scaffolding and keep whatever words are left.
+		String text = raw.trim();
+		int actions = text.indexOf("\"actions\"");
+		if (actions > 0) text = text.substring(0, actions);
+		text = text.replaceAll("^[\s{,\"]+", "").replaceAll("[\s},\"]+$", "");
+		return clean(text.isBlank() ? "..." : text);
 	}
 
 	private static String clean(String text) {

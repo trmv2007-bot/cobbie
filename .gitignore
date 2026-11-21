@@ -4,3 +4,7 @@ build/
 *.iml
 out/
 *.log
+
+# Loom run directories (dev client / gametest worlds and assets)
+/run/
+

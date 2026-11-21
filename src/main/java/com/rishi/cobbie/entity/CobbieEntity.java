@@ -83,6 +83,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 
 	private static final int WAVE_TICKS = 40;
 	private static final int STEP_DEADLINE_TICKS = 400;   // 20s per step, then it is abandoned
+	private static final double ARRIVE_RADIUS = 1.5;      // "I have walked there", not "I can touch it"
+	private static final int WALK_GRACE_TICKS = 10;       // let the navigator compute before judging it
+	private static final int MAX_WALK_REPATHS = 3;         // then repair a dropped path, a few times
 	private static final int FOLLOW_REPATH_INTERVAL = 12; // the pathfinder is not free
 	private static final int PICKUP_INTERVAL = 20;
 
@@ -119,6 +122,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 	private BlockPos workTarget;     // the block he intends to act on once he is in reach
 	private int activeDeadlineTick;
 	private boolean navigatingForAction;
+	private double arriveRadiusSq;   // how close counts as "arrived" for the action in flight
+	private int walkStartTick;       // the tick the current walk was handed to the navigator
+	private int walkRepaths;         // how many times this walk has been re-handed to it
 	private ActionOutcome pendingOutcome;
 
 	// ---- bookkeeping ----
@@ -403,13 +409,16 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 	/** The one and only following mechanism. */
 	private void followOwnerTick() {
 		if (!following || ownerUuid == null) return;
+		// A running task owns his feet: following must not repath him back mid-job.
+		if (isBusy()) return;
 		ServerPlayer owner = owner();
 		if (owner == null) return; // offline or in another dimension: wait where he is
 
 		double follow = Math.max(1.0, CobbieConfig.getFollowDistance());
 		double distSq = this.distanceToSqr(owner);
 		if (distSq <= follow * follow) {
-			if (this.tickCount % 20 == 0) getNavigation().stop();
+			// Standing next to you he stops walking — but never while a task is using his feet.
+			if (!isBusy() && this.tickCount % 20 == 0) getNavigation().stop();
 			return;
 		}
 		double navLimit = Math.max(8.0, CobbieConfig.getNavigationRange() * 2.0);
@@ -523,12 +532,24 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 				interrupt();
 				return ActionOutcome.fail(verb, "lost track of the target");
 			}
-			if (this.blockPosition().distSqr(activeTarget) <= reachSquared()) {
+			if (this.blockPosition().distSqr(activeTarget) <= arriveRadiusSq) {
 				navigatingForAction = false;
 				return performNow();
 			}
 			if (getNavigation().isDone()) {
-				// Path ended and he is still out of range: unreachable from where he is.
+				// The navigator has nothing to walk. That is not proof the target is unreachable: on
+				// the tick a walk starts it has not computed anything yet, and a path can be dropped
+				// mid-walk. Give it time, then repair the path a bounded number of times, and only
+				// call the target unreachable when it keeps coming back empty.
+				if (this.tickCount - walkStartTick <= WALK_GRACE_TICKS) {
+					return null;
+				}
+				if (walkRepaths < MAX_WALK_REPATHS) {
+					walkRepaths++;
+					walkStartTick = this.tickCount;
+					getNavigation().moveTo(activeTarget.getX(), activeTarget.getY(), activeTarget.getZ(), 0.9);
+					return null;
+				}
 				interrupt();
 				return ActionOutcome.fail(verb, "could not get close enough to " + describe(activeTarget));
 			}
@@ -590,7 +611,13 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 		activeTarget = standAt;
 		workTarget = workAt;
 		navigatingForAction = true;
+		// Always a walking tolerance, never interaction reach. The standing spot sits next to the
+		// block, so stopping merely "within reach" of the spot can leave the block itself out of
+		// reach — which is what made mine fail with "is out of reach" after he had walked there.
+		arriveRadiusSq = ARRIVE_RADIUS * ARRIVE_RADIUS;
 		activeDeadlineTick = this.tickCount + STEP_DEADLINE_TICKS;
+		walkStartTick = this.tickCount;
+		walkRepaths = 0;
 		getNavigation().moveTo(standAt.getX(), standAt.getY(), standAt.getZ(), 0.9);
 	}
 

@@ -101,6 +101,26 @@ class ActionParserTest {
 	}
 
 	@Test
+	void malformedJsonStillSpeaksInsteadOfQuotingItself() {
+		// Seen live on Spark: the model closed its action list with }] instead of ]}, leaving the
+		// payload unparseable. The words are still there, so say them.
+		String broken = "{\"answer\":\"Hello there, friend!\",\"actions\":[}]}";
+		ActionPlan plan = ActionParser.parse(broken);
+
+		assertEquals("Hello there, friend!", plan.answer());
+		assertFalse(plan.answer().contains("{"), "raw JSON must never reach the player: " + plan.answer());
+		assertFalse(plan.answer().contains("actions"), plan.answer());
+	}
+
+	@Test
+	void payloadWithNoAnswerFieldNeverShowsThePayload() {
+		ActionPlan plan = ActionParser.parse("{\"actions\":[\"oops\"]}");
+
+		assertFalse(plan.answer().contains("{"), plan.answer());
+		assertFalse(plan.answer().contains("\""), plan.answer());
+	}
+
+	@Test
 	void verbAliasesAreNormalised() {
 		ActionPlan plan = ActionParser.parse("{\"answer\":\"ok\",\"actions\":["
 				+ "{\"action\":\"dig\",\"target\":\"\",\"x\":1,\"y\":2,\"z\":3},"

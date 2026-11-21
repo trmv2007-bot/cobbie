@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "cobbie-gametest",
+  "version": "1.0.0",
+  "name": "Cobbie Client Game Tests",
+  "description": "Client game tests for the Cobbie AI companion mod.",
+  "environment": "client",
+  "license": "All-Rights-Reserved",
+  "entrypoints": {
+    "fabric-client-gametest": [
+      "com.rishi.cobbie.gametest.CobbieSmokeTest",
+      "com.rishi.cobbie.gametest.CobbieFollowTest",
+      "com.rishi.cobbie.gametest.CobbieCommandsTest",
+      "com.rishi.cobbie.gametest.CobbieMineTest",
+      "com.rishi.cobbie.gametest.CobbiePlaceTest",
+      "com.rishi.cobbie.gametest.CobbieCombatTest",
+      "com.rishi.cobbie.gametest.CobbiePersistenceTest",
+      "com.rishi.cobbie.gametest.CobbieChatTest"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~26.3",
+    "java": ">=25",
+    "fabric-api": "*",
+    "cobbie": "*"
+  }
+}
