@@ -369,7 +369,7 @@ public final class CobbieConfig {
 			case "attack" -> combatAllowed;
 			case "explore" -> explorationAllowed && autonomyMode != AutonomyMode.OFF;
 			case "collect" -> collectionAllowed;
-			case "follow", "stay", "wave", "chat", "answer", "wait", "walk-to", "give", "drop" -> true;
+			case "follow", "stay", "wave", "chat", "answer", "wait", "walk-to", "give", "drop", "equip" -> true;
 			default -> false;
 		};
 	}

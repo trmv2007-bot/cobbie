@@ -48,7 +48,7 @@ class WorldSnapshotTest {
 		assertTrue(text.contains("HOSTILE"), text);
 		assertTrue(text.contains("cow@") && !text.contains("cow@ HOSTILE"), text);
 		assertTrue(text.contains("players: Rishi"), text);
-		assertTrue(text.contains("inventory: oak_log x12, torch x4"), text);
+		assertTrue(text.contains("YOUR INVENTORY") && text.contains("oak_log x12, torch x4"), text);
 		assertTrue(text.contains("task: mine 5 iron ore"), text);
 		assertTrue(text.contains("last: OK mined minecraft:stone at 10 64 -3"), text);
 		assertTrue(text.length() < 600, "sample should be well inside the cap, was " + text.length());
@@ -62,7 +62,7 @@ class WorldSnapshotTest {
 		String text = blank.describe();
 		assertTrue(text.contains("blocks: none"), text);
 		assertTrue(text.contains("entities: none"), text);
-		assertTrue(text.contains("inventory: none"), text);
+		assertTrue(text.contains("YOUR INVENTORY") && text.contains("none"), text);
 		assertTrue(text.contains("holding nothing"), text);
 		assertTrue(text.contains("(night)"), text);
 	}

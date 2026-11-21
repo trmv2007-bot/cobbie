@@ -23,6 +23,7 @@ import net.minecraft.world.Container;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobCategory;
@@ -489,6 +490,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 					"minecraft:torch", intent.x(), intent.y(), intent.z(), ""));
 			case ActionVocabulary.GIVE -> giveToOwner(intent);
 			case ActionVocabulary.DROP -> dropFromBag(intent);
+			case ActionVocabulary.EQUIP -> equipFromBag(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
@@ -731,6 +733,48 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 		wearTool(tool);
 		return ActionOutcome.ok("mine", "broke " + id + " at " + describe(pos)
 				+ ", but my bag is full so the items are on the ground");
+	}
+
+	/**
+	 * Wear or hold something from his bag. Armour goes to the slot the game says it belongs in, any
+	 * other item to the hand; whatever was there before goes back in the bag rather than vanishing,
+	 * and the result is verified by reading the slot back.
+	 */
+	private ActionOutcome equipFromBag(ActionIntent intent) {
+		String wanted = intent.target() == null ? "" : intent.target().trim();
+
+		ItemStack chosen = ItemStack.EMPTY;
+		for (int i = 0; i < inventory.getContainerSize() && chosen.isEmpty(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty()) continue;
+			if (wanted.isEmpty() || wanted.equalsIgnoreCase(itemId(stack)) || wanted.endsWith(stack.getItem().toString())) {
+				chosen = stack;
+			}
+		}
+		if (chosen.isEmpty()) {
+			return ActionOutcome.fail("equip", wanted.isEmpty() ? "I have nothing to put on" : "I have no " + wanted);
+		}
+
+		EquipmentSlot slot = EquipmentSlot.MAINHAND;
+		var equippable = chosen.get(net.minecraft.core.component.DataComponents.EQUIPPABLE);
+		if (equippable != null && equippable.slot() != null) slot = equippable.slot();
+
+		String id = itemId(chosen);
+		ItemStack toWear = chosen.copyWithCount(1);
+		ItemStack previous = this.getItemBySlot(slot).copy();
+
+		if (!consumeItem(id, 1)) return ActionOutcome.fail("equip", "I could not take the " + id + " out of my bag");
+		this.setItemSlot(slot, toWear);
+		if (!previous.isEmpty()) addItem(previous);
+
+		ItemStack now = this.getItemBySlot(slot);
+		if (now.isEmpty() || !now.is(toWear.getItem())) {
+			// Put the world back the way it was: a failed attempt must not cost an item.
+			if (!toWear.isEmpty()) addItem(toWear);
+			this.setItemSlot(slot, previous);
+			return ActionOutcome.fail("equip", "the game would not let me wear the " + id);
+		}
+		return ActionOutcome.ok("equip", "equipped " + id + " in " + slot.getName() + ", verified");
 	}
 
 	/**

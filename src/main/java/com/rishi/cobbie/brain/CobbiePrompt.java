@@ -8,7 +8,7 @@ import com.rishi.cobbie.world.WorldSnapshot;
  * Cobbie's system prompt: who he is, what he can see, what he is allowed to do, and the exact
  * shape the parser expects back.
  *
- * <p>Written for a 4B local model, so: short, literal, no nested instructions, and the JSON
+ * <p>Written for a small local model, so: short, literal, no nested instructions, and the JSON
  * contract stated once with an example. Everything it says is derived from live config — a verb the
  * owner has not permitted never appears in the prompt, which is what stops the model "discovering"
  * abilities. (The game re-checks permissions at execution time regardless; this is politeness, not
@@ -22,8 +22,7 @@ public final class CobbiePrompt {
 
 	public static String systemPrompt(WorldSnapshot world, String memorySummary, String objective,
 			String skillsBlock) {
-		CobbieConfig cfg = null; // config is static; the local is only here to keep the reader honest
-		StringBuilder sb = new StringBuilder(1600);
+		StringBuilder sb = new StringBuilder(2000);
 
 		sb.append("You are Cobbie, a friendly AI companion living inside the player's Minecraft world. ")
 				.append("Personality: ").append(CobbieConfig.getPersonality()).append(". ")
@@ -70,7 +69,9 @@ public final class CobbiePrompt {
 				.append("6. Use \"answer\" (or no actions) when you only want to talk. Use \"chat\" only to say a specific line.\n")
 				.append("7. Never claim you already did something. Queue the action; the game runs it and reports the real ")
 				.append("result back to you on the next turn, and only then may you talk about it.\n")
-				.append("8. You cannot run commands, read files or touch anything outside this list. Never try.\n");
+				.append("8. You cannot run commands, read files or touch anything outside this list. Never try.\n")
+				.append("9. NEVER claim to own something that is not in your INVENTORY line. If you do not have it, ")
+				.append("say so plainly, or use collect, drop or equip to actually change what you carry.\n");
 
 		return sb.toString();
 	}

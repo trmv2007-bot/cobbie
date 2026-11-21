@@ -125,6 +125,42 @@ public final class CobbieAbilitiesTest implements FabricClientGameTest {
                 throw new AssertionError("Bag emptied but " + onGround + " diamonds are on the ground, expected 3");
             }
 
+            // ---- equip ----
+            server.computeOnServer(s -> {
+                CobbieEntity body = CobbieTestSupport.cobbie(s).orElseThrow();
+                body.addItem(new ItemStack(Items.IRON_HELMET, 1));
+                body.addItem(new ItemStack(Items.IRON_SWORD, 1));
+                return null;
+            });
+
+            String helmetRefusal = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .offerPlan("put on the helmet",
+                            List.of(new ActionIntent(ActionVocabulary.EQUIP, "minecraft:iron_helmet", 0, 0, 0, ""))));
+            if (helmetRefusal != null) throw new AssertionError("equip helmet refused: " + helmetRefusal);
+
+            try {
+                server.waitFor(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                        .getItemBySlot(net.minecraft.world.entity.EquipmentSlot.HEAD).is(Items.IRON_HELMET), 300);
+            } catch (Throwable t) {
+                throw new AssertionError("The helmet never reached his head; head slot holds "
+                        + server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                        .getItemBySlot(net.minecraft.world.entity.EquipmentSlot.HEAD).toString()), t);
+            }
+
+            String swordRefusal = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .offerPlan("hold the sword",
+                            List.of(new ActionIntent(ActionVocabulary.EQUIP, "minecraft:iron_sword", 0, 0, 0, ""))));
+            if (swordRefusal != null) throw new AssertionError("equip sword refused: " + swordRefusal);
+
+            try {
+                server.waitFor(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                        .getMainHandItem().is(Items.IRON_SWORD), 300);
+            } catch (Throwable t) {
+                throw new AssertionError("The sword never reached his hand; holding "
+                        + server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                        .getMainHandItem().toString()), t);
+            }
+
             // ---- built-in skills ----
             List<String> names = server.computeOnServer(s -> SkillRegistry.all().stream()
                     .map(skill -> skill.name()).toList());
@@ -145,7 +181,7 @@ public final class CobbieAbilitiesTest implements FabricClientGameTest {
 
             System.out.println("[gametest] abilities ok: torch at " + spot.toShortString()
                     + " (4->" + torchesLeft + "), gave 1 stone (" + hisStone + " left), dropped "
-                    + onGround + " diamonds, skills=" + names);
+                    + onGround + " diamonds, helmet on head, sword in hand, skills=" + names);
         }
     }
 }

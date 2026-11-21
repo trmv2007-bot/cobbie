@@ -98,7 +98,7 @@ public record WorldSnapshot(
 			line(sb, "blocks", blockNotes());
 			line(sb, "entities", entityNotes());
 			line(sb, "players", playerNames());
-			line(sb, "inventory", inventory());
+			line(sb, "YOUR INVENTORY (exactly what you carry; never claim anything else)", inventory());
 
 			sb.append("task: ").append(oneLine(currentTask, MAX_FIELD_CHARS))
 					.append(", action: ").append(oneLine(currentAction, 24))
