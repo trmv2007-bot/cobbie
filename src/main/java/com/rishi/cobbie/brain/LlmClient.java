@@ -293,7 +293,7 @@ public final class LlmClient {
 			if (root.has("message") && root.get("message").isJsonObject()) {
 				JsonObject message = root.getAsJsonObject("message");
 				if (message.has("content") && message.get("content").isJsonPrimitive()) {
-					return message.get("content").getAsString();
+					return stripThinking(message.get("content").getAsString());
 				}
 			}
 			if (root.has("choices") && root.get("choices").isJsonArray()) {
@@ -304,11 +304,11 @@ public final class LlmClient {
 					if (choice.has("message") && choice.get("message").isJsonObject()) {
 						JsonObject msg = choice.getAsJsonObject("message");
 						if (msg.has("content") && msg.get("content").isJsonPrimitive()) {
-							return msg.get("content").getAsString();
+							return stripThinking(msg.get("content").getAsString());
 						}
 					}
 					if (choice.has("text") && choice.get("text").isJsonPrimitive()) {
-						return choice.get("text").getAsString();
+						return stripThinking(choice.get("text").getAsString());
 					}
 				}
 			}
@@ -320,6 +320,17 @@ public final class LlmClient {
 		} catch (Exception malformed) {
 			return null;
 		}
+	}
+
+	/** Remove any <think>...</think> or <thinking>...</thinking> blocks from model output. */
+	private static String stripThinking(String text) {
+		if (text == null) return null;
+		// Remove <think>...</think> (case-insensitive, handles nested newlines)
+		String out = text.replaceAll("(?is)<think>.*?</think>", "");
+		// Remove <thinking>...</thinking>
+		out = out.replaceAll("(?is)<thinking>.*?</thinking>", "");
+		// Trim leading/trailing whitespace left behind
+		return out.trim();
 	}
 
 	/** Build the history window from raw role/content pairs. */
