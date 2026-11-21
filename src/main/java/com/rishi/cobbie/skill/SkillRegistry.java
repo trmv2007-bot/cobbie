@@ -51,7 +51,7 @@ public final class SkillRegistry {
 	/** The only step actions the task executor knows how to run. */
 	public static final Set<String> ALLOWED_ACTIONS = Set.of(
 			"answer", "follow", "stay", "wave", "walk-to", "mine", "place",
-			"attack", "collect", "chat", "wait", "explore");
+			"attack", "collect", "chat", "wait", "explore", "light", "give");
 
 	/** Words too common to be a useful retrieval signal. */
 	private static final Set<String> STOPWORDS = Set.of(
@@ -312,7 +312,12 @@ public final class SkillRegistry {
 		if (loaded) return;
 		loaded = true;
 		Path file = file();
-		if (file == null || !Files.exists(file)) return;
+		if (file == null || !Files.exists(file)) {
+			// Seeding is an install-time convenience, not a property of an empty store: a test that
+			// points the registry at its own file must see exactly what it put there.
+			if (fileOverride == null) seedBuiltins();
+			return;
+		}
 		try {
 			read(JsonParser.parseString(Files.readString(file)).getAsJsonObject());
 		} catch (Throwable t) {
@@ -320,6 +325,23 @@ public final class SkillRegistry {
 			skills.clear();
 			badFileAway(file);
 		}
+	}
+
+
+	/**
+	 * A brand new install starts with a few things he already knows how to do, so {@code cobbie do}
+	 * has something to run and the model has examples of well-formed procedures to imitate. They are
+	 * ordinary skills: he can run them, they can fail, and the owner can delete or mute them.
+	 */
+	private static void seedBuiltins() {
+		saveSkill("wave hello", "wave at the player as a friendly greeting",
+				List.of(new ActionStep("wave", "", 0, 0, 0, "")));
+		saveSkill("light the way", "place a torch on the ground a couple of blocks ahead",
+				List.of(new ActionStep("light", "minecraft:torch", 0, 1, 2, "rel")));
+		saveSkill("gather some wood", "mine two block of wood in front of me, bottom then top",
+				List.of(new ActionStep("mine", "minecraft:oak_log", 0, 1, 2, "rel"),
+						new ActionStep("mine", "minecraft:oak_log", 0, 2, 2, "rel")));
+		Cobbie.LOGGER.info("Cobbie seeded {} built-in skills", skills.size());
 	}
 
 	/** Accepts the current array format and the old 0.4.0 name-keyed format. */
@@ -429,8 +451,12 @@ public final class SkillRegistry {
 
 	private record Ranked(Skill skill, int overlap) {}
 
+	/**
+	 * The storage key for a skill name. It must be the same normalisation saving uses, otherwise
+	 * "wave hello" is stored as "wave-hello" and can never be found again by the name a player types.
+	 */
 	private static String key(String name) {
-		return name == null ? "" : name.trim().toLowerCase(Locale.ROOT);
+		return cleanName(name == null ? "" : name);
 	}
 
 	/** Lower-case, spaces to dashes, only id-safe characters. "" means unusable. */

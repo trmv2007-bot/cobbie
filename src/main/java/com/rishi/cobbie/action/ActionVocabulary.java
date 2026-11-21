@@ -29,16 +29,18 @@ public final class ActionVocabulary {
 	public static final String ATTACK = "attack";
 	public static final String COLLECT = "collect";
 	public static final String EXPLORE = "explore";
+	public static final String LIGHT = "light";
+	public static final String GIVE = "give";
 	public static final String WAIT = "wait";
 
 	private static final Set<String> ALLOWED = new LinkedHashSet<>(List.of(
-			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, WAIT));
+			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, WAIT));
 
 	/** Actions that are meaningless without an explicit target position. */
-	private static final Set<String> NEEDS_POSITION = Set.of(WALK_TO, MINE, PLACE);
+	private static final Set<String> NEEDS_POSITION = Set.of(WALK_TO, MINE, PLACE, LIGHT);
 
 	/** Actions that change the world and therefore need verification afterwards. */
-	private static final Set<String> WORLD_CHANGING = Set.of(MINE, PLACE, ATTACK, COLLECT);
+	private static final Set<String> WORLD_CHANGING = Set.of(MINE, PLACE, ATTACK, COLLECT, LIGHT, GIVE);
 
 	private ActionVocabulary() {}
 
@@ -68,6 +70,8 @@ public final class ActionVocabulary {
 			case "build", "put", "set-block", "place-block" -> PLACE;
 			case "hit", "fight", "kill", "attack-mob" -> ATTACK;
 			case "pick-up", "pickup", "grab", "gather" -> COLLECT;
+			case "torch", "light-up", "illuminate", "place-torch" -> LIGHT;
+			case "hand", "hand-over", "handover", "deliver", "give-item" -> GIVE;
 			case "say", "speak", "tell" -> CHAT;
 			case "wander", "roam", "look-around" -> EXPLORE;
 			case "come", "come-here" -> FOLLOW;

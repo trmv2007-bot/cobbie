@@ -81,7 +81,7 @@ public final class CobbieConfig {
 
 	// ---- LLM ----
 	private static String llmBaseUrl = "http://127.0.0.1:11434/";
-	private static String llmModel = "SparkLLM/Spark-X2.6-4B:q4_k_m";
+	private static String llmModel = "lfm2.5:8b";
 	private static String llmApiKey = "";
 	private static String llmProvider = "ollama";
 	private static double temperature = 0.7;
@@ -365,11 +365,11 @@ public final class CobbieConfig {
 		ensureLoaded();
 		return switch (action == null ? "" : action) {
 			case "mine" -> miningAllowed;
-			case "place" -> buildingAllowed;
+			case "place", "light" -> buildingAllowed;
 			case "attack" -> combatAllowed;
 			case "explore" -> explorationAllowed && autonomyMode != AutonomyMode.OFF;
 			case "collect" -> collectionAllowed;
-			case "follow", "stay", "wave", "chat", "answer", "wait", "walk-to" -> true;
+			case "follow", "stay", "wave", "chat", "answer", "wait", "walk-to", "give" -> true;
 			default -> false;
 		};
 	}

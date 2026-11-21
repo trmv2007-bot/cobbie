@@ -1,4 +1,4 @@
-# Cobbie 0.6.0 — install, Ollama setup, model swap
+# Cobbie 0.7.0 — install, Ollama setup, model swap
 
 Everything below is offline-capable and free. Cobbie never sends anything to the internet except
 the AI endpoint you configure (default: `127.0.0.1`, your own PC).
@@ -25,13 +25,19 @@ behaviours end to end (spawn, follow, stay/follow, chat, mining, building, comba
 about two minutes. Needs Ollama up for the chat test. Screenshots land in
 `build/run/clientGameTest/screenshots/`.
 
+## 1c. Opening the settings screen
+
+Press **C** in game, or run `/cobbie config`. Every setting that changes behaviour is there, labelled,
+with a **Test Connection** button that probes the endpoint and names the model it found. Saving applies
+immediately.
+
 ## 2. Install the mod
 
 ```bash
-cp /c/Users/rishi/Agent/cobbie/build/libs/cobbie-0.6.0.jar \
+cp /c/Users/rishi/Agent/cobbie/build/libs/cobbie-0.7.0.jar \
    "/c/Users/rishi/AppData/Roaming/.minecraft/mods/"
 ```
-Or in Explorer: `%APPDATA%\.minecraft\mods\` → drop `cobbie-0.6.0.jar` in. **Only one cobbie jar** —
+Or in Explorer: `%APPDATA%\.minecraft\mods\` → drop `cobbie-0.7.0.jar` in. **Only one cobbie jar** —
 delete any older one; Fabric caches jars, so fully quit Minecraft before relaunching after a swap.
 
 Required alongside: `fabric-api-*.jar` for 26.3 (present). Not required: GeckoLib — Cobbie no longer
@@ -44,7 +50,7 @@ if missing:
 {
   "provider": "ollama",
   "base_url": "http://127.0.0.1:11434/",
-  "model": "SparkLLM/Spark-X2.6-4B:q4_k_m",
+  "model": "lfm2.5:8b",
   "api_key": "",
   "temperature": 0.6,
   "max_tokens": 320,
@@ -113,10 +119,10 @@ Verified on this PC right now (`/api/tags`):
 
 | Model tag | Size | Notes |
 |---|---|---|
-| `SparkLLM/Spark-X2.6-4B:q4_k_m` | 3.5 GB | **use this one.** Advertises `tools` + `thinking`, follows the JSON contract, ~2–4 s/reply with thinking switched off |
-| `lfm2.5:8b` | larger | also installed; works as a drop-in if you want to try it |
+| `lfm2.5:8b` | 4.9 GB | **use this one.** Advertises `tools` + `thinking`, follows the JSON contract, ~2–4 s/reply with thinking switched off |
+| `SparkLLM/Spark-X2.6-4B:q4_k_m` | 3.5 GB | also installed; smaller and faster, a drop-in if the 8B is too slow on your machine |
 
-Set it in `config\cobbie.json` → `"model": "SparkLLM/Spark-X2.6-4B:q4_k_m"`, then in game:
+Set it in `config\cobbie.json` → `"model": "lfm2.5:8b"`, then in game:
 ```
 /cobbie test        # probes the server and confirms the exact tag is installed
 /cobbie status

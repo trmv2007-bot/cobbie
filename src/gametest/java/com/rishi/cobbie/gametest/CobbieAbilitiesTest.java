@@ -1,0 +1,118 @@
+package com.rishi.cobbie.gametest;
+
+import com.rishi.cobbie.action.ActionIntent;
+import com.rishi.cobbie.action.ActionVocabulary;
+import com.rishi.cobbie.entity.CobbieEntity;
+import com.rishi.cobbie.skill.SkillExecutor;
+import com.rishi.cobbie.skill.SkillRegistry;
+import net.fabricmc.fabric.api.client.gametest.v1.FabricClientGameTest;
+import net.fabricmc.fabric.api.client.gametest.v1.context.ClientGameTestContext;
+import net.fabricmc.fabric.api.client.gametest.v1.context.TestServerContext;
+import net.fabricmc.fabric.api.client.gametest.v1.context.TestSingleplayerContext;
+import net.minecraft.client.gui.screens.worldselection.WorldCreationUiState;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.Difficulty;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Blocks;
+
+import java.util.List;
+
+/**
+ * The abilities added in 0.7.0: {@code light} must place a real torch from his bag, {@code give} must
+ * move an item into the owner's inventory rather than deleting it, and the built-in skills must exist
+ * and be runnable through the same executor as everything else.
+ *
+ * Run with {@code ./gradlew runClientGameTest}.
+ */
+public final class CobbieAbilitiesTest implements FabricClientGameTest {
+
+    @Override
+    public void runTest(ClientGameTestContext context) {
+        try (TestSingleplayerContext world = CobbieTestSupport.createFlatWorld(context,
+                Difficulty.PEACEFUL, WorldCreationUiState.SelectedGameMode.CREATIVE)) {
+            CobbieTestSupport.awaitWorld(context);
+            TestServerContext server = world.getServer();
+            CobbieEntity cobbie = CobbieTestSupport.spawn(context, server);
+            CobbieTestSupport.permit(server, "building", true);
+
+            // ---- light ----
+            server.computeOnServer(s -> {
+                var owner = CobbieTestSupport.owner(s);
+                BlockPos spot = owner.blockPosition().offset(0, 0, 4);
+                CobbieTestSupport.command(s, "setblock " + spot.getX() + " " + (spot.getY() - 1) + " " + spot.getZ()
+                        + " minecraft:stone");
+                CobbieTestSupport.command(s, "setblock " + spot.getX() + " " + spot.getY() + " " + spot.getZ()
+                        + " minecraft:air");
+                CobbieTestSupport.cobbie(s).orElseThrow().addItem(new ItemStack(Items.TORCH, 4));
+                return null;
+            });
+
+            BlockPos spot = server.computeOnServer(s -> CobbieTestSupport.owner(s).blockPosition().offset(0, 0, 4));
+            String lightRefusal = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .offerPlan("put a torch down over there",
+                            List.of(new ActionIntent(ActionVocabulary.LIGHT, "minecraft:torch",
+                                    spot.getX(), spot.getY(), spot.getZ(), ""))));
+            if (lightRefusal != null) throw new AssertionError("light refused: " + lightRefusal);
+
+            try {
+                server.waitFor(s -> s.overworld().getBlockState(spot).is(Blocks.TORCH), 600);
+            } catch (Throwable t) {
+                throw new AssertionError("No torch appeared at " + spot + "; state="
+                        + server.computeOnServer(s -> s.overworld().getBlockState(spot).toString()), t);
+            }
+            int torchesLeft = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .countItem("minecraft:torch"));
+            if (torchesLeft != 3) {
+                throw new AssertionError("Placed a torch but his stack is " + torchesLeft + ", expected 3");
+            }
+
+            // ---- give ----
+            server.computeOnServer(s -> {
+                CobbieTestSupport.cobbie(s).orElseThrow().addItem(new ItemStack(Items.STONE, 3));
+                return null;
+            });
+            int ownerBefore = server.computeOnServer(s -> CobbieTestSupport.owner(s).getInventory()
+                    .countItem(Items.STONE));
+
+            String giveRefusal = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .offerPlan("hand me a stone",
+                            List.of(new ActionIntent(ActionVocabulary.GIVE, "minecraft:stone", 0, 0, 0, ""))));
+            if (giveRefusal != null) throw new AssertionError("give refused: " + giveRefusal);
+
+            try {
+                server.waitFor(s -> CobbieTestSupport.owner(s).getInventory().countItem(Items.STONE) > ownerBefore, 300);
+            } catch (Throwable t) {
+                throw new AssertionError("The owner never received the stone; cobbie holds "
+                        + server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                        .countItem("minecraft:stone")), t);
+            }
+            int hisStone = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .countItem("minecraft:stone"));
+            if (hisStone != 2) {
+                throw new AssertionError("Item duplicated or lost: he had 3, gave one, now holds " + hisStone);
+            }
+
+            // ---- built-in skills ----
+            List<String> names = server.computeOnServer(s -> SkillRegistry.all().stream()
+                    .map(skill -> skill.name()).toList());
+            for (String expected : List.of("wave hello", "light the way", "gather some wood")) {
+                String wanted = expected.replace(' ', '-');
+                if (names.stream().noneMatch(n -> n.equalsIgnoreCase(wanted))) {
+                    throw new AssertionError("Built-in skill \"" + expected + "\" is missing; registry has " + names);
+                }
+            }
+            String started = server.computeOnServer(s -> {
+                CobbieTestSupport.cobbie(s).orElseThrow().interrupt();
+                SkillExecutor.Outcome outcome = SkillExecutor.run(CobbieTestSupport.cobbie(s).orElseThrow(), "wave hello");
+                return outcome.started() + " :: " + outcome.message();
+            });
+            if (!started.startsWith("true")) {
+                throw new AssertionError("Built-in skill did not run: " + started);
+            }
+
+            System.out.println("[gametest] abilities ok: torch at " + spot.toShortString()
+                    + " (4->" + torchesLeft + "), gave 1 stone (" + hisStone + " left), skills=" + names);
+        }
+    }
+}

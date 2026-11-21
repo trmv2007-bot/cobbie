@@ -5,18 +5,14 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.rishi.cobbie.Cobbie;
-import com.rishi.cobbie.config.CobbieConfig;
+import com.rishi.cobbie.brain.OllamaDiscovery;
 import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.client.gui.Font;
-import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
-import net.minecraft.client.gui.components.Checkbox;
 import net.minecraft.client.gui.components.EditBox;
-import net.minecraft.client.gui.components.Tooltip;
-import net.minecraft.client.gui.components.events.GuiEventListener;
-import net.minecraft.client.input.InputWithModifiers;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
-import net.minecraft.ChatFormatting;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -24,22 +20,32 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 /**
- * In-game config screen for Cobbie. Opens with {@code /cobbie config}.
- * Reads/writes config/cobbie.json directly so changes persist across restarts.
+ * The in-game settings screen: everything in {@code config/cobbie.json} that changes behaviour, with
+ * labels, scrolling, and a live connection test.
+ *
+ * <p>Opened with {@code /cobbie config} or the config keybind. Saving writes the file atomically and
+ * calls {@link com.rishi.cobbie.config.CobbieConfig#reload()}, which reconfigures the brain with the
+ * new endpoint immediately — no restart, no editing JSON by hand.
  */
 public class CobbieConfigScreen extends Screen {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final String TITLE_KEY = "cobbie.config.title";
 
+    private static final int ROW_HEIGHT = 22;
+    private static final int FOOTER_HEIGHT = 44;
+    private static final int LABEL_COLOR = 0xFFA0A0A0;
+    private static final int HEADER_COLOR = 0xFFFFAA00;
+
     private final Screen parent;
-    private final List<ConfigWidget> widgets = new ArrayList<>();
-    private int nextY;
+    private final List<Row> rows = new ArrayList<>();
+    private int contentHeight = ROW_HEIGHT;
+    private int scroll;
     private Path configFile;
     private JsonObject configJson;
+    private String status = "§7Not tested yet.";
 
     public CobbieConfigScreen(Screen parent) {
         super(Component.translatable(TITLE_KEY));
@@ -48,10 +54,27 @@ public class CobbieConfigScreen extends Screen {
 
     @Override
     protected void init() {
+        rows.clear();
         configFile = findConfigFile();
         loadConfig();
-        buildFields();
+        buildRows();
         super.init();
+
+        for (Row row : rows) {
+            if (row.widget != null) addRenderableWidget(row.widget);
+        }
+
+        int footerY = height - FOOTER_HEIGHT + 20;
+        addRenderableWidget(Button.builder(Component.literal("§aSave"), b -> {
+            saveConfig();
+            onClose();
+        }).bounds(width / 2 - 160, footerY, 95, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("§eTest Connection"), b -> testConnection())
+                .bounds(width / 2 - 55, footerY, 110, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("§cCancel"), b -> onClose())
+                .bounds(width / 2 + 65, footerY, 95, 20).build());
+
+        applyScroll();
     }
 
     private Path findConfigFile() {
@@ -68,8 +91,7 @@ public class CobbieConfigScreen extends Screen {
             return;
         }
         try {
-            String raw = Files.readString(configFile);
-            configJson = JsonParser.parseString(raw).getAsJsonObject();
+            configJson = JsonParser.parseString(Files.readString(configFile)).getAsJsonObject();
         } catch (Exception e) {
             Cobbie.LOGGER.warn("Cobbie config unreadable, using defaults: {}", e.toString());
             configJson = defaultConfig();
@@ -114,144 +136,169 @@ public class CobbieConfigScreen extends Screen {
         return o;
     }
 
-    private void buildFields() {
-        widgets.clear();
-        nextY = 40;
+    private void buildRows() {
+        header("LLM Connection");
+        textField("provider", "Provider", "ollama or openai");
+        textField("base_url", "Base URL", "http://127.0.0.1:11434/");
+        textField("model", "Model", "lfm2.5:8b");
+        textField("api_key", "API Key (blank = none)", "");
+        numberField("temperature", "Temperature", 0.0, 2.0, 0.1);
+        intField("max_tokens", "Max Tokens", 32, 4096, 50);
+        intField("connect_timeout", "Connect Timeout (s)", 1, 60, 1);
+        intField("read_timeout", "Read Timeout (s)", 5, 600, 10);
+        intField("max_retries", "Max Retries", 0, 3, 1);
 
-        // --- LLM section ---
-        addSectionHeader("§6LLM Connection");
-        addTextField("provider", "Provider", "ollama|openai", 200);
-        addTextField("base_url", "Base URL", "http://127.0.0.1:11434/", 300);
-        addTextField("model", "Model", "lfm2.5:8b", 250);
-        addTextField("api_key", "API Key (blank for none)", "", 250);
-        addNumberField("temperature", "Temperature", 0.0, 2.0, 0.1, 80);
-        addIntField("max_tokens", "Max Tokens", 32, 4096, 100);
-        addIntField("connect_timeout", "Connect Timeout (s)", 1, 60, 80);
-        addIntField("read_timeout", "Read Timeout (s)", 5, 600, 80);
-        addIntField("max_retries", "Max Retries", 0, 3, 80);
+        header("Personality");
+        textField("personality", "Personality", "warm, curious, a little playful");
+        enumField("autonomy_mode", "Autonomy", new String[]{"OFF", "ASSISTIVE", "CREATIVE"});
 
-        // --- Behaviour section ---
-        addSectionHeader("§6Behaviour");
-        addEnumField("autonomy_mode", "Autonomy", new String[]{"OFF", "ASSISTIVE", "CREATIVE"});
-        addIntField("plan_step_limit", "Plan Step Limit", 1, 8, 80);
-        addIntField("task_retry_limit", "Task Retry Limit", 0, 3, 80);
-        addIntField("max_concurrent_requests", "Max Concurrent", 1, 8, 80);
-        addIntField("task_timeout_seconds", "Task Timeout (s)", 15, 600, 80);
+        header("Behaviour");
+        intField("plan_step_limit", "Plan Step Limit", 1, 8, 1);
+        intField("task_retry_limit", "Task Retry Limit", 0, 3, 1);
+        intField("max_concurrent_requests", "Max Concurrent Requests", 1, 8, 1);
+        intField("task_timeout_seconds", "Task Timeout (s)", 15, 600, 15);
 
-        // --- Movement section ---
-        addSectionHeader("§6Movement");
-        addNumberField("follow_distance", "Follow Distance", 1.0, 32.0, 0.5, 80);
-        addIntField("navigation_range", "Navigation Range", 4, 64, 80);
-        addNumberField("interaction_reach", "Interaction Reach", 1.0, 8.0, 0.5, 80);
+        header("Movement");
+        numberField("follow_distance", "Follow Distance", 1.0, 32.0, 0.5);
+        intField("navigation_range", "Navigation Range", 4, 64, 4);
+        numberField("interaction_reach", "Interaction Reach", 1.0, 8.0, 0.5);
 
-        // --- Permissions section ---
-        addSectionHeader("§6Permissions");
-        addBooleanField("mining_allowed", "Mining Allowed");
-        addBooleanField("building_allowed", "Building Allowed");
-        addBooleanField("combat_allowed", "Combat Allowed");
-        addBooleanField("player_combat_allowed", "Player Combat (PvP)");
-        addBooleanField("exploration_allowed", "Exploration Allowed");
-        addBooleanField("collection_allowed", "Collection Allowed");
+        header("Permissions");
+        boolField("mining_allowed", "Mining");
+        boolField("building_allowed", "Building");
+        boolField("combat_allowed", "Combat");
+        boolField("player_combat_allowed", "Player Combat (PvP)");
+        boolField("exploration_allowed", "Exploration");
+        boolField("collection_allowed", "Collection");
 
-        // --- Chat section ---
-        addSectionHeader("§6Chat");
-        addEnumField("chat_mode", "Chat Mode", new String[]{"MENTION", "OWNER_MENTION", "ALWAYS_LISTEN", "ALLOWLIST"});
-        addTextField("allowed_players", "Allowed Players (comma)", "", 250);
-        addIntField("chat_cooldown_ms", "Cooldown (ms)", 200, 10000, 100);
+        header("Chat");
+        enumField("chat_mode", "Chat Mode", new String[]{"MENTION", "OWNER_MENTION", "ALWAYS_LISTEN", "ALLOWLIST"});
+        textField("allowed_players", "Allowed Players (comma separated)", "");
+        intField("chat_cooldown_ms", "Reply Cooldown (ms)", 200, 10000, 100);
 
-        // --- Memory section ---
-        addSectionHeader("§6Memory");
-        addBooleanField("memory_enabled", "Memory Enabled");
-        addIntField("max_chat_history", "Max History", 0, 40, 80);
-        addBooleanField("persistent_memory", "Persistent Memory");
+        header("Memory");
+        boolField("memory_enabled", "Memory Enabled");
+        intField("max_chat_history", "Chat History Kept", 0, 40, 2);
+        boolField("persistent_memory", "Persistent Memory");
 
-        // --- Entity section ---
-        addSectionHeader("§6Entity");
-        addIntField("inventory_size", "Inventory Slots", 1, 36, 80);
-        addBooleanField("only_allowlisted_players", "Gated to Allowlist");
-        addIntField("max_cobbies_per_player", "Max Cobbie Per Player", 1, 4, 80);
-
-        // Save / Cancel buttons at bottom
-        int buttonY = nextY + 12;
-        addRenderableWidget(Button.builder(Component.literal("§aSave"), btn -> {
-            saveConfig();
-            close();
-        }).bounds(width / 2 - 100, buttonY, 95, 20).build());
-
-        addRenderableWidget(Button.builder(Component.literal("§cCancel"), btn -> close())
-                .bounds(width / 2 + 5, buttonY, 95, 20).build());
+        header("Entity");
+        intField("inventory_size", "Inventory Slots", 1, 36, 1);
+        boolField("only_allowlisted_players", "Gated To Allowlist");
+        intField("max_cobbies_per_player", "Max Cobbies Per Player", 1, 4, 1);
     }
 
-    private void addSectionHeader(String text) {
-        // Just a spacing label, rendered in render()
-        widgets.add(new ConfigWidget(null, text, ConfigWidget.Type.SECTION));
-        nextY += 20;
+    // ---- row builders ----
+
+    private void header(String text) {
+        rows.add(new Row(null, text, Kind.HEADER));
     }
 
-    private void addTextField(String key, String label, String placeholder, int fieldWidth) {
-        EditBox field = new EditBox(font, width / 2 - fieldWidth / 2, nextY, fieldWidth, 20, Component.literal(label));
-        field.setHint(Component.literal(placeholder).withStyle(ChatFormatting.GRAY));
-        String val = getString(key);
-        if (val != null) field.setValue(val);
-        field.setResponder(s -> configJson.addProperty(key, s));
-        addRenderableWidget(field);
-        widgets.add(new ConfigWidget(field, label, ConfigWidget.Type.TEXT));
-        nextY += 26;
+    private void textField(String key, String label, String placeholder) {
+        EditBox box = new EditBox(font, 0, 0, 200, 18, Component.literal(label));
+        box.setHint(Component.literal(placeholder).withStyle(s -> s.withColor(0x808080)));
+        String value = getString(key);
+        if (value != null) box.setValue(value);
+        box.setResponder(v -> configJson.addProperty(key, v));
+        rows.add(new Row(box, label, Kind.FIELD));
     }
 
-    private void addNumberField(String key, String label, double min, double max, double step, int fieldWidth) {
-        EditBox field = new EditBox(font, width / 2 - fieldWidth / 2, nextY, fieldWidth, 20, Component.literal(label));
-        field.setHint(Component.literal(String.format(Locale.ROOT, "%.1f", getDouble(key))).withStyle(ChatFormatting.GRAY));
-        String val = getString(key);
-        if (val != null) field.setValue(val);
-        field.setResponder(s -> {
-            try { configJson.addProperty(key, Double.parseDouble(s)); } catch (Exception ignored) {}
-        });
-        addRenderableWidget(field);
-        widgets.add(new ConfigWidget(field, label, ConfigWidget.Type.NUMBER));
-        nextY += 26;
+    private void numberField(String key, String label, double min, double max, double step) {
+        String current = getString(key) == null ? "0" : getString(key);
+        Button btn = Button.builder(Component.literal("- " + current + " +"), b -> {
+            double value = Math.min(max, Math.max(min, getDouble(key) + step));
+            configJson.addProperty(key, round(value));
+            b.setMessage(Component.literal("- " + round(value) + " +"));
+        }).bounds(0, 0, 90, 18).build();
+        rows.add(new Row(btn, label, Kind.FIELD));
     }
 
-    private void addIntField(String key, String label, int min, int max, int fieldWidth) {
-        EditBox field = new EditBox(font, width / 2 - fieldWidth / 2, nextY, fieldWidth, 20, Component.literal(label));
-        field.setHint(Component.literal(String.valueOf(getInt(key))).withStyle(ChatFormatting.GRAY));
-        String val = getString(key);
-        if (val != null) field.setValue(val);
-        field.setResponder(s -> {
-            try { configJson.addProperty(key, Integer.parseInt(s)); } catch (Exception ignored) {}
-        });
-        addRenderableWidget(field);
-        widgets.add(new ConfigWidget(field, label, ConfigWidget.Type.INT));
-        nextY += 26;
+    private void intField(String key, String label, int min, int max, int step) {
+        String current = getString(key) == null ? "0" : getString(key);
+        Button btn = Button.builder(Component.literal("- " + current + " +"), b -> {
+            int value = Math.min(max, Math.max(min, getInt(key) + step));
+            configJson.addProperty(key, value);
+            b.setMessage(Component.literal("- " + value + " +"));
+        }).bounds(0, 0, 90, 18).build();
+        rows.add(new Row(btn, label, Kind.FIELD));
     }
 
-    private void addBooleanField(String key, String label) {
-        Checkbox btn = Checkbox.builder(Component.literal(label), minecraft.font).pos(width / 2 - 100, nextY).selected(getBoolean(key)).onValueChange((b, v) -> configJson.addProperty(key, v)).build();
-        addRenderableWidget(btn);
-        widgets.add(new ConfigWidget(btn, label, ConfigWidget.Type.BOOLEAN));
-        nextY += 26;
+    private void boolField(String key, String label) {
+        Button btn = Button.builder(Component.literal(label + ": " + (getBoolean(key) ? "§aON" : "§cOFF")), b -> {
+            boolean next = !getBoolean(key);
+            configJson.addProperty(key, next);
+            b.setMessage(Component.literal(label + ": " + (next ? "§aON" : "§cOFF")));
+        }).bounds(0, 0, 150, 18).build();
+        rows.add(new Row(btn, "", Kind.FIELD));
     }
 
-    private void addEnumField(String key, String label, String[] values) {
-        // Use a button that cycles through values on click
-        String initial = getString(key);
-        Button btn = Button.builder(Component.literal(label + ": " + initial), b -> {
-            String current = configJson.get(key).getAsString();
+    private void enumField(String key, String label, String[] values) {
+        String current = getString(key) == null ? values[0] : getString(key);
+        Button btn = Button.builder(Component.literal(current), b -> {
             int idx = 0;
             for (int i = 0; i < values.length; i++) {
-                if (values[i].equalsIgnoreCase(current)) {
+                if (values[i].equalsIgnoreCase(getString(key))) {
                     idx = (i + 1) % values.length;
                     break;
                 }
             }
-            String nextVal = values[idx];
-            configJson.addProperty(key, nextVal);
-            b.setMessage(Component.literal(label + ": " + nextVal));
-        }).bounds(width / 2 - 120, nextY, 240, 20).build();
-        addRenderableWidget(btn);
-        widgets.add(new ConfigWidget(btn, label, ConfigWidget.Type.ENUM));
-        nextY += 26;
+            String next = values[idx];
+            configJson.addProperty(key, next);
+            b.setMessage(Component.literal(next));
+        }).bounds(0, 0, 150, 18).build();
+        rows.add(new Row(btn, label, Kind.FIELD));
     }
+
+    // ---- layout and scrolling ----
+
+    private void applyScroll() {
+        int footerTop = height - FOOTER_HEIGHT;
+        int y = 32 + scroll;
+        for (Row row : rows) {
+            int rowHeight = row.kind == Kind.HEADER ? 18 : ROW_HEIGHT;
+            row.y = y;
+            if (row.widget != null) {
+                row.widget.setX(width / 2 + 10);
+                row.widget.setY(y);
+                boolean onScreen = y > 24 && y < footerTop - rowHeight;
+                row.widget.visible = onScreen;
+                row.widget.active = onScreen;
+            }
+            y += rowHeight;
+        }
+        contentHeight = y - scroll;
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        int footerTop = height - FOOTER_HEIGHT;
+        int view = footerTop - 32;
+        int maxScroll = Math.min(0, view - contentHeight + 8);
+        scroll = Math.max(maxScroll, Math.min(0, scroll + (int) (scrollY * 18)));
+        applyScroll();
+        return true;
+    }
+
+    @Override
+    public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
+        super.extractRenderState(graphics, mouseX, mouseY, partialTick);
+
+        for (Row row : rows) {
+            if (row.y < 24 || row.y > height - FOOTER_HEIGHT) continue;
+            if (row.kind == Kind.HEADER) {
+                graphics.text(font, row.label, width / 2 - 150, row.y, HEADER_COLOR);
+            } else if (!row.label.isEmpty()) {
+                graphics.text(font, row.label, width / 2 - 150, row.y + 5, LABEL_COLOR);
+            }
+        }
+
+        graphics.text(font, "§7" + status, width / 2 - 150, height - FOOTER_HEIGHT + 4, 0xFFAAAAAA);
+
+        if (contentHeight > height - 32 - FOOTER_HEIGHT) {
+            graphics.text(font, "§8scroll", width - 52, height - FOOTER_HEIGHT + 4, 0xFF606060);
+        }
+    }
+
+    // ---- save ----
 
     private String getString(String key) {
         return configJson.has(key) && configJson.get(key).isJsonPrimitive()
@@ -259,53 +306,83 @@ public class CobbieConfigScreen extends Screen {
     }
 
     private double getDouble(String key) {
-        return configJson.has(key) && configJson.get(key).isJsonPrimitive()
-                ? configJson.get(key).getAsDouble() : 0;
+        try {
+            return configJson.has(key) ? configJson.get(key).getAsDouble() : 0;
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     private int getInt(String key) {
-        return configJson.has(key) && configJson.get(key).isJsonPrimitive()
-                ? configJson.get(key).getAsInt() : 0;
+        try {
+            return configJson.has(key) ? configJson.get(key).getAsInt() : 0;
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     private boolean getBoolean(String key) {
-        return configJson.has(key) && configJson.get(key).isJsonPrimitive()
-                ? configJson.get(key).getAsBoolean() : false;
+        try {
+            return configJson.has(key) && configJson.get(key).getAsBoolean();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static double round(double v) {
+        return Math.round(v * 10.0) / 10.0;
     }
 
     private void saveConfig() {
         if (configFile == null) return;
         try {
-            String json = GSON.toJson(configJson);
             Path tmp = configFile.resolveSibling(configFile.getFileName() + ".tmp");
-            Files.writeString(tmp, json);
+            Files.writeString(tmp, GSON.toJson(configJson));
             try {
                 Files.move(tmp, configFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             } catch (IOException noAtomic) {
                 Files.move(tmp, configFile, StandardCopyOption.REPLACE_EXISTING);
             }
             Cobbie.LOGGER.info("Cobbie config saved via GUI");
-            // Push new LLM settings into the brain immediately
-            CobbieConfig.reload();
+            com.rishi.cobbie.config.CobbieConfig.reload();
         } catch (Exception e) {
             Cobbie.LOGGER.error("Failed to save Cobbie config: {}", e.toString());
+            status = "Save failed: " + e.getClass().getSimpleName();
         }
     }
 
-    public void close() {
+    private void testConnection() {
+        status = "Testing…";
+        saveConfig();
+        OllamaDiscovery.probeConfiguredAsync().whenComplete((probe, error) -> {
+            String line = error != null
+                    ? "Probe failed: " + error.getClass().getSimpleName()
+                    : probe.state() + (probe.matchedModel() == null ? "" : " (" + probe.matchedModel() + ")")
+                    + (probe.error() == null ? "" : " — " + probe.error());
+            minecraft.execute(() -> {
+                status = line;
+                rebuildWidgets();
+            });
+        });
+    }
+
+    @Override
+    public void onClose() {
         minecraft.setScreenAndShow(parent);
     }
 
-    
-    private static class ConfigWidget {
-        enum Type { SECTION, TEXT, NUMBER, INT, BOOLEAN, ENUM }
-        final GuiEventListener widget;
+    private enum Kind { HEADER, FIELD }
+
+    private static final class Row {
+        final AbstractWidget widget;
         final String label;
-        final Type type;
-        ConfigWidget(GuiEventListener widget, String label, Type type) {
+        final Kind kind;
+        int y;
+
+        Row(AbstractWidget widget, String label, Kind kind) {
             this.widget = widget;
             this.label = label;
-            this.type = type;
+            this.kind = kind;
         }
     }
 }

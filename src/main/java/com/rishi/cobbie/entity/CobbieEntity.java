@@ -484,6 +484,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 				yield ActionOutcome.ok(verb, "wandering a little");
 			}
 			case ActionVocabulary.WALK_TO -> startWalk(intent);
+			case ActionVocabulary.LIGHT -> startPlace(new ActionIntent(ActionVocabulary.PLACE,
+					"minecraft:torch", intent.x(), intent.y(), intent.z(), ""));
+			case ActionVocabulary.GIVE -> giveToOwner(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
@@ -726,6 +729,37 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 		wearTool(tool);
 		return ActionOutcome.ok("mine", "broke " + id + " at " + describe(pos)
 				+ ", but my bag is full so the items are on the ground");
+	}
+
+	/**
+	 * Hand one item from his bag to the owner, verified from both sides: the stack leaves his bag and
+	 * lands in the owner's inventory. If it will not fit, the item goes back — a gift that vanishes is
+	 * worse than a gift refused.
+	 */
+	private ActionOutcome giveToOwner(ActionIntent intent) {
+		ServerPlayer owner = owner();
+		if (owner == null) return ActionOutcome.fail("give", "I cannot see you right now");
+
+		String wanted = intent.target() == null ? "" : intent.target().trim();
+		ItemStack gift = ItemStack.EMPTY;
+		for (int i = 0; i < inventory.getContainerSize() && gift.isEmpty(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty()) continue;
+			if (wanted.isEmpty() || wanted.equalsIgnoreCase(itemId(stack))) {
+				gift = stack.copyWithCount(1);
+			}
+		}
+		if (gift.isEmpty()) {
+			return ActionOutcome.fail("give", wanted.isEmpty() ? "I have nothing to give you" : "I have no " + wanted);
+		}
+
+		String id = itemId(gift);
+		if (!consumeItem(id, 1)) return ActionOutcome.fail("give", "I could not let go of the " + id);
+		if (!owner.getInventory().add(gift)) {
+			addItem(gift);
+			return ActionOutcome.fail("give", "your bag is full, so I kept the " + id);
+		}
+		return ActionOutcome.ok("give", "gave you 1 " + id);
 	}
 
 	private ActionOutcome startPlace(ActionIntent intent) {
