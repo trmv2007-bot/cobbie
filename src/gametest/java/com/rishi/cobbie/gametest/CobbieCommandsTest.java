@@ -32,6 +32,13 @@ public final class CobbieCommandsTest implements FabricClientGameTest {
             Vec3 held = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow().position());
 
             CobbieTestSupport.teleportOwner(server, 8, 0, 8);
+            // Following only repaths inside loaded chunks; measuring before the world catches up has
+            // made this test lie about him standing still.
+            try {
+                server.waitFor(s -> s.overworld().isLoaded(CobbieTestSupport.owner(s).blockPosition()), 200);
+            } catch (Throwable t) {
+                throw new AssertionError("Owner's chunk never loaded after the teleport", t);
+            }
             context.waitTicks(100);
 
             double drift = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow().position().distanceTo(held));

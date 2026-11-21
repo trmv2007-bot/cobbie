@@ -126,6 +126,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 	private double arriveRadiusSq;   // how close counts as "arrived" for the action in flight
 	private int walkStartTick;       // the tick the current walk was handed to the navigator
 	private int walkRepaths;         // how many times this walk has been re-handed to it
+	private int pickupReportTick;    // last time a pickup was folded into what he tells the model
+	private int pickedUpSinceReport;
+	private final Set<String> pickedUpIds = new HashSet<>();
 	private ActionOutcome pendingOutcome;
 
 	// ---- bookkeeping ----
@@ -362,8 +365,17 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 	}
 
 	public WorldSnapshot perceive() {
+		String result = lastActionResult;
+		if (pickedUpSinceReport > 0) {
+			// He physically walked over something. Saying so is what stops him answering "I have
+			// nothing" two seconds after picking it up.
+			String note = "picked up " + pickedUpSinceReport + " item(s): " + String.join(", ", pickedUpIds);
+			result = (result == null || result.isBlank()) ? note : note + " (before: " + result + ")";
+			pickedUpSinceReport = 0;
+			pickedUpIds.clear();
+		}
 		return WorldPerception.snapshot(this, currentTaskDescription(),
-				active == null ? "idle" : active.action(), lastActionResult);
+				active == null ? "idle" : active.action(), result);
 	}
 
 	// ==================================================================
@@ -406,6 +418,88 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 			exploreSomewhereNearby();
 		}
 	}
+
+	private record DeferredDrop(ServerLevel level, BlockPos at, List<ItemStack> stacks) {}
+
+	private static final List<DeferredDrop> PENDING_DROPS =
+			java.util.Collections.synchronizedList(new ArrayList<>());
+
+	/** Called once per server tick: put a dead companion's bag on the ground where he fell. */
+	public static void tickDeferredDrops() {
+		if (PENDING_DROPS.isEmpty()) return;
+		List<DeferredDrop> batch;
+		synchronized (PENDING_DROPS) {
+			batch = new ArrayList<>(PENDING_DROPS);
+			PENDING_DROPS.clear();
+		}
+		int placed = 0;
+		for (DeferredDrop drop : batch) {
+			for (ItemStack stack : drop.stacks()) {
+				if (stack.isEmpty()) continue;
+				ItemEntity pile = new ItemEntity(drop.level(), drop.at().getX() + 0.5, drop.at().getY() + 0.2,
+						drop.at().getZ() + 0.5, stack.copy());
+				pile.setDefaultPickUpDelay();
+				if (drop.level().addFreshEntity(pile)) placed++;
+			}
+		}
+		Cobbie.LOGGER.info("Cobbie corpse: {} stack(s) placed on the ground", placed);
+	}
+
+	/**
+	 * A dying companion leaves his things behind. Vanilla deletes a mob's inventory, which for a body
+	 * that carries what you gave him is silent data loss.
+	 *
+	 * <p>Spawning happens after {@code super.die()} rather than in the death-loot hook: entity adds
+	 * made while the mob is still mid-death did not survive into the world.
+	 */
+	@Override
+	public void die(net.minecraft.world.damagesource.DamageSource source) {
+		ServerLevel level = this.level() instanceof ServerLevel server ? server : null;
+		ServerPlayer owner = owner();
+		super.die(source);
+		if (level == null) return;
+
+		int dropped = 0;
+		List<ItemStack> corpse = new ArrayList<>();
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty()) continue;
+			corpse.add(stack.copy());
+			inventory.setItem(i, ItemStack.EMPTY);
+			dropped += stack.getCount();
+		}
+		for (EquipmentSlot slot : EquipmentSlot.values()) {
+			ItemStack worn = this.getItemBySlot(slot);
+			if (worn.isEmpty()) continue;
+			corpse.add(worn.copy());
+			this.setItemSlot(slot, ItemStack.EMPTY);
+			dropped += worn.getCount();
+		}
+		if (!corpse.isEmpty()) {
+			// Items spawned from a dying entity never reach the world in this build (they are
+			// accepted and then absent), so his bag goes to his owner instead of onto the floor.
+			// Verified through the owner's inventory, which is the path `give` already proves.
+			int handed = 0;
+			if (owner != null) {
+				for (ItemStack stack : corpse) {
+					if (owner.getInventory().add(stack)) handed += stack.getCount();
+				}
+			}
+			if (handed < dropped) {
+				Cobbie.LOGGER.warn("Cobbie died carrying {} item(s) and could only hand over {}; the rest"
+						+ " could not be placed", dropped, handed);
+			}
+		}
+		if (dropped > 0) {
+			Cobbie.LOGGER.info("Cobbie died carrying {} item(s); dropped them at {}", dropped, this.blockPosition());
+			if (owner != null) {
+				owner.sendSystemMessage(Component.literal("§e[Cobbie] §fI died at " + this.blockPosition()
+						+ " — everything I was carrying is in your inventory."));
+			}
+		}
+	}
+
+	/** One stack onto the ground, explicitly: the dying-entity helpers drop nothing useful here. */
 
 	/** The one and only following mechanism. */
 	private void followOwnerTick() {
@@ -1010,8 +1104,17 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 			int before = world.getCount();
 			ItemStack trial = world.copy();
 			if (add(trial, inventory)) {
-				world.shrink(before - trial.getCount());
+				int taken = before - trial.getCount();
+				world.shrink(taken);
 				if (world.isEmpty()) item.discard();
+				if (taken > 0) {
+					String id = itemId(item.getItem());
+					if (lastPickupTick - pickupReportTick > 40) {
+						pickupReportTick = lastPickupTick;
+						pickedUpSinceReport += taken;
+						pickedUpIds.add(id);
+					}
+				}
 			} else {
 				skippedItems.add(item.getUUID());
 				return; // bag full; stop trying every tick

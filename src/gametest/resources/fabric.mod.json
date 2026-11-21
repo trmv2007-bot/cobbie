@@ -10,6 +10,7 @@
     "fabric-client-gametest": [
       "com.rishi.cobbie.gametest.CobbieCapabilityTest",
       "com.rishi.cobbie.gametest.CobbieAbilitiesTest",
+      "com.rishi.cobbie.gametest.CobbieDeathLootTest",
       "com.rishi.cobbie.gametest.CobbieConfigUiTest",
       "com.rishi.cobbie.gametest.CobbieSmokeTest",
       "com.rishi.cobbie.gametest.CobbieFollowTest",

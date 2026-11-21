@@ -180,6 +180,17 @@ class ActionParserTest {
 	}
 
 	@Test
+	void anAnswerThatIsItselfJsonIsUnwrappedInsteadOfShown() {
+		// Seen live: the model answered a follow-up with {"answer":"{\"answer\":\"The armor didn't…\"}"}
+		// and the player got the payload in chat.
+		String nested = "{\"answer\":\"{\\\"answer\\\":\\\"The armour did not equip\\\"}\"}";
+		ActionPlan plan = ActionParser.parse(nested);
+
+		assertEquals("The armour did not equip", plan.answer());
+		assertFalse(plan.answer().contains("{"), plan.answer());
+	}
+
+	@Test
 	void aTwentyStepPlanIsAcceptedRatherThanCappedAtEight() {
 		StringBuilder sb = new StringBuilder("{\"answer\":\"big job\",\"actions\":[");
 		for (int i = 0; i < 20; i++) {

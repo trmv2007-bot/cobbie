@@ -129,6 +129,7 @@ public final class CobbieBrain {
 	/** Per-tick pump: delivers plan reports on the server thread. */
 	public static void onServerTick(MinecraftServer server) {
 		deliverReports(server);
+		com.rishi.cobbie.entity.CobbieEntity.tickDeferredDrops();
 	}
 
 	/** Owner asked him to stop thinking about the last thing they said. */

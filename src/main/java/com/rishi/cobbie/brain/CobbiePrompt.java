@@ -71,7 +71,19 @@ public final class CobbiePrompt {
 				.append("result back to you on the next turn, and only then may you talk about it.\n")
 				.append("8. You cannot run commands, read files or touch anything outside this list. Never try.\n")
 				.append("9. NEVER claim to own something that is not in your INVENTORY line. If you do not have it, ")
-				.append("say so plainly, or use collect, drop or equip to actually change what you carry.\n");
+				.append("say so plainly, or use collect, drop or equip to actually change what you carry. ");
+
+		// Repeated last, on purpose: a long prompt loses a line it mentions once in the middle, and
+		// inventing inventory is the failure players notice most.
+		if (world != null && world.inventoryIds() != null) {
+			sb.append("\nFINAL CHECK — your bag right now contains exactly: ")
+					.append(world.inventoryIds().isEmpty()
+							? "nothing"
+							: String.join(", ", world.inventoryIds()))
+					.append(". Anything else you think you have is not real.\n");
+		} else {
+			sb.append('\n');
+		}
 
 		return sb.toString();
 	}

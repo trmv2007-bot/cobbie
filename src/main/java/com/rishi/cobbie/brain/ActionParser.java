@@ -254,8 +254,36 @@ public final class ActionParser {
 		return clean(text.isBlank() ? "..." : text);
 	}
 
+	/** Unwrap an answer that is itself a JSON object: models sometimes nest one inside the other. */
+	private static String unwrapNestedJson(String text) {
+		if (text == null) return null;
+		String t = text.trim();
+		if (!t.startsWith("{") || !t.contains("\"answer\"")) return text;
+		int key = t.indexOf("\"answer\"");
+		int colon = t.indexOf(':', key);
+		int quote = colon < 0 ? -1 : t.indexOf('"', colon + 1);
+		if (quote < 0) return text;
+		StringBuilder out = new StringBuilder();
+		boolean escaped = false;
+		for (int i = quote + 1; i < t.length(); i++) {
+			char c = t.charAt(i);
+			if (escaped) {
+				out.append(c == 'n' ? ' ' : c);
+				escaped = false;
+			} else if (c == 92) {   // backslash
+				escaped = true;
+			} else if (c == '"') {
+				break;
+			} else {
+				out.append(c);
+			}
+		}
+		return out.length() == 0 ? text : out.toString();
+	}
+
 	private static String clean(String text) {
 		if (text == null) return "...";
+		text = unwrapNestedJson(text);
 		String s = text.replace("\r", " ").trim();
 		// Some models wrap everything in a code fence even when told not to.
 		s = s.replaceAll("(?s)^```[a-zA-Z]*\\s*", "").replaceAll("(?s)\\s*```$", "").trim();
