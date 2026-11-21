@@ -1,4 +1,4 @@
-# Cobbie 0.5.0 — install, Ollama setup, model swap
+# Cobbie 0.6.0 — install, Ollama setup, model swap
 
 Everything below is offline-capable and free. Cobbie never sends anything to the internet except
 the AI endpoint you configure (default: `127.0.0.1`, your own PC).
@@ -18,13 +18,20 @@ Your existing **TLauncher → profile "Fabric 26.3"** works identically for mods
 Java 25 is required by MC 26.3; the launcher brings its own runtime, so no system JDK needed to play.
 (You already have `C:\Users\rishi\jdk25` for building.)
 
+## 1b. Proving it works without playing (optional)
+
+`./gradlew runClientGameTest` boots a real client, generates a world per test and checks eight
+behaviours end to end (spawn, follow, stay/follow, chat, mining, building, combat, persistence) in
+about two minutes. Needs Ollama up for the chat test. Screenshots land in
+`build/run/clientGameTest/screenshots/`.
+
 ## 2. Install the mod
 
 ```bash
-cp /c/Users/rishi/Agent/cobbie/build/libs/cobbie-0.5.0.jar \
+cp /c/Users/rishi/Agent/cobbie/build/libs/cobbie-0.6.0.jar \
    "/c/Users/rishi/AppData/Roaming/.minecraft/mods/"
 ```
-Or in Explorer: `%APPDATA%\.minecraft\mods\` → drop `cobbie-0.5.0.jar` in. **Only one cobbie jar** —
+Or in Explorer: `%APPDATA%\.minecraft\mods\` → drop `cobbie-0.6.0.jar` in. **Only one cobbie jar** —
 delete any older one; Fabric caches jars, so fully quit Minecraft before relaunching after a swap.
 
 Required alongside: `fabric-api-*.jar` for 26.3 (present). Not required: GeckoLib — Cobbie no longer
@@ -157,5 +164,7 @@ and with or without a trailing slash — it is normalised.
     `%APPDATA%\.minecraft\logs\latest.log` (search for `Cobbie`) and
     `%APPDATA%\.minecraft\crash-reports\`.
 
-Screenshots requested in the mission are not included because no game session has been run against
-0.5.0 yet — capture `%APPDATA%\.minecraft\screenshots` on step 3 and I will review them.
+Six of those steps are already checked automatically by `./gradlew runClientGameTest`; this pass is the
+human half. The one thing no automated run can settle is whether he *looks* right — capture
+`%APPDATA%\.minecraft\screenshots` on step 3 and I will review them against
+`build/run/clientGameTest/screenshots/`.
