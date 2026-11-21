@@ -200,6 +200,10 @@ public final class LlmClient {
 	private CompletableFuture<Result> sendOnce(String body) {
 		HttpRequest.Builder req = HttpRequest.newBuilder()
 				.uri(endpoint)
+				// Plain HTTP with the default HTTP/2 setting makes Java attempt a cleartext upgrade.
+				// Proxies built on asyncio/uvicorn answer that by failing to parse the body, which
+				// surfaces as "Request body must be valid JSON" on a body that is perfectly valid.
+				.version(java.net.http.HttpClient.Version.HTTP_1_1)
 				.timeout(readTimeout)
 				.header("Content-Type", "application/json")
 				.header("Accept", "application/json");
@@ -220,12 +224,20 @@ public final class LlmClient {
 					if (code == 200) {
 						String content = extractContent(resp.body());
 						if (content == null || content.isBlank()) {
-							return Result.failure("model returned no text", false);
+							// An empty reply is usually a reasoning block that swallowed the whole
+							// token budget. It is worth one retry: the next sample often answers.
+							return Result.failure("model returned no text", true);
 						}
 						return Result.success(content);
 					}
 					if (code == 429 || code >= 500) {
 						return Result.failure("HTTP " + code, true);
+					}
+					// A server that rejects the body is worth diagnosing from the log: show what we
+					// sent (the request body never contains the API key — that travels in a header).
+					if (code == 400) {
+						Cobbie.LOGGER.warn("Cobbie request rejected; body was {} chars, starts: {}",
+								body.length(), body.length() > 300 ? body.substring(0, 300) : body);
 					}
 					return Result.failure("HTTP " + code + " " + snip(resp.body()), false);
 				})

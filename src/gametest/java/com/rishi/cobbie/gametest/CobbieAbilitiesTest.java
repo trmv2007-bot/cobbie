@@ -93,6 +93,38 @@ public final class CobbieAbilitiesTest implements FabricClientGameTest {
                 throw new AssertionError("Item duplicated or lost: he had 3, gave one, now holds " + hisStone);
             }
 
+            // ---- drop ----
+            server.computeOnServer(s -> {
+                CobbieTestSupport.cobbie(s).orElseThrow().addItem(new ItemStack(Items.DIAMOND, 3));
+                return null;
+            });
+
+            String dropRefusal = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .offerPlan("drop all your diamonds",
+                            List.of(new ActionIntent(ActionVocabulary.DROP, "minecraft:diamond", 0, 0, 0, "all"))));
+            if (dropRefusal != null) throw new AssertionError("drop refused: " + dropRefusal);
+
+            try {
+                server.waitFor(s -> CobbieTestSupport.cobbie(s).orElseThrow().countItem("minecraft:diamond") == 0, 300);
+            } catch (Throwable t) {
+                throw new AssertionError("He never let go of the diamonds; he still holds "
+                        + server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                        .countItem("minecraft:diamond")), t);
+            }
+
+            int onGround = server.computeOnServer(s -> {
+                var owner = CobbieTestSupport.owner(s);
+                return s.overworld().getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,
+                                new net.minecraft.world.phys.AABB(owner.blockPosition()).inflate(8))
+                        .stream()
+                        .filter(e -> e.getItem().is(Items.DIAMOND))
+                        .mapToInt(e -> e.getItem().getCount())
+                        .sum();
+            });
+            if (onGround != 3) {
+                throw new AssertionError("Bag emptied but " + onGround + " diamonds are on the ground, expected 3");
+            }
+
             // ---- built-in skills ----
             List<String> names = server.computeOnServer(s -> SkillRegistry.all().stream()
                     .map(skill -> skill.name()).toList());
@@ -112,7 +144,8 @@ public final class CobbieAbilitiesTest implements FabricClientGameTest {
             }
 
             System.out.println("[gametest] abilities ok: torch at " + spot.toShortString()
-                    + " (4->" + torchesLeft + "), gave 1 stone (" + hisStone + " left), skills=" + names);
+                    + " (4->" + torchesLeft + "), gave 1 stone (" + hisStone + " left), dropped "
+                    + onGround + " diamonds, skills=" + names);
         }
     }
 }

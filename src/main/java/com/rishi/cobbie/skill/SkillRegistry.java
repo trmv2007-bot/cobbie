@@ -51,7 +51,7 @@ public final class SkillRegistry {
 	/** The only step actions the task executor knows how to run. */
 	public static final Set<String> ALLOWED_ACTIONS = Set.of(
 			"answer", "follow", "stay", "wave", "walk-to", "mine", "place",
-			"attack", "collect", "chat", "wait", "explore", "light", "give");
+			"attack", "collect", "chat", "wait", "explore", "light", "give", "drop");
 
 	/** Words too common to be a useful retrieval signal. */
 	private static final Set<String> STOPWORDS = Set.of(

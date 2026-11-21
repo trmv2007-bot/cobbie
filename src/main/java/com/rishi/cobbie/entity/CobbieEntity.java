@@ -409,8 +409,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 	/** The one and only following mechanism. */
 	private void followOwnerTick() {
 		if (!following || ownerUuid == null) return;
-		// A running task owns his feet: following must not repath him back mid-job.
-		if (isBusy()) return;
+		// While a task is walking him somewhere, following must not repath him back mid-job. Any
+		// other kind of plan (talking, waving, a queued single step) must not freeze his feet.
+		if (navigatingForAction) return;
 		ServerPlayer owner = owner();
 		if (owner == null) return; // offline or in another dimension: wait where he is
 
@@ -487,6 +488,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 			case ActionVocabulary.LIGHT -> startPlace(new ActionIntent(ActionVocabulary.PLACE,
 					"minecraft:torch", intent.x(), intent.y(), intent.z(), ""));
 			case ActionVocabulary.GIVE -> giveToOwner(intent);
+			case ActionVocabulary.DROP -> dropFromBag(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
@@ -729,6 +731,57 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 		wearTool(tool);
 		return ActionOutcome.ok("mine", "broke " + id + " at " + describe(pos)
 				+ ", but my bag is full so the items are on the ground");
+	}
+
+	/**
+	 * Put items on the ground from his bag. "Drop your diamonds" means the whole stack unless the
+	 * request names a number, and the drop is verified from both sides: the bag shrinks and a real
+	 * item entity lands in the world. Nothing is deleted if either half fails.
+	 */
+	private ActionOutcome dropFromBag(ActionIntent intent) {
+		String wanted = intent.target() == null ? "" : intent.target().trim();
+		ItemStack from = ItemStack.EMPTY;
+		for (int i = 0; i < inventory.getContainerSize() && from.isEmpty(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty()) continue;
+			if (wanted.isEmpty() || wanted.endsWith(stack.getItem().toString())
+					|| wanted.equalsIgnoreCase(itemId(stack))) {
+				from = stack;
+			}
+		}
+		if (from.isEmpty()) {
+			return ActionOutcome.fail("drop", wanted.isEmpty() ? "I am not carrying anything" : "I have no " + wanted);
+		}
+
+		String id = itemId(from);
+		int count = from.getCount();
+		String data = intent.data() == null ? "" : intent.data().trim().toLowerCase(Locale.ROOT);
+		if (!data.isEmpty() && !data.contains("all")) {
+			String digits = data.replaceAll("[^0-9]", "");
+			if (!digits.isEmpty()) count = Math.min(count, Integer.parseInt(digits));
+		}
+		if (count <= 0) count = 1;
+
+		BlockPos at = new BlockPos(intent.x(), intent.y(), intent.z());
+		if (intent.x() == 0 && intent.y() == 0 && intent.z() == 0) at = this.blockPosition();
+		if (!level().isLoaded(at)) return ActionOutcome.fail("drop", "that spot is not loaded");
+
+		int heldBefore = countItem(id);
+		ItemStack pile = from.copyWithCount(count);
+		if (!consumeItem(id, count)) return ActionOutcome.fail("drop", "I could not let go of the " + id);
+
+		ItemEntity dropped = new ItemEntity(level(), at.getX() + 0.5, at.getY() + 0.5, at.getZ() + 0.5, pile);
+		dropped.setDefaultPickUpDelay();
+		if (!level().addFreshEntity(dropped)) {
+			addItem(pile);
+			return ActionOutcome.fail("drop", "the world would not take the " + id + ", so I kept it");
+		}
+		int heldAfter = countItem(id);
+		if (heldAfter != heldBefore - count) {
+			return ActionOutcome.fail("drop", "my bag says " + heldAfter + " " + id
+					+ " but it should say " + (heldBefore - count));
+		}
+		return ActionOutcome.ok("drop", "dropped " + count + " " + id + " at " + describe(at));
 	}
 
 	/**

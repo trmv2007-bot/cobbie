@@ -143,7 +143,7 @@ public class CobbieConfigScreen extends Screen {
         textField("model", "Model", "lfm2.5:8b");
         textField("api_key", "API Key (blank = none)", "");
         numberField("temperature", "Temperature", 0.0, 2.0, 0.1);
-        intField("max_tokens", "Max Tokens", 32, 4096, 50);
+        intField("max_tokens", "Max Tokens", 32, 8192, 100);
         intField("connect_timeout", "Connect Timeout (s)", 1, 60, 1);
         intField("read_timeout", "Read Timeout (s)", 5, 600, 10);
         intField("max_retries", "Max Retries", 0, 3, 1);
@@ -178,7 +178,7 @@ public class CobbieConfigScreen extends Screen {
 
         header("Memory");
         boolField("memory_enabled", "Memory Enabled");
-        intField("max_chat_history", "Chat History Kept", 0, 40, 2);
+        intField("max_chat_history", "Chat History Kept", 0, 200, 4);
         boolField("persistent_memory", "Persistent Memory");
 
         header("Entity");

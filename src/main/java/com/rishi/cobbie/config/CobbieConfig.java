@@ -181,7 +181,7 @@ public final class CobbieConfig {
 		llmApiKey = str(root, "api_key", llmApiKey);
 		llmProvider = normProvider(str(root, "provider", llmProvider));
 		temperature = dbl(root, "temperature", temperature, 0.0, 2.0);
-		maxTokens = integer(root, "max_tokens", maxTokens, 32, 2048);
+		maxTokens = integer(root, "max_tokens", maxTokens, 32, 8192);
 		connectTimeoutSeconds = integer(root, "connect_timeout", connectTimeoutSeconds, 1, 30);
 		readTimeoutSeconds = integer(root, "read_timeout", readTimeoutSeconds, 5, 600);
 		maxRetries = integer(root, "max_retries", maxRetries, 0, 3);
@@ -216,7 +216,7 @@ public final class CobbieConfig {
 		}
 
 		memoryEnabled = bool(root, "memory_enabled", memoryEnabled);
-		maxChatHistory = integer(root, "max_chat_history", maxChatHistory, 0, 40);
+		maxChatHistory = integer(root, "max_chat_history", maxChatHistory, 0, 200);
 		persistentMemory = bool(root, "persistent_memory", persistentMemory);
 
 		inventorySize = integer(root, "inventory_size", inventorySize, 1, 36);
@@ -369,7 +369,7 @@ public final class CobbieConfig {
 			case "attack" -> combatAllowed;
 			case "explore" -> explorationAllowed && autonomyMode != AutonomyMode.OFF;
 			case "collect" -> collectionAllowed;
-			case "follow", "stay", "wave", "chat", "answer", "wait", "walk-to", "give" -> true;
+			case "follow", "stay", "wave", "chat", "answer", "wait", "walk-to", "give", "drop" -> true;
 			default -> false;
 		};
 	}
