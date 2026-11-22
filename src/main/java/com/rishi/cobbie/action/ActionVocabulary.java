@@ -33,13 +33,21 @@ public final class ActionVocabulary {
 	public static final String GIVE = "give";
 	public static final String DROP = "drop";
 	public static final String EQUIP = "equip";
+	public static final String LOOKUP = "lookup";
 	public static final String WAIT = "wait";
 
 	private static final Set<String> ALLOWED = new LinkedHashSet<>(List.of(
-			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, WAIT));
+			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, LOOKUP, WAIT));
 
 	/** Actions that are meaningless without an explicit target position. */
 	private static final Set<String> NEEDS_POSITION = Set.of(WALK_TO, MINE, PLACE, LIGHT);
+
+	/** Verbs the brain answers itself (it owns the network and the chat line, not the entity). */
+	private static final Set<String> BRAIN_SIDE = Set.of(LOOKUP);
+
+	public static boolean isBrainSide(String action) {
+		return action != null && BRAIN_SIDE.contains(action.toLowerCase(Locale.ROOT));
+	}
 
 	/** Actions that change the world and therefore need verification afterwards. */
 	private static final Set<String> WORLD_CHANGING = Set.of(MINE, PLACE, ATTACK, COLLECT, LIGHT, GIVE, DROP, EQUIP);
@@ -76,6 +84,7 @@ public final class ActionVocabulary {
 			case "hand", "hand-over", "handover", "deliver", "give-item" -> GIVE;
 			case "drop-item", "toss", "throw", "discard", "put-down", "unload" -> DROP;
 			case "wear", "put-on", "wield", "hold", "equip-item", "armour", "armor" -> EQUIP;
+			case "look-up", "search", "wiki", "google" -> LOOKUP;
 			case "say", "speak", "tell" -> CHAT;
 			case "wander", "roam", "look-around" -> EXPLORE;
 			case "come", "come-here" -> FOLLOW;

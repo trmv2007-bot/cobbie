@@ -43,6 +43,9 @@ public final class CobbieCapabilityTest implements FabricClientGameTest {
 
             Map<String, String> outcomes = new LinkedHashMap<>();
             for (String verb : ActionVocabulary.allowed()) {
+                // A few verbs are answered by the brain, not the body (a wiki lookup has no block to
+                // touch). They must not claim entity coverage; they are checked below instead.
+                if (ActionVocabulary.isBrainSide(verb)) continue;
                 String outcome = server.computeOnServer(s -> {
                     var cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
                     cobbie.interrupt();
@@ -64,7 +67,17 @@ public final class CobbieCapabilityTest implements FabricClientGameTest {
                 }
             }
 
+            StringBuilder brainSide = new StringBuilder();
+            for (String verb : ActionVocabulary.allowed()) {
+                if (!ActionVocabulary.isBrainSide(verb)) continue;
+                if (!prompt.contains(verb)) {
+                    throw new AssertionError("brain-side verb \"" + verb + "\" is absent from the prompt");
+                }
+                brainSide.append(verb).append(' ');
+            }
+
             outcomes.forEach((verb, outcome) -> System.out.println("[gametest] verb " + verb + " -> " + outcome));
+            System.out.println("[gametest] brain-side verbs (answered in chat): " + brainSide.toString().trim());
             System.out.println("[gametest] capability ok: " + outcomes.size()
                     + " verbs reach an executor and appear in the prompt");
         }

@@ -11,14 +11,15 @@
       "com.rishi.cobbie.gametest.CobbieCapabilityTest",
       "com.rishi.cobbie.gametest.CobbieAbilitiesTest",
       "com.rishi.cobbie.gametest.CobbieDeathLootTest",
+      "com.rishi.cobbie.gametest.CobbieImperativeTest",
       "com.rishi.cobbie.gametest.CobbieConfigUiTest",
-      "com.rishi.cobbie.gametest.CobbieSmokeTest",
       "com.rishi.cobbie.gametest.CobbieFollowTest",
       "com.rishi.cobbie.gametest.CobbieCommandsTest",
       "com.rishi.cobbie.gametest.CobbieMineTest",
       "com.rishi.cobbie.gametest.CobbiePlaceTest",
       "com.rishi.cobbie.gametest.CobbieCombatTest",
       "com.rishi.cobbie.gametest.CobbiePersistenceTest",
+      "com.rishi.cobbie.gametest.CobbieSmokeTest",
       "com.rishi.cobbie.gametest.CobbieChatTest"
     ]
   },

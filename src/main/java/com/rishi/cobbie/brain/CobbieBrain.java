@@ -178,6 +178,15 @@ public final class CobbieBrain {
 			return;
 		}
 
+		// 3b. Short imperatives run deterministically: the model narrated "waving hello" without
+		// queueing the wave, and "coming right over" without moving. A command a player typed is not
+		// a conversation to be interpreted.
+		Imperatives.Hit hit = Imperatives.match(text);
+		if (hit != null) {
+			runImperative(sender, body, hit);
+			return;
+		}
+
 		// 4. Per-player throttle.
 		long now = System.currentTimeMillis();
 		long cooldown = Math.max(200, CobbieConfig.getChatCooldownMs());
@@ -267,6 +276,25 @@ public final class CobbieBrain {
 
 		if (CobbieConfig.isMemoryEnabled()) {
 			CobbieMemory.addTurn(speakerId, said, plan.answer());
+		}
+
+		// A lookup is not a world action: run it here, off-thread, and answer when the wiki does.
+		for (ActionIntent intent : plan.actions()) {
+			if (ActionVocabulary.LOOKUP.equals(intent.action())) {
+				if (CobbieConfig.isMemoryEnabled()) CobbieMemory.setCurrentObjective(speakerId, "look up " + intent.target());
+				WebLookup.search(intent.target()).thenAccept(answer -> {
+					MinecraftServer server = player.level().getServer();
+					if (server != null) {
+						server.execute(() -> {
+							player.sendSystemMessage(cobbieSays(answer));
+							if (CobbieConfig.isMemoryEnabled()) {
+								CobbieMemory.addTurn(speakerId, "look up " + intent.target(), answer);
+							}
+						});
+					}
+				});
+				return;
+			}
 		}
 
 		if (!plan.hasWorldAction()) return;
@@ -378,6 +406,54 @@ public final class CobbieBrain {
 		synchronized (reportQueue) {
 			while (reportQueue.size() > 16) reportQueue.pollFirst();   // bounded, oldest dropped
 			reportQueue.addLast(new Object[]{cobbie, plan.report()});
+		}
+	}
+
+	/** Execute a recognised short command without the model in the loop. */
+	private static void runImperative(ServerPlayer sender, CobbieEntity body, Imperatives.Hit hit) {
+		switch (hit.verb()) {
+			case "wave" -> {
+				body.wave();
+				body.say("here's a wave");
+			}
+			case "follow" -> {
+				body.startFollowing();
+				body.enqueue(new ActionIntent(ActionVocabulary.FOLLOW, "", 0, 0, 0, ""));
+				body.say("coming");
+			}
+			case "stay" -> {
+				body.stopFollowing();
+				body.cancelTask("owner said stay");
+				body.enqueue(new ActionIntent(ActionVocabulary.STAY, "", 0, 0, 0, ""));
+				body.say("staying here");
+			}
+			case "collect" -> body.enqueue(new ActionIntent(ActionVocabulary.COLLECT, "", 0, 0, 0, ""));
+			case "bag" -> sender.sendSystemMessage(cobbieSays("I am carrying: " + body.describeInventory()));
+			case "drop" -> {
+				var intent = new ActionIntent(ActionVocabulary.DROP, hit.target(), 0, 0, 0, "all");
+				String refusal = body.offerPlan("drop " + hit.target(), List.of(intent));
+				if (refusal != null) {
+					// An explicit command outranks whatever he was doing: drop the old task and obey.
+					body.cancelTask("owner asked me to drop something");
+					refusal = body.offerPlan("drop " + hit.target(), List.of(intent));
+				}
+				if (refusal != null) sender.sendSystemMessage(cobbieSays(refusal));
+			}
+			case "lookup" -> {
+				sender.sendSystemMessage(cobbieSays("looking that up..."));
+				WebLookup.search(hit.target()).thenAccept(answer -> {
+					MinecraftServer server = sender.level().getServer();
+					if (server != null) {
+						server.execute(() -> {
+							sender.sendSystemMessage(cobbieSays(answer));
+							if (CobbieConfig.isMemoryEnabled()) {
+								CobbieMemory.addTurn(sender.getUUID(), "look up " + hit.target(), answer);
+							}
+						});
+					}
+				});
+			}
+			default -> { }
 		}
 	}
 
