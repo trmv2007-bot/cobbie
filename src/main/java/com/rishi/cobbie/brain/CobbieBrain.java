@@ -315,7 +315,11 @@ public final class CobbieBrain {
 		}
 		if (allowed.isEmpty()) return;
 
-		String refusal = body.offerPlan(said, allowed);
+		// Busy? Then this is an addition to the job in hand, not a second queue entry: he keeps
+		// working and folds the new request in, nearest target first.
+		String refusal = body.isBusy()
+				? body.offerAddition(said, allowed)
+				: body.offerPlan(said, allowed);
 		if (refusal != null) {
 			player.sendSystemMessage(cobbieSays(refusal));
 		} else if (CobbieConfig.isMemoryEnabled() && ownerId != null) {

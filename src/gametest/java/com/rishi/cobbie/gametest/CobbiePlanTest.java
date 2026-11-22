@@ -124,8 +124,54 @@ public final class CobbiePlanTest implements FabricClientGameTest {
                         CobbieTestSupport.cobbie(s).map(c -> c.blockPosition()).orElse(null))), t);
             }
 
+            // ---- "and get that too": new work joins the job in hand ----
+            BlockPos seam = owner.offset(-6, 0, 0);
+            BlockPos extra = owner.offset(-6, 0, 4);
+            server.computeOnServer(s -> {
+                var cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
+                cobbie.cancelTask("clean slate for the merge test");
+                // Stand him back next to the owner: the previous scenario left him 24 blocks away,
+                // which is past the range he will walk for a single block.
+                var at = CobbieTestSupport.owner(s).blockPosition();
+                cobbie.absSnapTo(at.getX() + 0.5, at.getY(), at.getZ() + 0.5, 0.0F, 0.0F);
+                cobbie.addItem(new ItemStack(Items.IRON_PICKAXE, 1));
+                for (BlockPos spot : List.of(seam, extra)) {
+                    CobbieTestSupport.command(s, "setblock " + spot.getX() + " " + spot.getY() + " " + spot.getZ()
+                            + " minecraft:stone");
+                }
+                return null;
+            });
+
+            String seamRefusal = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .offerPlan("mine the seam", List.of(new ActionIntent(ActionVocabulary.MINE,
+                            "minecraft:stone", seam.getX(), seam.getY(), seam.getZ(), ""))));
+            if (seamRefusal != null) throw new AssertionError("seam plan refused: " + seamRefusal);
+
+            // One tick later the plan is definitely still running, which is the case being tested.
+            context.waitTicks(1);
+            String mergeRefusal = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .offerAddition("also get that one", List.of(new ActionIntent(ActionVocabulary.MINE,
+                            "minecraft:stone", extra.getX(), extra.getY(), extra.getZ(), ""))));
+            if (mergeRefusal != null) throw new AssertionError("addition refused: " + mergeRefusal);
+
+            try {
+                server.waitFor(s -> s.overworld().getBlockState(seam).isAir()
+                        && s.overworld().getBlockState(extra).isAir(), 900);
+            } catch (Throwable t) {
+                throw new AssertionError("The added target was not mined inside the same job: seam="
+                        + server.computeOnServer(s -> s.overworld().getBlockState(seam).toString())
+                        + " extra="
+                        + server.computeOnServer(s -> s.overworld().getBlockState(extra).toString()), t);
+            }
+
+            String job = server.computeOnServer(s -> {
+                var plan = CobbieTestSupport.cobbie(s).orElseThrow().lastPlan();
+                return plan == null ? "no plan" : plan.request() + " / " + plan.steps().size() + " steps";
+            });
+
             System.out.println("[gametest] plan ok: survived a bad middle step, queued a second job, "
-                    + "and resumed a walk after a mid-job wave");
+                    + "resumed a walk after a mid-job wave, and merged new work into the running job ("
+                    + job + ")");
         }
     }
 }

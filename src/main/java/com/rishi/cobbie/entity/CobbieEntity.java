@@ -305,6 +305,31 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 	}
 
 	/**
+	 * Add work to the errand he is already on, nearest first. "Get coal while you are down there"
+	 * should not mean walking back: among the things just asked for, he does the closest one next.
+	 *
+	 * @return null when merged, otherwise why it could not be
+	 */
+	public String offerAddition(String request, List<ActionIntent> intents) {
+		if (intents == null || intents.isEmpty()) return "nothing to add";
+		List<ActionIntent> ordered = new ArrayList<>(intents);
+		ordered.sort(java.util.Comparator.comparingDouble(this::urgencyDistance));
+		return tasks.append(request, ordered);
+	}
+
+	/** Lower is sooner: things with coordinates are ranked by how close they are to his feet. */
+	private double urgencyDistance(ActionIntent intent) {
+		if (intent == null) return Double.MAX_VALUE;
+		boolean spatial = ActionVocabulary.MINE.equals(intent.action())
+				|| ActionVocabulary.PLACE.equals(intent.action())
+				|| ActionVocabulary.WALK_TO.equals(intent.action())
+				|| ActionVocabulary.LIGHT.equals(intent.action())
+				|| ActionVocabulary.COLLECT.equals(intent.action());
+		if (!spatial) return Double.MAX_VALUE - 1; // talky steps go last, they cost nothing anyway
+		return this.blockPosition().distSqr(new BlockPos(intent.x(), intent.y(), intent.z()));
+	}
+
+	/**
 	 * Hand him an order that outranks what he is doing. The running job is parked, not cancelled, and
 	 * picks up where it stopped once the order is done — that is how you steer one body mid-job.
 	 */

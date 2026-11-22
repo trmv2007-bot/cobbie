@@ -218,6 +218,26 @@ class TaskRunnerTest {
 	}
 
 	@Test
+	void newWorkJoinsTheRunningJobInsteadOfQueueingBehindIt() {
+		Fake exec = new Fake().asynchronous();
+		TaskRunner runner = new TaskRunner(exec, 24, 0, 60_000);
+		runner.start("mine the seam", List.of(intent(ActionVocabulary.MINE)), false);
+		runner.tick(System.currentTimeMillis());
+
+		// "and get coal while you are there" — same errand, not a second one.
+		assertNull(runner.append("also coal", List.of(intent(ActionVocabulary.MINE),
+				intent(ActionVocabulary.MINE))));
+
+		exec.script.add(ActionOutcome.ok("mine", "1"));
+		exec.script.add(ActionOutcome.ok("mine", "2"));
+		exec.script.add(ActionOutcome.ok("mine", "3"));
+		for (int i = 0; i < 12; i++) runner.tick(System.currentTimeMillis());
+
+		long mines = exec.begun.stream().filter(i -> ActionVocabulary.MINE.equals(i.action())).count();
+		assertEquals(3, mines, "the added steps belong to the same job: " + exec.begun);
+	}
+
+	@Test
 	void anUrgentOrderInterruptsAndTheOldJobResumes() {
 		Fake exec = new Fake().asynchronous();
 		TaskRunner runner = new TaskRunner(exec, 6, 0, 60_000);

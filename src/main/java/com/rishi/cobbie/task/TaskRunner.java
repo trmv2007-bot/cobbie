@@ -128,6 +128,28 @@ public final class TaskRunner {
 		return null;
 	}
 
+	/**
+	 * Add work to the job in progress instead of queueing a separate one. This is how "and get coal
+	 * while you are down there" becomes part of the same errand.
+	 *
+	 * @return null when merged, otherwise the reason it could not be (so the caller can say so).
+	 */
+	public String append(String request, List<ActionIntent> intents) {
+		if (intents == null || intents.isEmpty()) return "nothing to do";
+		if (plan == null || plan.isFinished()) return start(request, intents);
+
+		List<ActionIntent> accepted = new ArrayList<>();
+		for (ActionIntent intent : intents) {
+			if (intent == null || !ActionVocabulary.isAllowed(intent.action())) continue;
+			if (plan.steps().size() + accepted.size() >= maxSteps) break;
+			accepted.add(intent);
+		}
+		if (accepted.isEmpty()) return "nothing I can add to what I am doing";
+		int added = plan.addPending(accepted);
+		plan.note("added " + added + " step(s) from \"" + request + "\"");
+		return null;
+	}
+
 	/** Call once per entity tick. Never throws: a broken executor becomes a failed plan. */
 	public void tick(long nowMillis) {
 		try {

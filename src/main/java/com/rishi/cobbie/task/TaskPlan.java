@@ -45,6 +45,23 @@ public final class TaskPlan {
 		}
 	}
 
+	/**
+	 * Add work to a plan that is already running. The steps join the same job rather than forming a
+	 * second one, so "and get coal too" is acted on inside what he is already doing.
+	 *
+	 * @return how many steps were added
+	 */
+	public int addPending(List<ActionIntent> intents) {
+		if (intents == null || intents.isEmpty()) return 0;
+		int added = 0;
+		for (ActionIntent intent : intents) {
+			if (intent == null) continue;
+			steps.add(new TaskStep(intent, steps.size()));
+			added++;
+		}
+		return added;
+	}
+
 	public long id() {
 		return id;
 	}
