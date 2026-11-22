@@ -131,7 +131,7 @@ class TaskRunnerTest {
 	}
 
 	@Test
-	void aFailedWorldStepStopsTheRestOfThePlan() {
+	void aFailedWorldStepDoesNotCancelTheRestOfThePlan() {
 		Fake exec = new Fake();
 		exec.script.add(ActionOutcome.fail("mine", "protected block"));
 		exec.async = false;
@@ -141,10 +141,24 @@ class TaskRunnerTest {
 				intent(ActionVocabulary.PLACE),
 				intent(ActionVocabulary.PLACE)));
 
-		for (int i = 0; i < 6 && runner.hasActiveTask(); i++) runner.tick(System.currentTimeMillis());
+		for (int i = 0; i < 10 && runner.hasActiveTask(); i++) runner.tick(System.currentTimeMillis());
 
-		assertEquals(1, exec.begun.size(), "steps after a hard failure must not run");
-		assertTrue(runner.takeReport().startsWith("failed"));
+		assertEquals(3, exec.begun.size(), "one bad block must not throw away the rest of the job: " + exec.begun);
+	}
+
+	@Test
+	void aPermissionRefusalStopsThePlanBecauseThePlanIsWrong() {
+		Fake exec = new Fake();
+		exec.script.add(ActionOutcome.fail("mine", "my owner has not allowed that"));
+		exec.async = false;
+		TaskRunner runner = new TaskRunner(exec, 6, 0, 60_000);
+		runner.start("dig", List.of(
+				intent(ActionVocabulary.MINE),
+				intent(ActionVocabulary.PLACE)));
+
+		for (int i = 0; i < 10 && runner.hasActiveTask(); i++) runner.tick(System.currentTimeMillis());
+
+		assertEquals(1, exec.begun.size(), "a refusal is not a transient failure: " + exec.begun);
 	}
 
 	@Test
@@ -204,15 +218,21 @@ class TaskRunnerTest {
 	}
 
 	@Test
-	void onlyOnePlanRunsAtATime() {
+	void aSecondPlanWaitsItsTurnInsteadOfBeingRefused() {
 		Fake exec = new Fake().asynchronous();
 		TaskRunner runner = new TaskRunner(exec, 6, 0, 60_000);
 		assertNull(runner.start("first", List.of(intent(ActionVocabulary.WALK_TO))));
 		runner.tick(System.currentTimeMillis());
 
-		String refusal = runner.start("second", List.of(intent(ActionVocabulary.WALK_TO)));
-		assertNotNull(refusal);
-		assertTrue(refusal.contains("busy"), refusal);
+		// One plan runs at a time, but an instruction given while he is busy is queued, not dropped:
+		// a companion that silently ignores you is the failure this test exists to prevent.
+		assertNull(runner.start("second", List.of(intent(ActionVocabulary.WAVE))), "second must be queued");
+
+		exec.script.add(ActionOutcome.ok("walk-to", "arrived"));
+		for (int i = 0; i < 8; i++) runner.tick(System.currentTimeMillis());
+
+		assertTrue(exec.begun.stream().anyMatch(i -> ActionVocabulary.WAVE.equals(i.action())),
+				"the queued plan must run once the first finishes: " + exec.begun);
 	}
 
 	@Test

@@ -45,12 +45,17 @@ public final class TaskRunner {
 		void interrupt();
 	}
 
+	/** How many instructions may wait behind the running one. */
+	private static final int MAX_QUEUED_PLANS = 8;
+
 	private final Executor executor;
 	private final int maxSteps;
 	private final int maxRetriesPerStep;
 	private final long durationMillis;
 
 	private TaskPlan plan;
+	/** Requests that arrived while he was busy. One plan at a time, but nothing is thrown away. */
+	private final java.util.Deque<TaskPlan> queued = new java.util.ArrayDeque<>();
 	private String pendingReport;
 	private boolean reported;
 
@@ -69,7 +74,9 @@ public final class TaskRunner {
 	 */
 	public String start(String request, List<ActionIntent> intents) {
 		if (intents == null || intents.isEmpty()) return "nothing to do";
-		if (plan != null && !plan.isFinished()) return "already busy with: " + plan.progress();
+		if (queued.size() >= MAX_QUEUED_PLANS) {
+			return "I already have " + queued.size() + " jobs waiting; say stop to clear them";
+		}
 
 		List<ActionIntent> accepted = new ArrayList<>();
 		List<String> rejected = new ArrayList<>();
@@ -93,10 +100,13 @@ public final class TaskRunner {
 		for (String problem : rejected) {
 			candidate.note(problem);
 		}
-		// Only skip steps the model asked for that are not world actions at all.
-		this.plan = candidate;
-		this.pendingReport = null;
-		this.reported = false;
+		// One plan runs at a time; anything else waits its turn instead of being refused, because a
+		// busy companion that drops your instruction is indistinguishable from one that ignored it.
+		if (plan != null && !plan.isFinished()) {
+			queued.addLast(candidate);
+			return null;
+		}
+		adopt(candidate);
 		return null;
 	}
 
@@ -113,7 +123,16 @@ public final class TaskRunner {
 		}
 	}
 
+	private void adopt(TaskPlan next) {
+		this.plan = next;
+		this.pendingReport = null;
+		this.reported = false;
+	}
+
 	private void tickUnsafe(long nowMillis) {
+		if ((plan == null || plan.isFinished()) && !queued.isEmpty()) {
+			adopt(queued.pollFirst());
+		}
 		if (plan == null || plan.isFinished()) return;
 
 		if (plan.isExpired(nowMillis)) {
@@ -130,7 +149,9 @@ public final class TaskRunner {
 
 		// Drive as many steps as the world settles within this tick (instant actions finish here),
 		// but stop at the first asynchronous hand-off. The guard bounds the loop absolutely.
-		int guard = plan.steps().size() + 2;
+		// A step can requeue itself up to its retry budget, so the bound must allow that many
+		// passes or a retrying plan trips the guard and dies with 'planner guard tripped'.
+		int guard = plan.steps().size() * (maxRetriesPerStep + 2) + 8;
 		while (guard-- > 0) {
 			if (plan.isFinished()) return;
 
@@ -199,8 +220,23 @@ public final class TaskRunner {
 			return;
 		}
 		step.markFailed(outcome.summary());
-		plan.finishAsFailure("step " + (step.index() + 1) + " (" + action + ") failed: " + outcome.summary());
-		queueReport();
+		if (isFatal(outcome.summary())) {
+			plan.finishAsFailure("step " + (step.index() + 1) + " (" + action + ") cannot be done: " + outcome.summary());
+			queueReport();
+			return;
+		}
+		// A step that will not work should not cancel the rest of the job: he carries on with what
+		// remains and reports the failure alongside the work that did get done.
+		plan.note(action + " gave up after " + step.attempts() + " attempt(s): " + outcome.summary()
+				+ " (continuing with the rest)");
+	}
+
+	/** Some failures are not worth continuing past: a permission refusal means the plan is wrong. */
+	private static boolean isFatal(String summary) {
+		if (summary == null) return false;
+		String s = summary.toLowerCase(java.util.Locale.ROOT);
+		return s.contains("not permitted") || s.contains("not something i can do")
+				|| s.contains("my owner has not allowed") || s.contains("that is not something");
 	}
 
 	private void queueReport() {
@@ -243,6 +279,7 @@ public final class TaskRunner {
 		for (TaskStep s : plan.steps()) {
 			if (s.isPending()) s.markSkipped();
 		}
+		queued.clear();
 		plan.setStatus(TaskPlan.Status.CANCELLED);
 		plan.note(reason == null || reason.isBlank() ? "cancelled by owner" : reason);
 		queueReport();
