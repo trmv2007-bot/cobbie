@@ -318,6 +318,11 @@ public final class TaskRunner {
 		return r;
 	}
 
+	/** How many jobs are waiting behind the one running (plus parked work). */
+	public int queuedCount() {
+		return queued.size() + urgent.size() + (suspended == null ? 0 : 1);
+	}
+
 	public boolean hasActiveTask() {
 		return plan != null && !plan.isFinished();
 	}

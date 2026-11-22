@@ -13,6 +13,7 @@
       "com.rishi.cobbie.gametest.CobbieDeathLootTest",
       "com.rishi.cobbie.gametest.CobbieImperativeTest",
       "com.rishi.cobbie.gametest.CobbiePlanTest",
+      "com.rishi.cobbie.gametest.CobbieStatusTest",
       "com.rishi.cobbie.gametest.CobbieConfigUiTest",
       "com.rishi.cobbie.gametest.CobbieFollowTest",
       "com.rishi.cobbie.gametest.CobbieCommandsTest",

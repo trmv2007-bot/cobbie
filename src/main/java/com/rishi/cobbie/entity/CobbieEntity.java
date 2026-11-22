@@ -428,6 +428,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 			this.entityData.set(DATA_WAVING, false);
 		}
 
+		updateNameplate();
 		followOwnerTick();
 
 		ActionOutcome settled = driveActiveStep();
@@ -480,6 +481,84 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 			}
 		}
 		Cobbie.LOGGER.info("Cobbie corpse: {} stack(s) placed on the ground", placed);
+	}
+
+	/** One word for what he is doing right now, for the tag above his head. */
+	public String statusWord() {
+		if (com.rishi.cobbie.brain.CobbieBrain.inFlightCount() > 0) return "thinking…";
+		if (active != null) {
+			return switch (active.action()) {
+				case ActionVocabulary.WALK_TO -> "walking";
+				case ActionVocabulary.MINE -> "mining";
+				case ActionVocabulary.PLACE -> "building";
+				case ActionVocabulary.LIGHT -> "lighting";
+				case ActionVocabulary.ATTACK -> "fighting";
+				case ActionVocabulary.COLLECT -> "picking up";
+				case ActionVocabulary.DROP -> "dropping";
+				case ActionVocabulary.EQUIP -> "gearing up";
+				case ActionVocabulary.GIVE -> "handing over";
+				case ActionVocabulary.EXPLORE -> "exploring";
+				default -> "busy";
+			};
+		}
+		if (tasks != null && tasks.hasActiveTask()) return "working";
+		if (isBusy()) return "working";
+		if (following) return "following you";
+		return "idle";
+	}
+
+	/**
+	 * Keep the tag above his head honest. Only the connected nameplate is extended — "Connecting…"
+	 * and "(LLM offline)" belong to the spawn/connection code and are left alone.
+	 */
+	private void updateNameplate() {
+		if (this.tickCount % 10 != 0 || level() == null || level().isClientSide()) return;
+		Component current = this.getCustomName();
+		String text = current == null ? "" : current.getString();
+		if (!text.startsWith("§eCobbie")) return;
+		String target = "§eCobbie §8· §7" + statusWord();
+		if (!target.equals(text)) {
+			this.setCustomName(Component.literal(target));
+			this.setCustomNameVisible(true);
+		}
+	}
+
+	/** Shift-right-click hands back what he is doing and what is left to do. */
+	@Override
+	protected net.minecraft.world.InteractionResult mobInteract(Player player, InteractionHand hand) {
+		if (!level().isClientSide() && player.isShiftKeyDown() && player instanceof ServerPlayer viewer) {
+			viewer.sendSystemMessage(Component.literal("§e[Cobbie] §f" + describeWork()));
+			return net.minecraft.world.InteractionResult.SUCCESS;
+		}
+		return super.mobInteract(player, hand);
+	}
+
+	/** Everything the owner asked for: current job, its steps, and anything waiting behind it. */
+	public String describeWork() {
+		StringBuilder sb = new StringBuilder();
+		sb.append("Right now: ").append(statusWord());
+		com.rishi.cobbie.task.TaskPlan plan = tasks == null ? null : tasks.plan();
+		if (plan == null) {
+			sb.append("\nNo job. Tell me what to do.");
+		} else {
+			sb.append("\nJob: ").append(plan.request()).append(" [").append(plan.status().name().toLowerCase()).append("]");
+			int i = 1;
+			for (com.rishi.cobbie.task.TaskStep step : plan.steps()) {
+				sb.append("\n ").append(i++).append(". ").append(step.intent().action());
+				if (step.intent().target() != null && !step.intent().target().isBlank()) {
+					sb.append(' ').append(step.intent().target());
+				}
+				if (ActionVocabulary.needsPosition(step.intent().action())) {
+					sb.append(" @").append(step.intent().x()).append(' ').append(step.intent().y())
+							.append(' ').append(step.intent().z());
+				}
+				sb.append(" - ").append(step.status().name().toLowerCase());
+			}
+			int waiting = tasks.queuedCount();
+			if (waiting > 0) sb.append("\n").append(waiting).append(" more job(s) waiting.");
+		}
+		sb.append("\nCarrying: ").append(describeInventory());
+		return sb.toString();
 	}
 
 	/**
