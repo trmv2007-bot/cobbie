@@ -180,6 +180,14 @@ class ActionParserTest {
 	}
 
 	@Test
+	void stageDirectionsAreStrippedFromSpeech() {
+		ActionPlan plan = ActionParser.parse("{\"answer\":\"Hello there! *waves* Good to see you.\",\"actions\":[]}");
+
+		assertEquals("Hello there! Good to see you.", plan.answer());
+		assertFalse(plan.answer().contains("*"), plan.answer());
+	}
+
+	@Test
 	void anAnswerThatIsItselfJsonIsUnwrappedInsteadOfShown() {
 		// Seen live: the model answered a follow-up with {"answer":"{\"answer\":\"The armor didn't…\"}"}
 		// and the player got the payload in chat.

@@ -24,6 +24,7 @@ import net.minecraft.world.phys.AABB;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -129,6 +130,7 @@ public final class CobbieBrain {
 	/** Per-tick pump: delivers plan reports on the server thread. */
 	public static void onServerTick(MinecraftServer server) {
 		deliverReports(server);
+		flushBatches();
 		com.rishi.cobbie.entity.CobbieEntity.tickDeferredDrops();
 	}
 
@@ -196,20 +198,65 @@ public final class CobbieBrain {
 			return;
 		}
 
-		// 5. Concurrency cap and duplicate collapse.
-		if (inFlight.get() >= CobbieConfig.getMaxConcurrentRequests()) {
-			sender.sendSystemMessage(cobbieSays("busy right now, give me a second"));
-			return;
+		// 5. Orchestration: bursts are coalesced into one call, and concurrency is a queue rather
+		// than a "busy" reply. Two quick lines ("mine this", "and get coal") are one thought, not two
+		// racing ones, and the model sees both together.
+		batch(sender, body, name, text);
+	}
+
+	/** One buffered line waiting to be sent as part of the next model call. */
+	private static final class Batch {
+		final ServerPlayer sender;
+		final CobbieEntity body;
+		final String name;
+		final List<String> lines = new ArrayList<>();
+		long dueAt;
+
+		Batch(ServerPlayer sender, CobbieEntity body, String name) {
+			this.sender = sender;
+			this.body = body;
+			this.name = name;
 		}
+	}
+
+	private static final Map<UUID, Batch> BATCHES = new ConcurrentHashMap<>();
+
+	private static void batch(ServerPlayer sender, CobbieEntity body, String name, String text) {
+		long window = Math.max(0, CobbieConfig.getChatBatchMs());
+		BATCHES.compute(sender.getUUID(), (id, existing) -> {
+			Batch b = existing == null ? new Batch(sender, body, name) : existing;
+			if (!b.lines.contains(text)) b.lines.add(text);
+			b.dueAt = System.currentTimeMillis() + window;
+			return b;
+		});
+	}
+
+	/** Called every server tick: send what has settled, while respecting the concurrency cap. */
+	private static void flushBatches() {
+		if (BATCHES.isEmpty()) return;
+		long now = System.currentTimeMillis();
+		for (Map.Entry<UUID, Batch> entry : BATCHES.entrySet()) {
+			Batch b = entry.getValue();
+			if (b.dueAt > now) continue;
+			if (inFlight.get() >= CobbieConfig.getMaxConcurrentRequests()) {
+				// Full: wait for a slot instead of telling the player he is busy.
+				b.dueAt = now + 250;
+				continue;
+			}
+			if (BATCHES.remove(entry.getKey(), b)) {
+				dispatch(b.sender, b.body, b.name, String.join(" ; ", b.lines));
+			}
+		}
+	}
+
+	private static void dispatch(ServerPlayer sender, CobbieEntity body, final String name, String text) {
+		final UUID speakerId = sender.getUUID();
 		final String key = speakerId + ":" + text.hashCode();
-		if (pending.putIfAbsent(key, new AtomicBoolean(false)) != null) {
-			sender.sendSystemMessage(cobbieSays("I already heard that one"));
-			return;
-		}
-		lastChatAt.put(speakerId, now);
+		if (pending.putIfAbsent(key, new AtomicBoolean(false)) != null) return;
+		lastChatAt.put(speakerId, System.currentTimeMillis());
 		inFlight.incrementAndGet();
 
-		// 6. Perceive the world HERE (server thread) and assemble the prompt.
+		// Perceive the world HERE (server thread) and assemble the prompt.
 		final WorldSnapshotHolder snapshot = new WorldSnapshotHolder(body.perceive());
 		final MinecraftServer server = sender.level() instanceof ServerLevel sl ? sl.getServer() : null;
 		final List<LlmClient.Msg> turns = conversationTurns(speakerId);
@@ -218,6 +265,7 @@ public final class CobbieBrain {
 				CobbieConfig.isMemoryEnabled() ? CobbieMemory.currentObjective(speakerId) : "",
 				SkillRegistry.describeForPrompt(4));
 		final String user = CobbiePrompt.userMessage(name, text);
+		final long now = System.currentTimeMillis();
 
 		client.complete(system, turns, user).thenAccept(result -> {
 			inFlight.decrementAndGet();

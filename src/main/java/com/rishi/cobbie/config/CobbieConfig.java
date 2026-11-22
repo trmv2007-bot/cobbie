@@ -115,6 +115,8 @@ public final class CobbieConfig {
 	private static ChatMode chatMode = ChatMode.MENTION;
 	private static final List<String> allowedPlayers = new ArrayList<>();
 	private static int chatCooldownMs = 900;
+	/** How long a burst of chat is collected before one model call is made. */
+	private static int chatBatchMs = 350;
 
 	// ---- Memory ----
 	private static boolean memoryEnabled = true;
@@ -206,6 +208,7 @@ public final class CobbieConfig {
 
 		chatMode = ChatMode.parse(str(root, "chat_mode", chatMode.name()), chatMode);
 		chatCooldownMs = integer(root, "chat_cooldown_ms", chatCooldownMs, 0, 10000);
+		chatBatchMs = integer(root, "chat_batch_ms", chatBatchMs, 0, 5000);
 		allowedPlayers.clear();
 		if (root.has("allowed_players") && root.get("allowed_players").isJsonArray()) {
 			for (var el : root.getAsJsonArray("allowed_players")) {
@@ -334,6 +337,12 @@ public final class CobbieConfig {
 
 	public static int getChatCooldownMs() { ensureLoaded(); return chatCooldownMs; }
 
+	/** How long to collect a burst of chat before one model call. */
+	public static int getChatBatchMs() {
+		ensureLoaded();
+		return chatBatchMs;
+	}
+
 	public static boolean isMemoryEnabled() { ensureLoaded(); return memoryEnabled; }
 	public static int getMaxChatHistory() { ensureLoaded(); return maxChatHistory; }
 	public static boolean isPersistentMemory() { ensureLoaded(); return persistentMemory; }
@@ -422,6 +431,7 @@ public final class CobbieConfig {
 			allowedPlayers.forEach(players::add);
 			root.add("allowed_players", players);
 			root.addProperty("chat_cooldown_ms", chatCooldownMs);
+		root.addProperty("chat_batch_ms", chatBatchMs);
 
 			root.addProperty("memory_enabled", memoryEnabled);
 			root.addProperty("max_chat_history", maxChatHistory);

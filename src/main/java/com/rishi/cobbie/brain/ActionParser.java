@@ -284,6 +284,8 @@ public final class ActionParser {
 	private static String clean(String text) {
 		if (text == null) return "...";
 		text = unwrapNestedJson(text);
+		// "*waves*" is a stage direction, not speech: he has a wave action for that.
+		text = text.replaceAll("\\*[^*\\n]{1,60}\\*", " ").replaceAll("\\s{2,}", " ").trim();
 		String s = text.replace("\r", " ").trim();
 		// Some models wrap everything in a code fence even when told not to.
 		s = s.replaceAll("(?s)^```[a-zA-Z]*\\s*", "").replaceAll("(?s)\\s*```$", "").trim();

@@ -75,7 +75,9 @@ public final class CobbiePrompt {
 				.append("say so plainly, or use collect, drop or equip to actually change what you carry.").append(NL)
 				.append("10. If your answer says you are doing something (waving, dropping, mining, following), an ")
 				.append("action for it MUST be in the same reply. Never narrate an action you are not queueing; ")
-				.append("if you are only talking, say that instead.").append(NL);
+				.append("if you are only talking, say that instead.").append(NL)
+				.append("11. Never write stage directions like *waves* or (smiles). If you want to wave, queue the ")
+				.append("wave action; otherwise just speak.").append(NL);
 
 		// Repeated last, on purpose: a long prompt loses a line it mentions once in the middle, and
 		// inventing inventory is the failure players notice most.
