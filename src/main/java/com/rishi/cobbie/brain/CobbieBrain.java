@@ -418,6 +418,7 @@ public final class CobbieBrain {
 			}
 			case "follow" -> {
 				body.startFollowing();
+				body.cancelTask("owner called me over");
 				body.enqueue(new ActionIntent(ActionVocabulary.FOLLOW, "", 0, 0, 0, ""));
 				body.say("coming");
 			}
@@ -430,13 +431,9 @@ public final class CobbieBrain {
 			case "collect" -> body.enqueue(new ActionIntent(ActionVocabulary.COLLECT, "", 0, 0, 0, ""));
 			case "bag" -> sender.sendSystemMessage(cobbieSays("I am carrying: " + body.describeInventory()));
 			case "drop" -> {
-				var intent = new ActionIntent(ActionVocabulary.DROP, hit.target(), 0, 0, 0, "all");
-				String refusal = body.offerPlan("drop " + hit.target(), List.of(intent));
-				if (refusal != null) {
-					// An explicit command outranks whatever he was doing: drop the old task and obey.
-					body.cancelTask("owner asked me to drop something");
-					refusal = body.offerPlan("drop " + hit.target(), List.of(intent));
-				}
+				// Urgent: whatever he was doing is parked and resumes afterwards, not thrown away.
+				String refusal = body.offerUrgentPlan("drop " + hit.target(),
+						List.of(new ActionIntent(ActionVocabulary.DROP, hit.target(), 0, 0, 0, "all")));
 				if (refusal != null) sender.sendSystemMessage(cobbieSays(refusal));
 			}
 			case "lookup" -> {

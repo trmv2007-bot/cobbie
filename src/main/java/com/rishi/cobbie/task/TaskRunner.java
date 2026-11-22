@@ -56,6 +56,10 @@ public final class TaskRunner {
 	private TaskPlan plan;
 	/** Requests that arrived while he was busy. One plan at a time, but nothing is thrown away. */
 	private final java.util.Deque<TaskPlan> queued = new java.util.ArrayDeque<>();
+	/** Typed commands: they pre-empt the running job, which is then resumed from where it stopped. */
+	private final java.util.Deque<TaskPlan> urgent = new java.util.ArrayDeque<>();
+	/** The job that was interrupted by an urgent command, kept so nothing is lost. */
+	private TaskPlan suspended;
 	private String pendingReport;
 	private boolean reported;
 
@@ -73,8 +77,16 @@ public final class TaskRunner {
 	 *         player instead of silently doing nothing).
 	 */
 	public String start(String request, List<ActionIntent> intents) {
+		return start(request, intents, false);
+	}
+
+	/**
+	 * @param urgent true for something the player typed just now: it interrupts whatever he is doing
+	 *               and that job resumes afterwards, which is what steering means for one body.
+	 */
+	public String start(String request, List<ActionIntent> intents, boolean urgentRequest) {
 		if (intents == null || intents.isEmpty()) return "nothing to do";
-		if (queued.size() >= MAX_QUEUED_PLANS) {
+		if (queued.size() + urgent.size() >= MAX_QUEUED_PLANS) {
 			return "I already have " + queued.size() + " jobs waiting; say stop to clear them";
 		}
 
@@ -102,11 +114,17 @@ public final class TaskRunner {
 		}
 		// One plan runs at a time; anything else waits its turn instead of being refused, because a
 		// busy companion that drops your instruction is indistinguishable from one that ignored it.
-		if (plan != null && !plan.isFinished()) {
+		if (urgentRequest) {
+			if (plan != null && !plan.isFinished()) suspendCurrent();
+			urgent.addLast(candidate);
+			if (plan == null || plan.isFinished()) adoptNext();
+		} else if (plan != null && !plan.isFinished()) {
 			queued.addLast(candidate);
-			return null;
+		} else if (!urgent.isEmpty()) {
+			urgent.addLast(candidate);
+		} else {
+			adopt(candidate);
 		}
-		adopt(candidate);
 		return null;
 	}
 
@@ -129,10 +147,34 @@ public final class TaskRunner {
 		this.reported = false;
 	}
 
-	private void tickUnsafe(long nowMillis) {
-		if ((plan == null || plan.isFinished()) && !queued.isEmpty()) {
-			adopt(queued.pollFirst());
+	private void adoptNext() {
+		if (!urgent.isEmpty()) {
+			adopt(urgent.pollFirst());
+			return;
 		}
+		if (suspended != null) {
+			TaskPlan resume = suspended;
+			suspended = null;
+			adopt(resume);
+			return;
+		}
+		if (!queued.isEmpty()) adopt(queued.pollFirst());
+	}
+
+	/** Park the running job: interrupt the step in flight, keep everything not yet done. */
+	private void suspendCurrent() {
+		if (plan == null || plan.isFinished()) return;
+		TaskStep running = plan.running();
+		if (running != null) {
+			running.requeue();
+			executor.interrupt();
+		}
+		suspended = plan;
+		plan = null;
+	}
+
+	private void tickUnsafe(long nowMillis) {
+		if (plan == null || plan.isFinished()) adoptNext();
 		if (plan == null || plan.isFinished()) return;
 
 		if (plan.isExpired(nowMillis)) {
@@ -280,6 +322,8 @@ public final class TaskRunner {
 			if (s.isPending()) s.markSkipped();
 		}
 		queued.clear();
+		urgent.clear();
+		suspended = null;
 		plan.setStatus(TaskPlan.Status.CANCELLED);
 		plan.note(reason == null || reason.isBlank() ? "cancelled by owner" : reason);
 		queueReport();

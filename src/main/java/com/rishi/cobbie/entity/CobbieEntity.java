@@ -301,8 +301,20 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 	 *         to the player instead of going quiet
 	 */
 	public String offerPlan(String request, List<ActionIntent> intents) {
+		return offerPlan(request, intents, false);
+	}
+
+	/**
+	 * Hand him an order that outranks what he is doing. The running job is parked, not cancelled, and
+	 * picks up where it stopped once the order is done — that is how you steer one body mid-job.
+	 */
+	public String offerUrgentPlan(String request, List<ActionIntent> intents) {
+		return offerPlan(request, intents, true);
+	}
+
+	private String offerPlan(String request, List<ActionIntent> intents, boolean urgent) {
 		if (this.isRemoved()) return "I am not around any more";
-		String refusal = tasks.start(request, intents);
+		String refusal = tasks.start(request, intents, urgent);
 		if (refusal == null) planOrigin = this.blockPosition().immutable();
 		return refusal;
 	}

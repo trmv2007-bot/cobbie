@@ -95,7 +95,37 @@ public final class CobbiePlanTest implements FabricClientGameTest {
                 throw new AssertionError("A second instruction was refused instead of queued: " + queued);
             }
 
-            System.out.println("[gametest] plan ok: survived a bad middle step, and queued a second job");
+            // ---- steering mid-job ----
+            BlockPos farAway = owner.offset(24, 0, 0);
+            server.computeOnServer(s -> {
+                var cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
+                cobbie.cancelTask("clean slate for the steering test");
+                cobbie.offerPlan("walk far away", List.of(new ActionIntent(ActionVocabulary.WALK_TO, "",
+                        farAway.getX(), farAway.getY(), farAway.getZ(), "")));
+                return null;
+            });
+            context.waitTicks(20);
+
+            context.runOnClient(mc -> mc.getConnection().sendChat("cobbie wave"));
+            try {
+                server.waitFor(s -> CobbieTestSupport.cobbie(s).map(c -> c.isWaving()).orElse(false), 200);
+            } catch (Throwable t) {
+                throw new AssertionError("Steering failed: the typed wave did not interrupt the walk", t);
+            }
+
+            // ...and the interrupted walk must be picked back up, not abandoned.
+            try {
+                server.waitFor(s -> CobbieTestSupport.cobbie(s)
+                        .map(c -> c.blockPosition().distSqr(farAway) <= 9)
+                        .orElse(false), 900);
+            } catch (Throwable t) {
+                throw new AssertionError("The walk was not resumed after steering; he is at "
+                        + server.computeOnServer(s -> String.valueOf(
+                        CobbieTestSupport.cobbie(s).map(c -> c.blockPosition()).orElse(null))), t);
+            }
+
+            System.out.println("[gametest] plan ok: survived a bad middle step, queued a second job, "
+                    + "and resumed a walk after a mid-job wave");
         }
     }
 }

@@ -218,6 +218,44 @@ class TaskRunnerTest {
 	}
 
 	@Test
+	void anUrgentOrderInterruptsAndTheOldJobResumes() {
+		Fake exec = new Fake().asynchronous();
+		TaskRunner runner = new TaskRunner(exec, 6, 0, 60_000);
+		runner.start("walk somewhere", List.of(intent(ActionVocabulary.WALK_TO)), false);
+		runner.tick(System.currentTimeMillis());
+
+		// Typed command mid-walk: it must interrupt, and the walk must come back afterwards.
+		runner.start("wave", List.of(intent(ActionVocabulary.WAVE)), true);
+		exec.script.add(ActionOutcome.ok("wave", "waved"));
+		for (int i = 0; i < 4; i++) runner.tick(System.currentTimeMillis());
+		assertTrue(exec.begun.stream().anyMatch(i -> ActionVocabulary.WAVE.equals(i.action())),
+				"the urgent order must run first: " + exec.begun);
+
+		// Finish the wave, then the parked walk is picked up again and its step re-begun.
+		exec.script.add(ActionOutcome.ok("walk-to", "arrived"));
+		for (int i = 0; i < 8; i++) runner.tick(System.currentTimeMillis());
+		long walks = exec.begun.stream().filter(i -> ActionVocabulary.WALK_TO.equals(i.action())).count();
+		assertTrue(walks >= 2, "the interrupted job must resume: " + exec.begun);
+	}
+
+	@Test
+	void stopClearsQueuedAndParkedWork() {
+		Fake exec = new Fake().asynchronous();
+		TaskRunner runner = new TaskRunner(exec, 6, 0, 60_000);
+		runner.start("first", List.of(intent(ActionVocabulary.WALK_TO)), false);
+		runner.tick(System.currentTimeMillis());
+		runner.start("urgent", List.of(intent(ActionVocabulary.WAVE)), true);
+		runner.start("second", List.of(intent(ActionVocabulary.MINE)), false);
+
+		runner.cancel("owner said stop");
+		exec.script.add(ActionOutcome.ok("mine", "fine"));
+		for (int i = 0; i < 8; i++) runner.tick(System.currentTimeMillis());
+
+		assertTrue(exec.begun.stream().noneMatch(i -> ActionVocabulary.MINE.equals(i.action())),
+				"nothing queued may run after stop: " + exec.begun);
+	}
+
+	@Test
 	void aSecondPlanWaitsItsTurnInsteadOfBeingRefused() {
 		Fake exec = new Fake().asynchronous();
 		TaskRunner runner = new TaskRunner(exec, 6, 0, 60_000);
