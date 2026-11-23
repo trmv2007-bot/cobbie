@@ -128,19 +128,24 @@ public final class SpawnCobbieCommand {
 			}
 			case MODEL_MISSING -> {
 				cobbie.setCustomName(Component.literal("§6Cobbie (model missing)"));
+				boolean local = CobbieConfig.getProvider().startsWith("ollama");
 				player.sendSystemMessage(Component.literal("§6My configured model \""
 						+ CobbieConfig.getModel() + "\" is not installed."));
-				player.sendSystemMessage(Component.literal("§7Installed: "
+				player.sendSystemMessage(Component.literal("§7Available: "
 						+ (probe.models().isEmpty() ? "none" : String.join(", ", probe.models()))));
-				player.sendSystemMessage(Component.literal("§7Set \"model\" to one of those, or run: "
-						+ "ollama pull " + CobbieConfig.getModel()));
+				player.sendSystemMessage(Component.literal(local
+						? "§7Set \"model\" to one of those, or run: ollama pull " + CobbieConfig.getModel()
+						: "§7Pick one in /cobbie config (Provider → Test Connection tells you if it fits)."));
 			}
 			default -> {
 				cobbie.setCustomName(Component.literal("§cCobbie (LLM offline)"));
 				player.sendSystemMessage(Component.literal("§cCobbie is here, but the AI is unreachable — "
 						+ probe.describe()));
-				player.sendSystemMessage(Component.literal("§7Check Ollama is running on "
-						+ CobbieConfig.getBaseUrl() + " (ollama serve), then /cobbie reload"));
+				boolean local = CobbieConfig.getProvider().startsWith("ollama");
+				player.sendSystemMessage(Component.literal(local
+						? "§7Check Ollama is running on " + CobbieConfig.getBaseUrl()
+								+ " (ollama serve), then /cobbie reload"
+						: "§7Check the key and base URL in /cobbie config, then press Test Connection."));
 			}
 		}
 		Cobbie.LOGGER.info("Cobbie connection state for {}: {} ({})",

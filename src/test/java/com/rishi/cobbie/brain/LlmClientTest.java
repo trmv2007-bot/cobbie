@@ -87,6 +87,10 @@ class LlmClientTest {
 		return new LlmClient(base, "testmodel", key, "ollama", 0.4, 128, 2, 5, retries);
 	}
 
+	private static LlmClient openai(String key, int retries) {
+		return new LlmClient(base, "pooled-model", key, "openai", 0.4, 128, 2, 5, retries);
+	}
+
 	private static LlmClient.Result await(java.util.concurrent.CompletableFuture<LlmClient.Result> future)
 			throws Exception {
 		return future.get(10, TimeUnit.SECONDS);
@@ -142,6 +146,106 @@ class LlmClientTest {
 		assertEquals("from openai", r.content());
 		assertEquals(List.of("/v1/chat/completions"), paths);
 		assertEquals("Bearer secret", authHeaders.get(0));
+	}
+
+	@Test
+	void openAiPayloadUsesTopLevelBudgetAndNoOllamaFields() throws Exception {
+		// Every hosted preset (Groq, OpenAI, OpenRouter, a local gateway) shares this one code path.
+		reset(200, "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}");
+		await(openai("k", 0).completeOnce("be nice", "hello"));
+		String body = bodies.get(0);
+
+		assertTrue(body.contains("\"model\":\"pooled-model\""), body);
+		assertTrue(body.contains("\"max_tokens\":128"), body);
+		assertTrue(body.contains("\"temperature\":0.4"), body);
+		assertFalse(body.contains("\"options\""), "options is Ollama-only: " + body);
+		assertFalse(body.contains("\"think\""), "think is Ollama-only: " + body);
+	}
+
+	@Test
+	void aReasoningModelThatWantsMaxCompletionTokensIsRetriedWithIt() throws Exception {
+		// OpenAI's reasoning models answer 400 to max_tokens and name the field they want. That is a
+		// protocol correction like the Ollama "think" case, so it must be retried, once.
+		reset(200, "{\"choices\":[{\"message\":{\"content\":\"answered\"}}]}");
+		script.add(new String[]{"400", "{\"error\":{\"message\":\"Unsupported parameter: 'max_tokens' is not "
+				+ "supported with this model. Use 'max_completion_tokens' instead.\"}}"});
+		LlmClient.Result r = await(openai("secret", 0).completeOnce("s", "u"));
+
+		assertTrue(r.success(), r.error());
+		assertEquals(2, calls);
+		assertTrue(bodies.get(0).contains("\"max_tokens\""), bodies.get(0));
+		assertTrue(bodies.get(1).contains("\"max_completion_tokens\":128"), bodies.get(1));
+		assertFalse(bodies.get(1).contains("\"max_tokens\""), "the rejected key must be gone: " + bodies.get(1));
+	}
+
+	// ---- usage / reasoning budget ----
+
+	@Test
+	void reasoningTokensAreCarriedFromTheUsageBlock() throws Exception {
+		// Measured live on the KeyPool gateway: 238 of 292 completion tokens were reasoning. At a
+		// small budget that is the whole reply, so the number has to survive into the Result.
+		reset(200, "{\"choices\":[{\"message\":{\"content\":\"ready\"}}],"
+				+ "\"usage\":{\"completion_tokens_details\":{\"reasoning_tokens\":238}}}");
+		LlmClient.Result r = await(openai("k", 0).completeOnce("s", "u"));
+
+		assertTrue(r.success(), r.error());
+		assertEquals(238, r.reasoningTokens());
+	}
+
+	@Test
+	void emptyReplyAfterThinkingSaysHowManyTokensWentToThinking() throws Exception {
+		reset(200, "{\"choices\":[{\"message\":{\"content\":\"\"}}],"
+				+ "\"usage\":{\"completion_tokens_details\":{\"reasoning_tokens\":16}}}");
+		LlmClient.Result r = await(openai("k", 0).completeOnce("s", "u"));
+
+		assertFalse(r.success());
+		assertEquals(16, r.reasoningTokens());
+		assertTrue(r.error().contains("reasoning tokens"), "the empty reply must be diagnosable: " + r.error());
+		assertFalse(r.retryable(),
+				"a budget-starved reply must be named, not retried into the same wall: " + r.error());
+	}
+
+	// ---- the key never travels ----
+
+	@Test
+	void aKeyEchoedInAProviderErrorBodyIsRedacted() throws Exception {
+		// Gateways do print the presented credential in a 401 body. That text reaches chat and the
+		// log, so it must be scrubbed before it leaves the client.
+		reset(401, "{\"error\":\"Invalid API key sk-live-SUPERSECRET-123\"}");
+		LlmClient.Result r = await(openai("sk-live-SUPERSECRET-123", 0).completeOnce("s", "u"));
+
+		assertFalse(r.success());
+		assertFalse(r.error().contains("SUPERSECRET"), r.error());
+		assertTrue(r.error().contains("401"), r.error());
+		assertEquals(LlmClient.Failure.KEY_REJECTED, r.kind());
+	}
+
+	@Test
+	void failureKindsUseOneClosedVocabulary() {
+		assertEquals(LlmClient.Failure.KEY_REJECTED,
+				LlmClient.Result.failure("HTTP 401 {\"detail\":\"bad key\"}").kind());
+		assertEquals(LlmClient.Failure.MODEL_NOT_FOUND,
+				LlmClient.Result.failure("HTTP 404 Unknown model alias").kind());
+		assertEquals(LlmClient.Failure.UNREACHABLE,
+				LlmClient.Result.failure("ConnectException: Connection refused").kind());
+		assertEquals(LlmClient.Failure.TIMEOUT,
+				LlmClient.Result.failure("HttpTimeoutException: request timed out").kind());
+		assertEquals(LlmClient.Failure.SERVER, LlmClient.Result.failure("HTTP 429").kind());
+		assertEquals(LlmClient.Failure.NONE, LlmClient.Result.success("hi").kind());
+	}
+
+	@Test
+	void gatewayBaseUrlKeepsExactlyOneV1Segment() {
+		// Rishi's KeyPool gateway is mounted at :8787/v1, and pooled-model is served from it.
+		String origin = LlmClient.origin("http://127.0.0.1:8787/v1");
+		assertEquals("http://127.0.0.1:8787", origin);
+		String endpoint = origin + "/v1/chat/completions";
+		assertEquals("http://127.0.0.1:8787/v1/chat/completions", endpoint);
+		assertEquals(1, countOccurrences(endpoint, "/v1/"), endpoint);
+
+		assertEquals("http://127.0.0.1:8787/v1/chat/completions",
+				new LlmClient("http://127.0.0.1:8787/v1", "pooled-model", "k", "openai", 0.7, 800, 5, 30, 0)
+						.endpoint());
 	}
 
 	@Test
@@ -319,6 +423,42 @@ class LlmClientTest {
 				"never answer for a model that is not installed");
 		assertNull(ConnectionState.findModel(null, installed));
 		assertNull(ConnectionState.findModel("lfm2.5", List.of()));
+	}
+
+	@Test
+	void aTimeoutFailsOnceInsteadOfWaitingOutASecondReadTimeout() throws Exception {
+		// The whole point of the shorter default read timeout: a silent AI must produce the fallback
+		// reply quickly, not after two 30-second waits.
+		HttpServer slow = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+		slow.createContext("/", exchange -> {
+			try {
+				Thread.sleep(8000);
+			} catch (InterruptedException ignored) {
+				Thread.currentThread().interrupt();
+			}
+			exchange.sendResponseHeaders(200, 0);
+			exchange.close();
+		});
+		slow.setExecutor(java.util.concurrent.Executors.newCachedThreadPool(r -> {
+			Thread t = new Thread(r);
+			t.setDaemon(true);
+			return t;
+		}));
+		slow.start();
+		try {
+			String slowBase = "http://127.0.0.1:" + slow.getAddress().getPort() + "/";
+			LlmClient client = new LlmClient(slowBase, "m", "", "ollama", 0.5, 64, 2, 5, 2);
+			long start = System.nanoTime();
+			LlmClient.Result r = client.completeOnce("s", "u").get(20, TimeUnit.SECONDS);
+			long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
+
+			assertFalse(r.success());
+			assertFalse(r.retryable(), "a timeout must not be retried: the fallback reply is overdue");
+			assertEquals(LlmClient.Failure.TIMEOUT, r.kind(), r.error());
+			assertTrue(elapsedMs < 8000, "one timeout plus slack, never two: " + elapsedMs + "ms");
+		} finally {
+			slow.stop(0);
+		}
 	}
 
 	@Test

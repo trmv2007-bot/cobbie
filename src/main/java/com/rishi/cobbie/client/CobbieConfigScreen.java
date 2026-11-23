@@ -5,25 +5,39 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.rishi.cobbie.Cobbie;
-import com.rishi.cobbie.brain.OllamaDiscovery;
+import com.rishi.cobbie.brain.BrainPresets;
+import com.rishi.cobbie.brain.ConnectionTest;
+import com.rishi.cobbie.brain.LlmClient;
+import com.rishi.cobbie.brain.SecretMask;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.Style;
+import net.minecraft.util.FormattedCharSequence;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The in-game settings screen: everything in {@code config/cobbie.json} that changes behaviour, with
  * labels, scrolling, and a live connection test.
+ *
+ * <p>Brain settings are keys-first: the Provider button cycles the presets in {@link BrainPresets}
+ * (picking one writes {@code provider}/{@code base_url}/{@code model}), the API key is typed into a
+ * field that renders only its last four characters, and "Test Connection" sends one real completion
+ * and reports which of the four things happened. Both the URL and the model stay editable, so a
+ * server the presets have never heard of still works.
  *
  * <p>Opened with {@code /cobbie config} or the config keybind. Saving writes the file atomically and
  * calls {@link com.rishi.cobbie.config.CobbieConfig#reload()}, which reconfigures the brain with the
@@ -41,11 +55,13 @@ public class CobbieConfigScreen extends Screen {
 
     private final Screen parent;
     private final List<Row> rows = new ArrayList<>();
+    private final Map<String, EditBox> boxes = new LinkedHashMap<>();
     private int contentHeight = ROW_HEIGHT;
     private int scroll;
     private Path configFile;
     private JsonObject configJson;
     private String status = "§7Not tested yet.";
+    private BrainPresets.Preset preset = BrainPresets.DEFAULT;
 
     public CobbieConfigScreen(Screen parent) {
         super(Component.translatable(TITLE_KEY));
@@ -55,6 +71,7 @@ public class CobbieConfigScreen extends Screen {
     @Override
     protected void init() {
         rows.clear();
+        boxes.clear();
         configFile = findConfigFile();
         loadConfig();
         buildRows();
@@ -100,14 +117,14 @@ public class CobbieConfigScreen extends Screen {
 
     private JsonObject defaultConfig() {
         JsonObject o = new JsonObject();
-        o.addProperty("provider", "ollama");
-        o.addProperty("base_url", "http://127.0.0.1:11434/");
-        o.addProperty("model", "lfm2.5:8b");
+        o.addProperty("provider", BrainPresets.DEFAULT_PROVIDER);
+        o.addProperty("base_url", BrainPresets.DEFAULT_BASE_URL);
+        o.addProperty("model", BrainPresets.DEFAULT_MODEL);
         o.addProperty("api_key", "");
         o.addProperty("temperature", 0.7);
-        o.addProperty("max_tokens", 300);
+        o.addProperty("max_tokens", 800);
         o.addProperty("connect_timeout", 5);
-        o.addProperty("read_timeout", 120);
+        o.addProperty("read_timeout", 30);
         o.addProperty("max_retries", 1);
         o.addProperty("personality", "warm, curious, a little playful; a good friend who is never scary");
         o.addProperty("autonomy_mode", "ASSISTIVE");
@@ -137,11 +154,11 @@ public class CobbieConfigScreen extends Screen {
     }
 
     private void buildRows() {
-        header("LLM Connection");
-        textField("provider", "Provider", "ollama or openai");
-        textField("base_url", "Base URL", "http://127.0.0.1:11434/");
-        textField("model", "Model", "lfm2.5:8b");
-        textField("api_key", "API Key (blank = none)", "");
+        header("AI Provider (bring your own key)");
+        providerField();
+        secretField("api_key", "API Key", "paste your key — it stays on this PC");
+        textField("base_url", "Base URL", "https://api.groq.com/openai/v1");
+        textField("model", "Model", "llama-3.3-70b-versatile");
         numberField("temperature", "Temperature", 0.0, 2.0, 0.1);
         intField("max_tokens", "Max Tokens", 32, 8192, 100);
         intField("connect_timeout", "Connect Timeout (s)", 1, 120, 1);
@@ -199,6 +216,62 @@ public class CobbieConfigScreen extends Screen {
         String value = getString(key);
         if (value != null) box.setValue(value);
         box.setResponder(v -> configJson.addProperty(key, v));
+        boxes.put(key, box);
+        rows.add(new Row(box, label, Kind.FIELD));
+    }
+
+    /** The Provider button: cycles the presets and writes their provider, URL and model in. */
+    private void providerField() {
+        preset = BrainPresets.infer(getString("provider"), getString("base_url"));
+        Button btn = Button.builder(providerLabel(), b -> {
+            preset = BrainPresets.next(preset);
+            applyPreset(preset);
+            b.setMessage(providerLabel());
+        }).bounds(0, 0, 200, 18).build();
+        rows.add(new Row(btn, "Provider", Kind.FIELD));
+    }
+
+    private Component providerLabel() {
+        // Plain text, styled — so the label a player clicks is exactly the label a test clicks.
+        return Component.literal(preset.label() + " »").withStyle(ChatFormatting.AQUA);
+    }
+
+    /**
+     * Write one preset into the fields. The URL and model stay editable afterwards, and the Custom
+     * entry leaves both alone on purpose: it exists for servers the presets do not know.
+     */
+    private void applyPreset(BrainPresets.Preset p) {
+        configJson.addProperty("provider", p.provider());
+        EditBox base = boxes.get("base_url");
+        EditBox model = boxes.get("model");
+        if (!p.keepsExistingEndpoint()) {
+            if (base != null) base.setValue(p.baseUrl());
+            else configJson.addProperty("base_url", p.baseUrl());
+            if (model != null) model.setValue(p.defaultModel());
+            else configJson.addProperty("model", p.defaultModel());
+        }
+        EditBox key = boxes.get("api_key");
+        if (key != null) {
+            key.setHint(Component.literal(p.keyHint()).withStyle(s -> s.withColor(0x808080)));
+        }
+        status = "§7" + p.label() + ": " + (p.needsKey() ? p.keyHint() : "no key needed")
+                + ". Press Test Connection.";
+    }
+
+    /**
+     * A field that holds a secret and shows only its tail. The real value lives in the widget and
+     * reaches {@code config/cobbie.json} on save; a screenshot of this screen shows bullets.
+     */
+    private void secretField(String key, String label, String placeholder) {
+        EditBox box = new EditBox(font, 0, 0, 200, 18, Component.literal(label));
+        box.setMaxLength(400);
+        box.setHint(Component.literal(placeholder).withStyle(s -> s.withColor(0x808080)));
+        box.addFormatter((text, offset) ->
+                FormattedCharSequence.forward(SecretMask.display(text), Style.EMPTY));
+        String value = getString(key);
+        if (value != null) box.setValue(value);
+        box.setResponder(v -> configJson.addProperty(key, v));
+        boxes.put(key, box);
         rows.add(new Row(box, label, Kind.FIELD));
     }
 
@@ -300,6 +373,19 @@ public class CobbieConfigScreen extends Screen {
 
     // ---- save ----
 
+    private String getStringOr(String key, String fallback) {
+        String v = getString(key);
+        return v == null || v.isBlank() ? fallback : v;
+    }
+
+    private int getIntOr(String key, int fallback) {
+        return configJson.has(key) ? getInt(key) : fallback;
+    }
+
+    private double getDoubleOr(String key, double fallback) {
+        return configJson.has(key) ? getDouble(key) : fallback;
+    }
+
     private String getString(String key) {
         return configJson.has(key) && configJson.get(key).isJsonPrimitive()
                 ? configJson.get(key).getAsString() : null;
@@ -351,18 +437,34 @@ public class CobbieConfigScreen extends Screen {
         }
     }
 
+    /**
+     * One real completion against exactly what is on screen — unsaved edits included, so a key can
+     * be tried before it is written to disk. Zero retries: a test that waits out three timeouts is
+     * not a test the player will sit through.
+     */
     private void testConnection() {
-        status = "Testing…";
-        saveConfig();
-        OllamaDiscovery.probeConfiguredAsync().whenComplete((probe, error) -> {
-            String line = error != null
-                    ? "Probe failed: " + error.getClass().getSimpleName()
-                    : probe.state() + (probe.matchedModel() == null ? "" : " (" + probe.matchedModel() + ")")
-                    + (probe.error() == null ? "" : " — " + probe.error());
-            minecraft.execute(() -> {
-                status = line;
-                rebuildWidgets();
-            });
+        status = "§7Testing…";
+        String provider = getStringOr("provider", BrainPresets.DEFAULT_PROVIDER);
+        String base = getStringOr("base_url", BrainPresets.DEFAULT_BASE_URL);
+        String model = getStringOr("model", BrainPresets.DEFAULT_MODEL);
+        String key = getStringOr("api_key", "");
+        if (!provider.startsWith("ollama") && key.isBlank()) {
+            status = "§c" + BrainPresets.infer(provider, base).label()
+                    + ": no API key yet — paste one above.";
+            return;
+        }
+        // Capped at a minute: a test button that sits for five minutes on a dead endpoint is not a
+        // test, it is a hang. The saved read_timeout is untouched and still governs real replies.
+        int testTimeout = Math.min(60, Math.max(5, getIntOr("read_timeout", 30)));
+        LlmClient client = new LlmClient(base, model, key, provider,
+                getDoubleOr("temperature", 0.7), getIntOr("max_tokens", 800),
+                getIntOr("connect_timeout", 5), testTimeout, 0);
+        String label = BrainPresets.infer(provider, base).label();
+        ConnectionTest.run(client, label).whenComplete((report, thrown) -> {
+            String line = thrown != null
+                    ? "§cTest failed: " + thrown.getClass().getSimpleName()
+                    : (report.healthy() ? "§a" : "§c") + report.line();
+            minecraft.execute(() -> status = line);
         });
     }
 

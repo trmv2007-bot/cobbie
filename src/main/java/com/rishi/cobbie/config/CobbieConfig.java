@@ -6,6 +6,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.rishi.cobbie.Cobbie;
+import com.rishi.cobbie.brain.BrainPresets;
 import com.rishi.cobbie.brain.CobbieBrain;
 import net.fabricmc.loader.api.FabricLoader;
 
@@ -80,14 +81,23 @@ public final class CobbieConfig {
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
 	// ---- LLM ----
-	private static String llmBaseUrl = "http://127.0.0.1:11434/";
-	private static String llmModel = "lfm2.5:8b";
+	// A fresh install is keys-first: a hosted provider, an empty key, and nothing listening on
+	// localhost to probe. Ollama is still one of the presets, just not the assumption.
+	private static String llmBaseUrl = BrainPresets.DEFAULT_BASE_URL;
+	private static String llmModel = BrainPresets.DEFAULT_MODEL;
 	private static String llmApiKey = "";
-	private static String llmProvider = "ollama";
+	/** The key as the config file has it. An environment-provided key is never written back. */
+	private static String persistedApiKey = "";
+	private static String llmProvider = BrainPresets.DEFAULT_PROVIDER;
 	private static double temperature = 0.7;
-	private static int maxTokens = 300;
+	// Hosted reasoners spend 100-250 tokens thinking before they answer. A 300-token budget was
+	// cutting the answer off and coming back empty; 800 leaves room for the thinking and the reply.
+	private static int maxTokens = 800;
 	private static int connectTimeoutSeconds = 5;
-	private static int readTimeoutSeconds = 120;
+	// Fail fast enough that the never-silent fallback lands while the player is still looking: a
+	// hosted call that hangs for two minutes reads as a crashed companion. Slow local setups can
+	// raise this in the config screen.
+	private static int readTimeoutSeconds = 30;
 	private static int maxRetries = 1;
 
 	// ---- AI behaviour ----
@@ -151,6 +161,7 @@ public final class CobbieConfig {
 		} catch (Throwable t) {
 			Cobbie.LOGGER.warn("Cobbie config unavailable ({}), running on defaults", t.toString());
 		}
+		applyEnvironmentOverrides();
 		applyToBrain();
 		logSummary();
 	}
@@ -181,6 +192,7 @@ public final class CobbieConfig {
 		llmBaseUrl = str(root, "base_url", llmBaseUrl);
 		llmModel = str(root, "model", llmModel);
 		llmApiKey = str(root, "api_key", llmApiKey);
+		persistedApiKey = llmApiKey;
 		llmProvider = normProvider(str(root, "provider", llmProvider));
 		temperature = dbl(root, "temperature", temperature, 0.0, 2.0);
 		maxTokens = integer(root, "max_tokens", maxTokens, 32, 8192);
@@ -282,7 +294,41 @@ public final class CobbieConfig {
 
 	private static String normProvider(String p) {
 		String v = p == null ? "" : p.trim().toLowerCase(Locale.ROOT);
-		return v.startsWith("openai") ? "openai" : "ollama";
+		if (v.isEmpty()) return BrainPresets.DEFAULT_PROVIDER;
+		if (v.startsWith("openai")) return "openai";
+		// A preset id written by hand ("groq", "openrouter") means the protocol of that preset.
+		BrainPresets.Preset preset = BrainPresets.byId(v);
+		if (preset != null) return preset.provider();
+		return "ollama";
+	}
+
+	/**
+	 * Optional environment overrides, applied after the file so a dedicated server or a test run can
+	 * point Cobbie at a provider without a key on disk: {@code COBBIE_PROVIDER},
+	 * {@code COBBIE_BASE_URL}, {@code COBBIE_MODEL}, {@code COBBIE_API_KEY}.
+	 *
+	 * <p>An environment key is held in memory only — {@link #save()} keeps writing whatever the file
+	 * had, so toggling a permission can never copy the environment's secret into the config file, and
+	 * the summary logs say "environment", never the value.
+	 */
+	private static void applyEnvironmentOverrides() {
+		String provider = env("COBBIE_PROVIDER");
+		String url = env("COBBIE_BASE_URL");
+		String model = env("COBBIE_MODEL");
+		String key = env("COBBIE_API_KEY");
+		if (provider == null && url == null && model == null && key == null) return;
+
+		if (provider != null) llmProvider = normProvider(provider);
+		if (url != null) llmBaseUrl = url;
+		if (model != null) llmModel = model;
+		if (key != null) llmApiKey = key;
+		Cobbie.LOGGER.info("Cobbie brain overridden by environment: provider={} url={} model={} key={}",
+				llmProvider, llmBaseUrl, llmModel, key == null ? "from file" : "from environment");
+	}
+
+	private static String env(String name) {
+		String v = System.getenv(name);
+		return v == null || v.isBlank() ? null : v.trim();
 	}
 
 	private static void applyToBrain() {
@@ -401,7 +447,7 @@ public final class CobbieConfig {
 			root.addProperty("provider", llmProvider);
 			root.addProperty("base_url", llmBaseUrl);
 			root.addProperty("model", llmModel);
-			root.addProperty("api_key", llmApiKey);
+			root.addProperty("api_key", persistedApiKey);
 			root.addProperty("temperature", temperature);
 			root.addProperty("max_tokens", maxTokens);
 			root.addProperty("connect_timeout", connectTimeoutSeconds);

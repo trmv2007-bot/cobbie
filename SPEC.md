@@ -36,7 +36,7 @@ Body = entity in world (follow, idle, react, wander). Brain = BYOK LLM with stri
 | Mappings | **Mojmap** (`loom.officialMojangMappings()`) | MC 26.x dropped Yarn; codebase uses official Mojang names |
 | Architecture | **From scratch (our own), libraries reused** | full control; pathfinding/anim/HTTP pulled from OSS, not rewritten |
 | Scope model | **Layered, each layer playable** | never >2 weeks from something that works |
-| LLM | **BYOK, pluggable** (local Spark default; Groq/Ollama optional) | user's choice; free local floor |
+| LLM | **BYOK, pluggable, hosted by default** (Groq preset out of the box; OpenAI, OpenRouter, a local OpenAI-compatible gateway, or Ollama on this PC) | one OpenAI-compatible code path; a local model is an option, not the assumption |
 | Memory | **Persistent local, cross-session** | the thing Verity lacked |
 | Agency engine | **Own A* pathfinder (from scratch)** | full control, works on 26.3, Baritone = optional later swap |
 | Project name | **Cobbie** | Rishi's pick |
@@ -73,7 +73,7 @@ Body = entity in world (follow, idle, react, wander). Brain = BYOK LLM with stri
 ## v1 definition of done (step 7)
 - [ ] Cobbie spawns as an entity in a Fabric 26.3 world
 - [ ] Follows the player, idles, wanders when idle, reacts (look-at / emote / wave)
-- [ ] Chat: player types, Cobbie replies in character, BYOK LLM (local Spark works out-of-box)
+- [ ] Chat: player types, Cobbie replies in character, BYOK LLM (a hosted key works out-of-box; Ollama still supported)
 - [ ] Tool-calls/intents work (follow/wave/walk-to/mine/place/attack/chat) via strict JSON with graceful fallback
 - [ ] Remembers the player + recent conversation + learned skills across a full game restart
 - [ ] Perceives world: nearby blocks/entities/players/biome/time/health/inventory fed to LLM

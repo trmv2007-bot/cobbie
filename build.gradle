@@ -39,6 +39,10 @@ dependencies {
 
 test {
 	useJUnitPlatform()
+	// Live provider checks stay out of the hermetic suite unless asked for:
+	//   ./gradlew test --tests '*LiveProviderTest*' -Dcobbie.live=1
+	// The key is read from the gitignored config/cobbie.json on this machine, never from a flag.
+	systemProperty 'cobbie.live', System.getProperty('cobbie.live', '0')
 }
 
 // In-game tests. The client gametest harness boots a real Fabric 26.3 client, creates a world,
@@ -105,16 +109,23 @@ tasks.register("gametestPreflight") {
 	}
 }
 
-tasks.matching { it.name == "runClientGameTest" }.configureEach {
+tasks.matching { it.name == "runClientGameTest" }.configureEach { t ->
 	if (findProperty("skipGametestPreflight") == null) {
 		dependsOn "gametestPreflight"
 	}
 	def only = findProperty("cobbieTests")
 	if (only) {
-		jvmArgs "-Dcobbie.gametests=${only}"
+		t.jvmArgs "-Dcobbie.gametests=${only}"
+	}
+	// 0.17.0: the suite talks to a real model. Let the surrounding environment supply one without any
+	// key reaching a file: the same COBBIE_* variables the mod reads at runtime.
+	if (t instanceof JavaExec) {
+		['COBBIE_PROVIDER', 'COBBIE_BASE_URL', 'COBBIE_MODEL', 'COBBIE_API_KEY'].each { key ->
+			def value = System.getenv(key)
+			if (value != null && !value.isBlank()) t.environment(key, value)
+		}
 	}
 }
-
 
 // Tests are expected in src/gametest/java (Loom creates that source set, not src/clientGameTest).
 

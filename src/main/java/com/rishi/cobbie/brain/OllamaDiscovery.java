@@ -43,13 +43,17 @@ public final class OllamaDiscovery {
 
 		/** Short, honest line for chat. Never contains a key. */
 		public String describe() {
+			boolean local = CobbieConfig.getProvider().startsWith("ollama");
 			return switch (state) {
 				case MODEL_AVAILABLE -> "AI ready — model " + matchedModel + " is loaded on " + models.size() + " installed model(s)";
 				case CONNECTED -> "AI reachable, but I could not confirm my model is installed";
 				case MODEL_MISSING -> "AI reachable but my model is not installed" + (models.isEmpty()
-						? " (no models found — try: ollama pull " + CobbieConfig.getModel() + ")"
+						? (local ? " (no models found — try: ollama pull " + CobbieConfig.getModel() + ")"
+								: " (the provider listed no models — check the model name in /cobbie config)")
 						: " — installed: " + String.join(", ", models));
-				case DISCONNECTED -> "AI server not configured";
+				case DISCONNECTED -> NO_KEY.equals(error)
+						? "no API key yet — paste one in /cobbie config"
+						: "AI server not configured";
 				case CONNECTING -> "checking the AI server...";
 				case REQUEST_FAILED -> "AI request failed: " + (error == null ? "unknown reason" : error);
 			};
@@ -58,6 +62,9 @@ public final class OllamaDiscovery {
 
 	private static final Probe NOT_CONFIGURED =
 			new Probe(ConnectionState.DISCONNECTED, List.of(), null, "no base URL configured");
+
+	/** Sentinel detail for "hosted provider, empty key" — describe() turns it into advice. */
+	static final String NO_KEY = "no API key configured";
 
 	private OllamaDiscovery() {}
 
@@ -68,7 +75,13 @@ public final class OllamaDiscovery {
 
 	/** Blocking probe against the live config. Call only from a worker thread. */
 	public static Probe probeConfigured() {
-		return probe(CobbieConfig.getBaseUrl(), CobbieConfig.getProvider(), CobbieConfig.getModel(),
+		String provider = CobbieConfig.getProvider();
+		// A hosted provider with no key cannot answer, and hammering its endpoint to prove it would
+		// only put a 401 in the log. Say what is actually missing, without touching the network.
+		if (!provider.startsWith("ollama") && CobbieConfig.getApiKey().isBlank()) {
+			return new Probe(ConnectionState.DISCONNECTED, List.of(), null, NO_KEY);
+		}
+		return probe(CobbieConfig.getBaseUrl(), provider, CobbieConfig.getModel(),
 				CobbieConfig.getApiKey(), CobbieConfig.getConnectTimeoutSeconds(),
 				CobbieConfig.getReadTimeoutSeconds());
 	}
