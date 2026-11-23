@@ -42,7 +42,9 @@ import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.goal.FloatGoal;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
+import net.minecraft.world.entity.ai.navigation.GroundPathNavigation;
 import net.minecraft.world.entity.ai.goal.MeleeAttackGoal;
+import net.minecraft.world.entity.ai.goal.OpenDoorGoal;
 import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Enemy;
@@ -210,6 +212,24 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		this.getNavigation().setCanFloat(true);
 		this.setPathfindingMalus(PathType.WATER, 4.0f);
 		this.setPathfindingMalus(PathType.WATER_BORDER, 2.0f);
+		// Doors are a way through, not a wall.
+		this.setPathfindingMalus(PathType.DOOR_WOOD_CLOSED, 2.0f);
+		this.setPathfindingMalus(PathType.DOOR_OPEN, 0.0f);
+		if (this.getNavigation() instanceof GroundPathNavigation ground) {
+			ground.setCanOpenDoors(true);
+			// Without this the navigator silently lifts any target below the surface to the top of
+			// its column, so "dig down to that ore" walks him over the spot instead of into it.
+			ground.setCanPathToTargetsBelowSurface(true);
+		}
+		// Things a player avoids and a mob does not think about. The numbers are the cost of entry
+		// relative to plain ground (1.0): lava and fire are practically walls, an open trapdoor is a
+		// pit, and a cautious node costs about as much as wading.
+		this.setPathfindingMalus(PathType.LAVA, 24.0f);
+		this.setPathfindingMalus(PathType.FIRE, 24.0f);
+		this.setPathfindingMalus(PathType.DAMAGING, 16.0f);
+		this.setPathfindingMalus(PathType.DAMAGE_CAUTIOUS, 6.0f);
+		this.setPathfindingMalus(PathType.ON_TOP_OF_TRAPDOOR, 8.0f);
+		this.setPathfindingMalus(PathType.TRAPDOOR, 8.0f);
 	}
 
 	public static AttributeSupplier.Builder createAttributes() {
@@ -217,6 +237,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				.add(Attributes.MAX_HEALTH, 20.0)
 				.add(Attributes.MOVEMENT_SPEED, 0.32)
 				.add(Attributes.ATTACK_DAMAGE, 3.0)
+				// A player's swings are paced by the weapon: a sword ~12 ticks, an axe ~20. Without
+				// this attribute a mob cannot even read the number, so every swing was a flat 16.
+				.add(Attributes.ATTACK_SPEED, 4.0)
+				// The pathfinder plans one-block rises (WalkNodeEvaluator.getMobJumpHeight is at least
+				// 1.125); at the mob default of 0.6 he planned steps his body could not take.
+				.add(Attributes.STEP_HEIGHT, 1.0)
 				.add(Attributes.FOLLOW_RANGE, 48.0);
 	}
 
@@ -229,6 +255,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	protected void registerGoals() {
 		this.goalSelector.addGoal(1, new FloatGoal(this));
 		this.goalSelector.addGoal(2, new GatedMeleeAttack(this));
+		// Doors: a player opens them; so does he, and the navigator is told they are passable so it
+		// does not route a long way around a house to reach a bed inside it.
+		this.goalSelector.addGoal(3, new OpenDoorGoal(this, true));
 		this.goalSelector.addGoal(4, new LookAtPlayerGoal(this, Player.class, 8.0f));
 		this.goalSelector.addGoal(5, new RandomLookAroundGoal(this));
 		// Deliberately absent: FollowMobGoal (it would trail whoever was nearest, not the owner)
@@ -1175,6 +1204,17 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		navigatingForAction = false;
 	}
 
+	/** How long this weapon makes him wait between swings, the way it paces a player. */
+	private int swingDelayTicks() {
+		double speed = 4.0;
+		try {
+			speed = this.getAttributeValue(Attributes.ATTACK_SPEED);
+		} catch (RuntimeException ignored) {
+			// An unregistered attribute throws; the default is a bare-handed pace.
+		}
+		return Math.max(4, (int) Math.round(20.0 / Math.max(0.5, speed)));
+	}
+
 	private double reachSquared() {
 		double reach = Math.max(1.5, CobbieConfig.getInteractionReach());
 		return reach * reach;
@@ -1893,11 +1933,16 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				clearActive();
 				return ActionOutcome.fail("attack", "no server world");
 			}
-			attackCooldownUntil = this.tickCount + 16;
+			attackCooldownUntil = this.tickCount + swingDelayTicks();
 			boolean hit = doHurtTarget(serverLevel, target);
 			if (!hit) return null; // swung and missed; try again inside the deadline
+			if (target.isAlive()) {
+				// "Kill that zombie" used to end after the first swing landed. A fight is not one
+				// hit, and a companion who stops mid-fight makes the owner finish his work.
+				return null;
+			}
 			ActionOutcome outcome = ActionOutcome.ok("attack", "hit " + target.getName().getString()
-					+ (target.isAlive() ? "" : " and finished it off"));
+					+ " and finished it off");
 			this.setTarget(null);
 			clearActive();
 			return outcome;
