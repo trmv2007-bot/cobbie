@@ -34,14 +34,17 @@ public final class ActionVocabulary {
 	public static final String DROP = "drop";
 	public static final String EQUIP = "equip";
 	public static final String CRAFT = "craft";
+	public static final String SMELT = "smelt";
+	public static final String TAKE = "take";
+	public static final String PUT = "put";
 	public static final String LOOKUP = "lookup";
 	public static final String WAIT = "wait";
 
 	private static final Set<String> ALLOWED = new LinkedHashSet<>(List.of(
-			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, CRAFT, LOOKUP, WAIT));
+			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, LOOKUP, WAIT));
 
 	/** Actions that are meaningless without an explicit target position. */
-	private static final Set<String> NEEDS_POSITION = Set.of(WALK_TO, MINE, PLACE, LIGHT);
+	private static final Set<String> NEEDS_POSITION = Set.of(WALK_TO, MINE, PLACE, LIGHT, TAKE, PUT, SMELT);
 
 	/** Verbs the brain answers itself (it owns the network and the chat line, not the entity). */
 	private static final Set<String> BRAIN_SIDE = Set.of(LOOKUP);
@@ -51,7 +54,8 @@ public final class ActionVocabulary {
 	}
 
 	/** Actions that change the world and therefore need verification afterwards. */
-	private static final Set<String> WORLD_CHANGING = Set.of(MINE, PLACE, ATTACK, COLLECT, LIGHT, GIVE, DROP, EQUIP, CRAFT);
+	private static final Set<String> WORLD_CHANGING =
+			Set.of(MINE, PLACE, ATTACK, COLLECT, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT);
 
 	private ActionVocabulary() {}
 
@@ -78,7 +82,7 @@ public final class ActionVocabulary {
 		v = switch (v) {
 			case "walk", "move", "move-to", "goto", "go-to", "path-to" -> WALK_TO;
 			case "break", "dig", "harvest", "mine-block" -> MINE;
-			case "build", "put", "set-block", "place-block" -> PLACE;
+			case "build", "set-block", "place-block" -> PLACE;
 			case "hit", "fight", "kill", "attack-mob" -> ATTACK;
 			case "pick-up", "pickup", "grab", "gather" -> COLLECT;
 			case "torch", "light-up", "illuminate", "place-torch" -> LIGHT;
@@ -86,6 +90,9 @@ public final class ActionVocabulary {
 			case "drop-item", "toss", "throw", "discard", "put-down", "unload" -> DROP;
 			case "wear", "put-on", "wield", "hold", "equip-item", "armour", "armor" -> EQUIP;
 			case "make", "craft-item", "crafting", "make-item", "build-item" -> CRAFT;
+			case "smelt", "cook", "smelting", "fire" -> SMELT;
+			case "withdraw", "take-from", "fetch", "remove", "unload-from" -> TAKE;
+			case "store", "deposit", "stow", "put-in", "put-away", "box" -> PUT;
 			case "look-up", "search", "wiki", "google" -> LOOKUP;
 			case "say", "speak", "tell" -> CHAT;
 			case "wander", "roam", "look-around" -> EXPLORE;
@@ -104,6 +111,9 @@ public final class ActionVocabulary {
 			sb.append(verb);
 			if (needsPosition(verb)) sb.append(" (needs x,y,z)");
 			else if (CRAFT.equals(verb)) sb.append(" (needs target = the item to make, e.g. oak_planks)");
+			else if (SMELT.equals(verb)) sb.append(" (needs x,y,z of a furnace and target = the thing to cook)");
+			else if (TAKE.equals(verb)) sb.append(" (needs x,y,z of a container and target = what to take)");
+			else if (PUT.equals(verb)) sb.append(" (needs x,y,z of a container and target = what to put in)");
 		}
 		return sb.toString();
 	}

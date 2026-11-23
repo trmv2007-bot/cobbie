@@ -8,6 +8,7 @@ import com.rishi.cobbie.action.ActionVocabulary;
 import com.rishi.cobbie.config.CobbieConfig;
 import com.rishi.cobbie.craft.CraftChain;
 import com.rishi.cobbie.craft.CraftRecipes;
+import com.rishi.cobbie.station.Containers;
 import com.rishi.cobbie.net.CobbiePanelPayload;
 import com.rishi.cobbie.presence.Narrator;
 import com.rishi.cobbie.presence.Sight;
@@ -45,6 +46,7 @@ import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
 import net.minecraft.world.entity.ai.navigation.GroundPathNavigation;
 import net.minecraft.world.entity.ai.goal.MeleeAttackGoal;
 import net.minecraft.world.entity.ai.goal.OpenDoorGoal;
+import net.minecraft.world.Container;
 import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Enemy;
@@ -54,6 +56,8 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.pathfinder.PathType;
@@ -127,6 +131,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private static final double SWIM_RISE = 0.06;           // buoyancy toward the surface
 	private static final double SWIM_MAX_RISE = 0.16;
 	private static final int CRAFT_CHAIN_DEPTH = 6;
+	/** A smelt is ten seconds a piece, so a station job gets much longer than a walk. */
+	private static final int STATION_STEP_TICKS = 2400;
+	/** No progress in this long means the furnace is not lit or the item is not cookable. */
+	private static final int STATION_STALL_TICKS = 400;
+	/** How far he will look for a furnace before giving up on making iron. */
+	private static final int FURNACE_SEARCH = 12;
 	/**
 	 * Marks a walk he planned for himself rather than one he was asked for. The request limit
 	 * ({@code navigation_range}) exists so a model cannot send him across the map; his own wander
@@ -195,6 +205,36 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private int recallSampleTick;
 	/** Consecutive far re-paths the pathfinder refused; each one shortens the next step. */
 	private int followMisses;
+
+	/** The job in flight when it spans ticks: crafting through a furnace, or smelting on purpose. */
+	private Work work;
+
+	/**
+	 * One resolved chain being worked through, tick by tick.
+	 *
+	 * <p>The plan is decided once, before anything is spent. A step that needs a furnace then becomes a
+	 * little state machine — load fuel, load the ore, wait for the result, take it — because a furnace
+	 * is the one part of crafting that takes real time.
+	 */
+	private static final class Work {
+		final String wanted;
+		final CraftChain.Plan plan;
+		final Map<String, CraftRecipes.Match> matches = new LinkedHashMap<>();
+		final int bagBefore;
+		int step;
+		int collectedForStep;
+		int waitingSince;
+		int stored;
+		BlockPos station;
+		final Map<String, Integer> spilled = new LinkedHashMap<>();
+		final StringBuilder chain = new StringBuilder();
+
+		Work(String wanted, CraftChain.Plan plan, int bagBefore) {
+			this.wanted = wanted;
+			this.plan = plan;
+			this.bagBefore = bagBefore;
+		}
+	}
 
 	public CobbieEntity(EntityType<? extends PathfinderMob> type, Level level) {
 		super(type, level);
@@ -1085,7 +1125,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			case ActionVocabulary.GIVE -> giveToOwner(intent);
 			case ActionVocabulary.DROP -> dropFromBag(intent);
 			case ActionVocabulary.EQUIP -> equipFromBag(intent);
-			case ActionVocabulary.CRAFT -> craftFromBag(intent);
+			case ActionVocabulary.CRAFT -> startCraft(intent);
+			case ActionVocabulary.SMELT -> startSmelt(intent);
+			case ActionVocabulary.TAKE -> startTake(intent);
+			case ActionVocabulary.PUT -> startPut(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
@@ -1161,6 +1204,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		// Phase 2: multi-tick verbs.
 		if (ActionVocabulary.ATTACK.equals(verb)) return attackTick();
+		if (ActionVocabulary.CRAFT.equals(verb) || ActionVocabulary.SMELT.equals(verb)) return workTick();
 
 		interrupt();
 		return ActionOutcome.ok(verb, "done");
@@ -1187,6 +1231,16 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			}
 			case ActionVocabulary.COLLECT -> {
 				ActionOutcome outcome = collectAt(work);
+				clearActive();
+				yield outcome;
+			}
+			case ActionVocabulary.TAKE -> {
+				ActionOutcome outcome = takeFrom(work, active);
+				clearActive();
+				yield outcome;
+			}
+			case ActionVocabulary.PUT -> {
+				ActionOutcome outcome = putInto(work, active);
 				clearActive();
 				yield outcome;
 			}
@@ -1533,12 +1587,16 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 * Make something out of what he is carrying, through the game's own recipe table.
 	 *
 	 * <p>The chain is resolved before anything is spent: if the result needs planks, and the planks
-	 * need logs, every step is known and accounted for first ({@link CraftChain}). Then each step is
-	 * run in that order and the bag is read back afterwards, so "I crafted it" is a count that went
-	 * up, not a call that returned.
+	 * need logs, every step is known and accounted for first ({@link CraftChain}). Steps that can be
+	 * done by hand are instant; a step that needs a furnace becomes a multi-tick job (see {@link Work}),
+	 * which is what makes "make me an iron pickaxe" plan through raw ore without being told.
 	 */
-	private ActionOutcome craftFromBag(ActionIntent intent) {
-		if (!CobbieConfig.isCraftingAllowed()) return ActionOutcome.fail("craft", "crafting is switched off");
+	private ActionOutcome startCraft(ActionIntent intent) {
+		// Crafting and stations are separate switches: a furnace in the chain needs the container
+		// switch as well, and that refusal is raised at the furnace step, where it is the real reason.
+		if (!CobbieConfig.isCraftingAllowed()) {
+			return ActionOutcome.fail("craft", "making things is switched off — /cobbie permit crafting on");
+		}
 		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("craft", "no server world");
 
 		String wanted = resolveItemId(intent.target());
@@ -1548,65 +1606,382 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 					? "tell me what to craft"
 					: "there is no item called " + asked);
 		}
-		int quantity = craftQuantity(intent.data());
+		return beginWork(intent, wanted, craftQuantity(intent.data()), null);
+	}
 
-		Map<String, CraftRecipes.Match> byRecipe = new LinkedHashMap<>();
+	/**
+	 * Cooking something on purpose: "smelt that iron ore". The ore names the recipe, the result comes
+	 * out of the same planner as everything else, and the furnace is the one you pointed him at.
+	 */
+	private ActionOutcome startSmelt(ActionIntent intent) {
+		if (!CobbieConfig.isContainersAllowed()) {
+			return ActionOutcome.fail("smelt", "I am not allowed to use furnaces — /cobbie permit containers on");
+		}
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("smelt", "no server world");
+
+		BlockPos station = new BlockPos(intent.x(), intent.y(), intent.z());
+		Container furnace = Containers.resolve(serverLevel, station, owner(), CobbieConfig.isEnderChestAllowed());
+		if (furnace == null || !Containers.isFurnace(furnace)) {
+			return ActionOutcome.fail("smelt", "there is no furnace at " + describe(station));
+		}
+		String input = resolveItemId(intent.target());
+		String result = smeltResultFor(serverLevel, input);
+		if (result == null) {
+			return ActionOutcome.fail("smelt", input == null
+					? "tell me what to cook"
+					: "nothing I know how to cook from " + input);
+		}
+		return beginWork(intent, result, craftQuantity(intent.data()), station);
+	}
+
+	/** What a furnace turns this item into, or null when it does not cook it. */
+	private String smeltResultFor(ServerLevel level, String inputId) {
+		if (!(level.recipeAccess() instanceof net.minecraft.world.item.crafting.RecipeManager manager)) return null;
+		var type = net.minecraft.world.item.crafting.RecipeType.SMELTING;
+		List<String> candidates = inputId != null ? List.of(inputId) : new ArrayList<>(carriedByItem().keySet());
+		for (String candidate : candidates) {
+			ItemStack sample = sampleOf(candidate);
+			if (sample.isEmpty()) continue;
+			var input = new net.minecraft.world.item.crafting.SingleRecipeInput(sample);
+			var found = manager.getRecipeFor(type, input, level);
+			if (found.isEmpty()) continue;
+			ItemStack made = found.get().value().assemble(input);
+			if (!made.isEmpty()) return itemId(made);
+		}
+		return null;
+	}
+
+	/** One of an item, for asking the recipe table questions. */
+	private ItemStack sampleOf(String registryId) {
+		Identifier id;
+		try {
+			id = Identifier.parse(registryId);
+		} catch (Exception e) {
+			return ItemStack.EMPTY;
+		}
+		return BuiltInRegistries.ITEM.getOptional(id).map(item -> new ItemStack(item, 1)).orElse(ItemStack.EMPTY);
+	}
+
+	/** Build the plan and hand it to the tick loop. */
+	private ActionOutcome beginWork(ActionIntent intent, String wanted, int quantity, BlockPos fixedStation) {
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("craft", "no server world");
+		Map<String, CraftRecipes.Match> matches = new LinkedHashMap<>();
 		CraftChain.Book book = itemId -> {
 			List<CraftChain.Recipe> recipes = new ArrayList<>();
 			for (CraftRecipes.Match match : CraftRecipes.allFor(serverLevel, itemId)) {
-				byRecipe.put(match.recipe().id(), match);
+				matches.put(match.recipe().id(), match);
 				recipes.add(match.recipe());
 			}
 			return recipes;
 		};
+		String verb = intent.action();
 		CraftChain.Plan plan = CraftChain.plan(wanted, quantity, book, carriedByItem(), CRAFT_CHAIN_DEPTH);
-		if (!plan.possible()) return ActionOutcome.fail("craft", plan.failure());
+		if (!plan.possible()) return ActionOutcome.fail(verb, plan.failure());
 		if (plan.steps().isEmpty()) {
-			return ActionOutcome.ok("craft", "I already have " + countItem(wanted) + " " + wanted);
+			return ActionOutcome.ok(verb, "I already have " + countItem(wanted) + " " + wanted);
 		}
 
-		int before = countItem(wanted);
-		int stored = 0;
-		Map<String, Integer> spilled = new LinkedHashMap<>();
-		for (CraftChain.Step step : plan.steps()) {
+		Work job = new Work(wanted, plan, countItem(wanted));
+		job.matches.putAll(matches);
+		job.station = fixedStation;
+		job.waitingSince = this.tickCount;
+		this.work = job;
+		active = intent;
+		activeTarget = null;
+		navigatingForAction = false;
+		activeDeadlineTick = this.tickCount + STATION_STEP_TICKS;
+		return null; // runs across ticks in workTick()
+	}
+
+	/** One tick of the job in flight: hand steps run here, furnace steps advance their cycle. */
+	private ActionOutcome workTick() {
+		Work job = this.work;
+		if (job == null) {
+			interrupt();
+			return ActionOutcome.fail("craft", "lost track of the job");
+		}
+		while (job.step < job.plan.steps().size()) {
+			CraftChain.Step step = job.plan.steps().get(job.step);
+			CraftRecipes.Match match = job.matches.get(step.recipeId());
+			if (match == null) return abortWork("craft", "I lost the recipe for " + step.result());
+			if (step.needsFurnace()) return furnaceStepTick(job, step);
+
 			for (String ingredient : step.consumes()) {
 				if (!consumeItem(ingredient, 1)) {
-					return ActionOutcome.fail("craft", "I ran out of " + ingredient + " while making " + wanted);
+					return abortWork("craft", "I ran out of " + ingredient + " while making " + step.result());
 				}
 			}
-			CraftRecipes.Match match = byRecipe.get(step.recipeId());
 			ItemStack made = match.output().copyWithCount(match.output().getCount() * step.runs());
-			ItemStack leftover = made.copy();
-			if (add(leftover, inventory)) stored += made.getCount() - leftover.getCount();
-			if (!leftover.isEmpty()) {
-				// A full bag must not delete what he just made; it goes on the ground at his feet.
-				ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
-				pile.setDefaultPickUpDelay();
-				if (!level().addFreshEntity(pile)) {
-					return ActionOutcome.fail("craft", "my bag is full and I could not put " + step.result()
-							+ " on the ground either");
-				}
-				spilled.merge(step.result(), leftover.getCount(), Integer::sum);
+			String refusal = storeOrDrop(job, made);
+			if (refusal != null) return abortWork("craft", refusal);
+			noteChain(job, step);
+			job.step++;
+			job.collectedForStep = 0;
+		}
+		return finishWork(job);
+	}
+
+	/**
+	 * One cycle at a furnace. Take what is ready, keep it fuelled, keep the ore in it, and wait —
+	 * the block entity does the cooking, so there is nothing to do between results but look.
+	 */
+	private ActionOutcome furnaceStepTick(Work job, CraftChain.Step step) {
+		if (!CobbieConfig.isContainersAllowed()) {
+			return abortWork("craft", "I need a furnace to make " + step.result()
+					+ " and I am not allowed to use one — /cobbie permit containers on");
+		}
+		if (job.station == null) {
+			job.station = findFurnace();
+			if (job.station == null) {
+				return abortWork("craft", "I need a furnace for " + step.result() + " and there is none near me");
 			}
+		}
+		Container furnace = Containers.resolve((ServerLevel) level(), job.station, owner(),
+				CobbieConfig.isEnderChestAllowed());
+		if (furnace == null || !Containers.isFurnace(furnace)) {
+			job.station = null;
+			return abortWork("craft", "the furnace I was using is gone");
 		}
 
-		int expected = 0;
-		for (CraftChain.Step step : plan.steps()) {
-			if (step.result().equals(wanted)) expected += step.produced();
+		int want = step.produced();
+		int took = Containers.extract(furnace, step.result(), want - job.collectedForStep, inventory);
+		if (took > 0) {
+			job.collectedForStep += took;
+			job.stored += took;
+			job.waitingSince = this.tickCount;
 		}
-		int gained = countItem(wanted) - before;
-		int dropped = spilled.getOrDefault(wanted, 0);
+		if (job.collectedForStep >= want) {
+			noteChain(job, step);
+			job.step++;
+			job.collectedForStep = 0;
+			job.waitingSince = this.tickCount;
+			return null;
+		}
+
+		ItemStack fuel = furnace.getItem(Containers.FURNACE_FUEL);
+		if (fuel.isEmpty()) {
+			ItemStack fromBag = takeFuelFromBag();
+			if (fromBag.isEmpty()) return abortWork("craft", "I have no fuel for the furnace");
+			if (Containers.insert(furnace, fromBag) <= 0) {
+				addItem(fromBag);
+				return abortWork("craft", "the furnace would not take my fuel");
+			}
+			job.waitingSince = this.tickCount;
+		}
+
+		ItemStack inFurnace = furnace.getItem(Containers.FURNACE_INPUT);
+		boolean inputRight = !inFurnace.isEmpty() && step.consumes().contains(itemId(inFurnace));
+		if (!inputRight) {
+			String ingredient = step.consumes().isEmpty() ? null : step.consumes().get(0);
+			if (ingredient == null) return abortWork("craft", "I do not know what to put in the furnace");
+			ItemStack one = takeOne(ingredient);
+			if (one.isEmpty()) return abortWork("craft", "I have no " + ingredient + " left to cook");
+			if (!inFurnace.isEmpty()) {
+				// Something else is in there; put it back in the bag rather than destroying it.
+				furnace.setItem(Containers.FURNACE_INPUT, ItemStack.EMPTY);
+				addItem(inFurnace);
+			}
+			furnace.setItem(Containers.FURNACE_INPUT, one);
+			furnace.setChanged();
+			job.waitingSince = this.tickCount;
+		}
+
+		if (this.tickCount - job.waitingSince > STATION_STALL_TICKS) {
+			return abortWork("craft", "the furnace is not making " + step.result()
+					+ " — it may be out of fuel or too slow for that item");
+		}
+		return null;
+	}
+
+	/** A fuel item out of his bag, or empty. Judged by the component the furnace itself reads. */
+	private ItemStack takeFuelFromBag() {
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (!Containers.isFuel(stack)) continue;
+			ItemStack one = stack.split(1);
+			if (stack.isEmpty()) inventory.setItem(i, ItemStack.EMPTY);
+			return one;
+		}
+		return ItemStack.EMPTY;
+	}
+
+	/** One item of a registry id out of his bag, components and all. */
+	private ItemStack takeOne(String registryId) {
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty() || !registryId.equalsIgnoreCase(itemId(stack))) continue;
+			ItemStack one = stack.split(1);
+			if (stack.isEmpty()) inventory.setItem(i, ItemStack.EMPTY);
+			return one;
+		}
+		ItemStack hand = this.getMainHandItem();
+		if (!hand.isEmpty() && registryId.equalsIgnoreCase(itemId(hand))) {
+			ItemStack one = hand.split(1);
+			if (hand.isEmpty()) this.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+			return one;
+		}
+		return ItemStack.EMPTY;
+	}
+
+	private BlockPos findFurnace() {
+		BlockPos base = this.blockPosition();
+		for (BlockPos probe : BlockPos.betweenClosed(
+				base.offset(-FURNACE_SEARCH, -6, -FURNACE_SEARCH),
+				base.offset(FURNACE_SEARCH, 6, FURNACE_SEARCH))) {
+			if (level().getBlockEntity(probe) instanceof AbstractFurnaceBlockEntity) return probe.immutable();
+		}
+		return null;
+	}
+
+	private void noteChain(Work job, CraftChain.Step step) {
+		if (job.chain.length() > 0) job.chain.append(", then ");
+		job.chain.append(step.runs()).append("x ").append(step.recipeId());
+	}
+
+	/** Into the bag, or onto the ground at his feet when there is no room. Never deleted. */
+	private String storeOrDrop(Work job, ItemStack made) {
+		ItemStack leftover = made.copy();
+		if (add(leftover, inventory)) job.stored += made.getCount() - leftover.getCount();
+		if (leftover.isEmpty()) return null;
+		ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
+		pile.setDefaultPickUpDelay();
+		if (!level().addFreshEntity(pile)) {
+			addItem(leftover);
+			return "my bag is full and the world would not take what I made";
+		}
+		job.spilled.merge(itemId(made), leftover.getCount(), Integer::sum);
+		return null;
+	}
+
+	private ActionOutcome finishWork(Work job) {
+		int expected = 0;
+		for (CraftChain.Step step : job.plan.steps()) {
+			if (step.result().equals(job.wanted)) expected += step.produced();
+		}
+		int gained = countItem(job.wanted) - job.bagBefore;
+		int dropped = job.spilled.getOrDefault(job.wanted, 0);
 		if (gained + dropped != expected) {
-			return ActionOutcome.fail("craft", "my bag says " + gained + " new " + wanted
+			return abortWork("craft", "my bag says " + gained + " new " + job.wanted
 					+ " but the recipes should have made " + expected);
 		}
-		StringBuilder chain = new StringBuilder();
-		for (CraftChain.Step step : plan.steps()) {
-			if (chain.length() > 0) chain.append(", then ");
-			chain.append(step.runs()).append("x ").append(step.recipeId());
+		ActionOutcome outcome = ActionOutcome.ok("craft", "crafted " + gained + " " + job.wanted
+				+ " (" + job.chain + ")" + (dropped > 0 ? ", " + dropped + " on the ground beside me" : ""));
+		this.work = null;
+		clearActive();
+		return outcome;
+	}
+
+	private ActionOutcome abortWork(String verb, String reason) {
+		this.work = null;
+		clearActive();
+		return ActionOutcome.fail(verb, reason);
+	}
+
+	// ---- containers ----
+
+	private ActionOutcome startTake(ActionIntent intent) {
+		if (!CobbieConfig.isContainersAllowed()) {
+			return ActionOutcome.fail("take", "I am not allowed to open containers — /cobbie permit containers on");
 		}
-		return ActionOutcome.ok("craft", "crafted " + gained + " " + wanted + " ("
-				+ chain + ")" + (dropped > 0 ? ", " + dropped + " on the ground beside me" : ""));
+		BlockPos pos = new BlockPos(intent.x(), intent.y(), intent.z());
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("take", "no server world");
+		if (!serverLevel.isLoaded(pos)) return ActionOutcome.fail("take", "that area is not loaded");
+		if (Containers.resolve(serverLevel, pos, owner(), CobbieConfig.isEnderChestAllowed()) == null) {
+			return ActionOutcome.fail("take", "there is nothing to take from at " + describe(pos));
+		}
+		if (this.blockPosition().distSqr(pos) > reachSquared()) {
+			BlockPos stand = standingSpotNear(pos);
+			if (stand == null) return ActionOutcome.fail("take", "nowhere to stand at " + describe(pos));
+			beginWalking(intent, stand, pos);
+			return null;
+		}
+		return takeFrom(pos, intent);
+	}
+
+	private ActionOutcome takeFrom(BlockPos pos, ActionIntent intent) {
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("take", "no server world");
+		Container container = Containers.resolve(serverLevel, pos, owner(), CobbieConfig.isEnderChestAllowed());
+		if (container == null) return ActionOutcome.fail("take", "there is nothing to take from there");
+		String what = intent.target() == null ? "" : intent.target().trim();
+		int limit = intent.data() == null || intent.data().isBlank() ? 64 : craftQuantity(intent.data());
+
+		int bagBefore = bagTotal();
+		int moved = Containers.extract(container, what, limit, inventory);
+		if (moved <= 0) {
+			return ActionOutcome.fail("take", what.isBlank()
+					? "there was nothing in that " + Containers.nameOf(serverLevel, pos)
+					: "there is no " + what + " in that " + Containers.nameOf(serverLevel, pos));
+		}
+		int gained = bagTotal() - bagBefore;
+		if (gained != moved) {
+			return ActionOutcome.fail("take", "I moved " + moved + " item(s) but my bag grew by " + gained);
+		}
+		return ActionOutcome.ok("take", "took " + moved + (what.isBlank() ? " item(s)" : " " + what)
+				+ " from the " + Containers.nameOf(serverLevel, pos));
+	}
+
+	private ActionOutcome startPut(ActionIntent intent) {
+		if (!CobbieConfig.isContainersAllowed()) {
+			return ActionOutcome.fail("put", "I am not allowed to open containers — /cobbie permit containers on");
+		}
+		BlockPos pos = new BlockPos(intent.x(), intent.y(), intent.z());
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("put", "no server world");
+		if (!serverLevel.isLoaded(pos)) return ActionOutcome.fail("put", "that area is not loaded");
+		if (Containers.resolve(serverLevel, pos, owner(), false) == null) {
+			return ActionOutcome.fail("put", "there is nothing to put things in at " + describe(pos));
+		}
+		if (this.blockPosition().distSqr(pos) > reachSquared()) {
+			BlockPos stand = standingSpotNear(pos);
+			if (stand == null) return ActionOutcome.fail("put", "nowhere to stand at " + describe(pos));
+			beginWalking(intent, stand, pos);
+			return null;
+		}
+		return putInto(pos, intent);
+	}
+
+	private ActionOutcome putInto(BlockPos pos, ActionIntent intent) {
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("put", "no server world");
+		Container container = Containers.resolve(serverLevel, pos, owner(), CobbieConfig.isEnderChestAllowed());
+		if (container == null) return ActionOutcome.fail("put", "there is nothing to put things in there");
+		String what = intent.target() == null ? "" : intent.target().trim();
+		int limit = intent.data() == null || intent.data().isBlank() ? 64 : craftQuantity(intent.data());
+
+		int bagBefore = bagTotal();
+		int moved = 0;
+		for (int i = 0; i < inventory.getContainerSize() && moved < limit; i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty() || !matchesItem(what, stack)) continue;
+			int take = Math.min(limit - moved, stack.getCount());
+			ItemStack trial = stack.copyWithCount(take);
+			int put = Containers.insert(container, trial);
+			if (put <= 0) break;
+			stack.shrink(put);
+			if (stack.isEmpty()) inventory.setItem(i, ItemStack.EMPTY);
+			moved += put;
+		}
+		if (moved <= 0) {
+			return ActionOutcome.fail("put", what.isBlank()
+					? "I am not carrying anything that fits"
+					: "I have no " + what + " to put in there");
+		}
+		int lost = bagBefore - bagTotal();
+		if (lost != moved) {
+			return ActionOutcome.fail("put", "I moved " + moved + " item(s) but my bag shrank by " + lost);
+		}
+		return ActionOutcome.ok("put", "put " + moved + (what.isBlank() ? " item(s)" : " " + what)
+				+ " in the " + Containers.nameOf(serverLevel, pos));
+	}
+
+	/** How many items he is carrying in total, bag and raised hand together. */
+	private int bagTotal() {
+		int total = 0;
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (!stack.isEmpty()) total += stack.getCount();
+		}
+		ItemStack hand = this.getMainHandItem();
+		if (!hand.isEmpty()) total += hand.getCount();
+		return total;
 	}
 
 	/**

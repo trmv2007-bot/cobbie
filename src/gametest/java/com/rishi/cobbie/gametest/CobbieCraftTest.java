@@ -53,7 +53,8 @@ public final class CobbieCraftTest implements FabricClientGameTest {
             if (count(server, "minecraft:oak_planks") != 0) {
                 throw new AssertionError("He crafted with the permission off");
             }
-            if (!reportContains(server, "not allowed")) {
+            boolean explained = reportContains(server, "switched off") || reportContains(server, "not allowed");
+            if (!explained) {
                 throw new AssertionError("A refused craft said nothing about permission: " + lastReport(server));
             }
 
