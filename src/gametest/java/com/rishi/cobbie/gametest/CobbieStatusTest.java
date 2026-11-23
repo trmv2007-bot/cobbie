@@ -102,6 +102,13 @@ public final class CobbieStatusTest implements FabricClientGameTest {
                         + "is not gating anything (" + standing + ")");
             }
 
+            // 0.18.0: the gesture opens his panel on a client that can receive it. This test is about
+            // the tag, so put the screen away before the screenshot; CobbiePanelTest covers the panel.
+            context.computeOnClient(mc -> {
+                mc.gui.setScreen(null);
+                return null;
+            });
+
             // A frame with the tag on screen, kept as the artefact for this claim.
             java.nio.file.Path shot = context.takeScreenshot("cobbie-status");
             System.out.println("[gametest] screenshot: " + shot);

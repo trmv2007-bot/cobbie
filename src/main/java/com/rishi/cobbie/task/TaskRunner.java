@@ -45,10 +45,27 @@ public final class TaskRunner {
 		void interrupt();
 	}
 
+	/**
+	 * Told about a step the moment it starts and the moment it settles.
+	 *
+	 * <p>This is how a step gets narrated as it happens instead of being announced in advance: the
+	 * runner is the only place that knows both edges of a step, and the entity is the only place
+	 * that can speak. Nothing here can change a decision — a listener that throws is swallowed.
+	 */
+	public interface Listener {
+
+		/** A step is about to be handed to the world. */
+		default void onStepStarted(TaskStep step) {}
+
+		/** A step settled, successfully or not. */
+		default void onStepSettled(TaskStep step, ActionOutcome outcome) {}
+	}
+
 	/** How many instructions may wait behind the running one. */
 	private static final int MAX_QUEUED_PLANS = 8;
 
 	private final Executor executor;
+	private Listener listener;
 	private final int maxSteps;
 	private final int maxRetriesPerStep;
 	private final long durationMillis;
@@ -68,6 +85,11 @@ public final class TaskRunner {
 		this.maxSteps = Math.max(1, Math.min(ActionVocabulary.MAX_ACTIONS, maxSteps));
 		this.maxRetriesPerStep = Math.max(0, maxRetriesPerStep);
 		this.durationMillis = durationMillis;
+	}
+
+	/** Nobody has to listen; when nobody does, the runner behaves exactly as before. */
+	public void setListener(Listener listener) {
+		this.listener = listener;
 	}
 
 	/**
@@ -245,6 +267,7 @@ public final class TaskRunner {
 			}
 
 			next.beginAttempt();
+			notifyStarted(next);
 			ActionOutcome immediate = executor.begin(next.intent());
 			if (immediate == null) {
 				next.markStarted();   // asynchronous: the result arrives through poll()
@@ -255,6 +278,25 @@ public final class TaskRunner {
 		// Only reachable if the executor keeps answering instantly past the plan length.
 		plan.finishAsFailure("planner guard tripped");
 		queueReport();
+	}
+
+	/** A narrator must never be able to stop the work it is describing. */
+	private void notifyStarted(TaskStep step) {
+		if (listener == null) return;
+		try {
+			listener.onStepStarted(step);
+		} catch (Exception ignored) {
+			// narration is not part of execution
+		}
+	}
+
+	private void notifySettled(TaskStep step, ActionOutcome outcome) {
+		if (listener == null) return;
+		try {
+			listener.onStepSettled(step, outcome);
+		} catch (Exception ignored) {
+			// narration is not part of execution
+		}
 	}
 
 	/** VERIFY: only a successful, re-read-confirmed outcome advances the plan. */
@@ -268,6 +310,7 @@ public final class TaskRunner {
 		if (outcome.success()) {
 			step.markDone(outcome.summary());
 			plan.note(action + ": " + outcome.summary());
+			notifySettled(step, outcome);
 			return;
 		}
 
@@ -275,6 +318,7 @@ public final class TaskRunner {
 		if (!worldChange) {
 			step.markFailed(outcome.summary());
 			plan.note(action + " skipped: " + outcome.summary());
+			notifySettled(step, outcome);
 			return;
 		}
 		if (step.attempts() <= maxRetriesPerStep) {
@@ -286,6 +330,7 @@ public final class TaskRunner {
 		step.markFailed(outcome.summary());
 		if (isFatal(outcome.summary())) {
 			plan.finishAsFailure("step " + (step.index() + 1) + " (" + action + ") cannot be done: " + outcome.summary());
+			notifySettled(step, outcome);
 			queueReport();
 			return;
 		}
@@ -293,6 +338,7 @@ public final class TaskRunner {
 		// remains and reports the failure alongside the work that did get done.
 		plan.note(action + " gave up after " + step.attempts() + " attempt(s): " + outcome.summary()
 				+ " (continuing with the rest)");
+		notifySettled(step, outcome);
 	}
 
 	/** Some failures are not worth continuing past: a permission refusal means the plan is wrong. */

@@ -42,6 +42,14 @@ public class CobbieClient implements ClientModInitializer {
 								}))
 				));
 
+		// Shift-right-click on the server opens his panel here: the whole readout arrives with the
+		// click, so the screen never has to ask for something only the server knows (his bag).
+		net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.registerGlobalReceiver(
+				com.rishi.cobbie.net.CobbiePanelPayload.TYPE, (payload, context) -> {
+					var client = context.client();
+					client.execute(() -> client.setScreenAndShow(new CobbiePanelScreen(payload)));
+				});
+
 		net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			while (OPEN_CONFIG.consumeClick()) {
 				client.setScreenAndShow(new CobbieConfigScreen(null));

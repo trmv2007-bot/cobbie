@@ -29,6 +29,10 @@ public class Cobbie implements ModInitializer {
 	public void onInitialize() {
 		CobbieEntities.register();          // entity type must exist before anything spawns one
 		CobbieConfig.loadAndApply();        // reads config/cobbie.json; does no network I/O
+		// Registered on both sides: the server sends it from mobInteract, the client draws from it.
+		net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry.clientboundPlay()
+				.register(com.rishi.cobbie.net.CobbiePanelPayload.TYPE,
+						com.rishi.cobbie.net.CobbiePanelPayload.CODEC);
 		SpawnCobbieCommand.register();
 		CobbieCommands.register();
 		try {
