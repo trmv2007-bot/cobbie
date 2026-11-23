@@ -10,6 +10,9 @@ import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.item.crafting.PlacementInfo;
 import net.minecraft.world.item.crafting.RecipeHolder;
 import net.minecraft.world.item.crafting.RecipeManager;
+import net.minecraft.world.item.crafting.RecipeType;
+import net.minecraft.world.item.crafting.SingleItemRecipe;
+import net.minecraft.world.item.crafting.SingleRecipeInput;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -69,15 +72,55 @@ public final class CraftRecipes {
 				lastObstacle = holder.id().identifier() + " declares no ingredients";
 				continue;
 			}
+			// A recipe that consumes what it makes is not a way to make it — transmute recipes read
+			// their input's components, and assembling one with an empty grid produces nonsense.
+			boolean consumesItself = slots.stream().anyMatch(accepts -> accepts.contains(produced));
+			if (consumesItself) {
+				lastObstacle = holder.id().identifier() + " consumes what it makes";
+				continue;
+			}
 			CraftChain.Recipe shape = new CraftChain.Recipe(
 					holder.id().identifier().toString(), produced, output.getCount(), slots);
 			matches.add(new Match(shape, output.copy()));
 		}
+		// A furnace can also make it, and that is how iron is reached. Always asked, not only when
+		// the table came up empty: a hand recipe that turns out to be unsatisfiable from his bag
+		// must not hide the furnace one.
+		matches.addAll(furnaceRecipesFor(level, manager, itemId));
+
 		if (matches.isEmpty()) {
 			// One line, and only when a craft could not find a recipe: "the game has none" and "the
 			// recipe would not load" look identical from the outside and are different bugs.
 			Cobbie.LOGGER.info("Cobbie craft: no usable recipe for {}{}", itemId,
 					lastObstacle == null ? "" : " (last obstacle: " + lastObstacle + ")");
+		}
+		return matches;
+	}
+
+	/**
+	 * The same question asked of the furnace: a smelting recipe is one ingredient and one result, so
+	 * a raw ore is a step rather than a verb of its own, and {@code craft iron_pickaxe} can plan
+	 * "smelt two iron ore, then make the pickaxe" without being told about the furnace at all.
+	 */
+	private static List<Match> furnaceRecipesFor(ServerLevel level, RecipeManager manager, String itemId) {
+		List<Match> matches = new ArrayList<>();
+		for (RecipeHolder<?> holder : manager.getRecipes()) {
+			if (!(holder.value() instanceof SingleItemRecipe recipe)) continue;
+			if (recipe.getType() != RecipeType.SMELTING) continue;
+			ItemStack output;
+			try {
+				output = recipe.assemble(new SingleRecipeInput(ItemStack.EMPTY));
+			} catch (Exception e) {
+				continue;
+			}
+			if (output == null || output.isEmpty()) continue;
+			String produced = BuiltInRegistries.ITEM.getKey(output.getItem()).toString();
+			if (!produced.equals(itemId)) continue;
+			List<String> ids = itemIds(recipe.input());
+			if (ids.isEmpty()) continue;
+			CraftChain.Recipe shape = new CraftChain.Recipe(holder.id().identifier().toString(), produced,
+					output.getCount(), List.of(ids), CraftChain.FURNACE);
+			matches.add(new Match(shape, output.copy()));
 		}
 		return matches;
 	}

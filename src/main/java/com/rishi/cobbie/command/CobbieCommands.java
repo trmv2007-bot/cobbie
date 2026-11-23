@@ -28,7 +28,8 @@ import java.util.List;
  *   <li>{@code status} — real connection state, current task, last verified result, what he carries</li>
  *   <li>{@code follow} / {@code stay} / {@code cancel} — movement and plan control</li>
  *   <li>{@code permit <switch> <on|off>} — mining, building, combat, player_combat, exploration,
- *       collection, crafting (persisted; re-checked at execution time, not just when a reply is parsed)</li>
+ *       collection, crafting, containers, ender_chest (persisted; re-checked at execution time, not just
+ *       when a reply is parsed)</li>
  *   <li>{@code autonomy <off|assistive|creative>}</li>
  *   <li>{@code skills [list|on|off|delete]} and {@code memory [show|clear]}</li>
  *   <li>{@code reload} — re-read config/cobbie.json without restarting the game</li>
@@ -185,7 +186,7 @@ public final class CobbieCommands {
 		String value = StringArgumentType.getString(ctx, "value");
 		if (!CobbieConfig.setPermission(which, value)) {
 			reply(ctx, "§cUnknown switch or value. Try: mining|building|combat|player_combat|exploration"
-					+ "|collection|crafting on|off");
+					+ "|collection|crafting|containers|ender_chest on|off");
 			return 0;
 		}
 		reply(ctx, "§fUpdated. " + CobbieConfig.describe().replace("\n", "  |  "));

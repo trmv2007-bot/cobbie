@@ -30,6 +30,10 @@ public final class CraftChain {
 	/** Deeper than this and "make X" means the recipe graph is looping, not that he is clever. */
 	public static final int DEFAULT_MAX_DEPTH = 6;
 
+	/** Where a recipe is worked: in his hands, or in a furnace he has to stand at. */
+	public static final String HAND = "hand";
+	public static final String FURNACE = "furnace";
+
 	/**
 	 * One recipe as the planner needs it.
 	 *
@@ -37,10 +41,21 @@ public final class CraftChain {
 	 * @param result      registry id of the item it makes
 	 * @param resultCount how many of that item one run produces
 	 * @param slots       one entry per consuming slot; each entry lists the item ids that slot accepts
+	 * @param station     {@link #HAND} or {@link #FURNACE}
 	 */
-	public record Recipe(String id, String result, int resultCount, List<List<String>> slots) {
+	public record Recipe(String id, String result, int resultCount, List<List<String>> slots, String station) {
 		public Recipe {
 			slots = slots == null ? List.of() : List.copyOf(slots);
+			station = station == null || station.isBlank() ? HAND : station;
+		}
+
+		/** A recipe worked by hand, which is nearly all of them. */
+		public Recipe(String id, String result, int resultCount, List<List<String>> slots) {
+			this(id, result, resultCount, slots, HAND);
+		}
+
+		public boolean needsFurnace() {
+			return FURNACE.equals(station);
 		}
 	}
 
@@ -57,9 +72,19 @@ public final class CraftChain {
 	}
 
 	/** One recipe to run, with the exact items it consumes so the executor can verify itself. */
-	public record Step(String recipeId, String result, int resultCount, int runs, List<String> consumes) {
+	public record Step(String recipeId, String result, int resultCount, int runs, List<String> consumes,
+			String station) {
 		public Step {
 			consumes = consumes == null ? List.of() : List.copyOf(consumes);
+			station = station == null || station.isBlank() ? HAND : station;
+		}
+
+		public Step(String recipeId, String result, int resultCount, int runs, List<String> consumes) {
+			this(recipeId, result, resultCount, runs, consumes, HAND);
+		}
+
+		public boolean needsFurnace() {
+			return FURNACE.equals(station);
 		}
 
 		/** How many of {@link #result} this step adds to the bag. */
@@ -173,7 +198,7 @@ public final class CraftChain {
 				for (int used = 0; used < wanted.getValue(); used++) consumes.add(wanted.getKey());
 			}
 
-			steps.add(new Step(recipe.id(), recipe.result(), recipe.resultCount(), runs, consumes));
+			steps.add(new Step(recipe.id(), recipe.result(), recipe.resultCount(), runs, consumes, recipe.station()));
 			// Keep what this run leaves over, minus what the caller asked for — otherwise the same
 			// produced item would be handed out twice.
 			have.put(item, have.getOrDefault(item, 0) + runs * recipe.resultCount() - need);

@@ -144,6 +144,8 @@ public class CobbieConfigScreen extends Screen {
         o.addProperty("exploration_allowed", true);
         o.addProperty("collection_allowed", true);
         o.addProperty("crafting_allowed", false);
+        o.addProperty("containers_allowed", false);
+        o.addProperty("ender_chest_allowed", false);
         o.addProperty("chat_mode", "MENTION");
         o.addProperty("allowed_players", "");
         o.addProperty("chat_cooldown_ms", 900);
@@ -193,6 +195,8 @@ public class CobbieConfigScreen extends Screen {
         boolField("exploration_allowed", "Exploration");
         boolField("collection_allowed", "Collection");
         boolField("crafting_allowed", "Crafting");
+        boolField("containers_allowed", "Containers (chests, furnaces)");
+        boolField("ender_chest_allowed", "Owner's Ender Chest");
 
         header("Chat");
         enumField("chat_mode", "Chat Mode", new String[]{"MENTION", "OWNER_MENTION", "ALWAYS_LISTEN", "ALLOWLIST"});
