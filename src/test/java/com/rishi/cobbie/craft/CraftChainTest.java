@@ -143,6 +143,32 @@ class CraftChainTest {
 		assertTrue(runsFrom(plan, Map.of("oak_planks", 3)), "the plan must be runnable");
 	}
 
+	@Test
+	void anIronPickaxePlansThroughTheFurnace() {
+		// Iron is not in his bag, it is in the ground: the chain has to smelt first, and the step
+		// has to say so, because a furnace step is what the executor waits on.
+		Map<String, List<CraftChain.Recipe>> book = Map.of(
+				"iron_ingot", List.of(new CraftChain.Recipe("minecraft:iron_ingot_from_smelting_raw_iron",
+						"iron_ingot", 1, List.of(slot("raw_iron")), CraftChain.FURNACE)),
+				"stick", List.of(recipe("minecraft:stick", "stick", 4, slot("oak_planks"), slot("oak_planks"))),
+				"iron_pickaxe", List.of(recipe("minecraft:iron_pickaxe", "iron_pickaxe", 1,
+						slot("iron_ingot"), slot("iron_ingot"), slot("iron_ingot"),
+						slot("stick"), slot("stick"))));
+
+		CraftChain.Plan plan = CraftChain.plan("iron_pickaxe", 1,
+				item -> book.getOrDefault(item, List.of()),
+				Map.of("raw_iron", 3, "oak_planks", 2));
+
+		assertTrue(plan.possible(), plan.failure());
+		CraftChain.Step smelt = plan.steps().stream()
+				.filter(CraftChain.Step::needsFurnace)
+				.findFirst()
+				.orElseThrow(() -> new AssertionError("no furnace step in " + plan.steps()));
+		assertEquals("iron_ingot", smelt.result());
+		assertEquals(3, smelt.consumes().size(), "three ingots for a pickaxe means three ore");
+		assertTrue(runsFrom(plan, Map.of("raw_iron", 3, "oak_planks", 2)), "the plan must be runnable");
+	}
+
 	/**
 	 * Walk the plan exactly as the executor would: take each consumed item out of the bag, then put
 	 * the produced items in. False means the plan asked for something he would not have by then.

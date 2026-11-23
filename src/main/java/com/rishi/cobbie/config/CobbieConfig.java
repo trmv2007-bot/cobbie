@@ -127,6 +127,9 @@ public final class CobbieConfig {
 	private static boolean explorationAllowed = true;
 	private static boolean collectionAllowed = true;
 	private static boolean craftingAllowed = false;
+	private static boolean containersAllowed = false;
+	/** The owner's ender chest is his private storage; it needs its own switch, separate from chests. */
+	private static boolean enderChestAllowed = false;
 
 	// ---- Chat ----
 	private static ChatMode chatMode = ChatMode.MENTION;
@@ -227,6 +230,8 @@ public final class CobbieConfig {
 		explorationAllowed = bool(root, "exploration_allowed", explorationAllowed);
 		collectionAllowed = bool(root, "collection_allowed", collectionAllowed);
 		craftingAllowed = bool(root, "crafting_allowed", craftingAllowed);
+		containersAllowed = bool(root, "containers_allowed", containersAllowed);
+		enderChestAllowed = bool(root, "ender_chest_allowed", enderChestAllowed);
 
 		chatMode = ChatMode.parse(str(root, "chat_mode", chatMode.name()), chatMode);
 		chatCooldownMs = integer(root, "chat_cooldown_ms", chatCooldownMs, 0, 10000);
@@ -385,6 +390,8 @@ public final class CobbieConfig {
 	public static boolean isExplorationAllowed() { ensureLoaded(); return explorationAllowed; }
 	public static boolean isCollectionAllowed() { ensureLoaded(); return collectionAllowed; }
 	public static boolean isCraftingAllowed() { ensureLoaded(); return craftingAllowed; }
+	public static boolean isContainersAllowed() { ensureLoaded(); return containersAllowed; }
+	public static boolean isEnderChestAllowed() { ensureLoaded(); return enderChestAllowed; }
 
 	public static ChatMode getChatMode() { ensureLoaded(); return chatMode; }
 	public static List<String> getAllowedPlayers() { ensureLoaded(); return List.copyOf(allowedPlayers); }
@@ -437,7 +444,7 @@ public final class CobbieConfig {
 			case "attack" -> combatAllowed;
 			case "explore" -> explorationAllowed && autonomyMode != AutonomyMode.OFF;
 			case "collect" -> collectionAllowed;
-			case "craft" -> craftingAllowed;
+			case "craft", "smelt", "take", "put" -> craftingAllowed || containersAllowed;
 			case "follow", "stay", "wave", "chat", "answer", "wait", "walk-to", "give", "drop", "equip", "lookup" -> true;
 			default -> false;
 		};
@@ -488,6 +495,8 @@ public final class CobbieConfig {
 			root.addProperty("exploration_allowed", explorationAllowed);
 			root.addProperty("collection_allowed", collectionAllowed);
 			root.addProperty("crafting_allowed", craftingAllowed);
+			root.addProperty("containers_allowed", containersAllowed);
+			root.addProperty("ender_chest_allowed", enderChestAllowed);
 
 			root.addProperty("chat_mode", chatMode.name());
 			JsonArray players = new JsonArray();
@@ -538,6 +547,8 @@ public final class CobbieConfig {
 			case "exploration", "explore" -> explorationAllowed = value;
 			case "collection", "collect", "pickup" -> collectionAllowed = value;
 			case "crafting", "craft" -> craftingAllowed = value;
+			case "containers", "container", "storage", "chests" -> containersAllowed = value;
+			case "ender_chest", "enderchest" -> enderChestAllowed = value;
 			default -> {
 				return false;
 			}
@@ -565,6 +576,7 @@ public final class CobbieConfig {
 				+ "\nmining=" + miningAllowed + " building=" + buildingAllowed + " combat=" + combatAllowed
 				+ " (players=" + playerCombatAllowed + ") explore=" + explorationAllowed
 				+ " collect=" + collectionAllowed + " craft=" + craftingAllowed
+				+ " containers=" + containersAllowed + " enderChest=" + enderChestAllowed
 				+ "\nfollow=" + followDistance + " nav=" + navigationRange + " reach=" + interactionReach
 				+ " exploreRadius=" + explorationRadius + " recall=" + (recallDistance <= 0 ? "off" : recallDistance)
 				+ "\nsteps=" + planStepLimit + " retries=" + taskRetryLimit
