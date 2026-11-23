@@ -6,6 +6,8 @@ import com.rishi.cobbie.action.ActionVocabulary;
 import com.rishi.cobbie.config.CobbieConfig;
 import com.rishi.cobbie.entity.CobbieEntity;
 import com.rishi.cobbie.memory.CobbieMemory;
+import com.rishi.cobbie.presence.ActionTiming;
+import com.rishi.cobbie.presence.Narrator;
 import com.rishi.cobbie.skill.ActionStep;
 import com.rishi.cobbie.skill.SkillExecutor;
 import com.rishi.cobbie.skill.SkillRegistry;
@@ -175,6 +177,9 @@ public final class CobbieBrain {
 		// 2. Is he being spoken to at all?
 		if (!addressedTo(sender, mentioned)) return;
 
+		// Where this instruction's time goes, measured from the moment it arrived.
+		ActionTiming.chat(System.currentTimeMillis());
+
 		// 3. Which companion may this player talk to?
 		final CobbieEntity body = companionOf(sender);
 		if (body == null) {
@@ -261,6 +266,7 @@ public final class CobbieBrain {
 		if (pending.putIfAbsent(key, new AtomicBoolean(false)) != null) return;
 		lastChatAt.put(speakerId, System.currentTimeMillis());
 		inFlight.incrementAndGet();
+		ActionTiming.dispatched(System.currentTimeMillis());
 
 		// Perceive the world HERE (server thread) and assemble the prompt.
 		final WorldSnapshotHolder snapshot = new WorldSnapshotHolder(body.perceive());
@@ -276,6 +282,7 @@ public final class CobbieBrain {
 		client.complete(system, turns, user).thenAccept(result -> {
 			inFlight.decrementAndGet();
 			AtomicBoolean cancelled = pending.remove(key);
+			ActionTiming.replied(System.currentTimeMillis());
 			if (server == null) return;
 
 			if (cancelled != null && cancelled.get()) {
@@ -287,8 +294,11 @@ public final class CobbieBrain {
 				noteRequestFailure(why);
 				Cobbie.LOGGER.warn("Cobbie LLM request failed for {}: {}", name, why);
 				// Nothing is stored: a failed request is not a conversation turn.
-				server.execute(() -> sender.sendSystemMessage(
-						cobbieSays(result == null ? "the AI did not answer" : result.friendlyError())));
+				server.execute(() -> {
+					sender.sendSystemMessage(
+							cobbieSays(result == null ? "the AI did not answer" : result.friendlyError()));
+					ActionTiming.resultSpoken(System.currentTimeMillis());
+				});
 				return;
 			}
 
@@ -315,14 +325,25 @@ public final class CobbieBrain {
 			String said, ActionParser.ActionPlan plan) {
 		if (body.isRemoved() || player.isRemoved()) return;
 
-		// The answer goes to the person who asked, and to the owner if that is someone else.
-		player.sendSystemMessage(cobbieSays(plan.answer()));
+		// Act, then speak. When there is work in this reply he says ONE short line about the first
+		// thing he is doing and starts it; the step-by-step narration and the closing line come from
+		// the body as the work actually happens. Announcing the whole plan first is what left the
+		// player staring at a wall of text and then several seconds of silence.
+		boolean acting = plan.hasWorldAction();
+		String spoken = acting ? Narrator.firstSentence(plan.answer()) : plan.answer();
+		if (spoken == null || spoken.isBlank()) spoken = plan.answer();
+		player.sendSystemMessage(cobbieSays(spoken));
 		UUID ownerId = body.getOwner();
 		if (ownerId != null && !ownerId.equals(speakerId)) {
 			ServerPlayer owner = body.owner();
 			if (owner != null) {
-				owner.sendSystemMessage(cobbieSays("(to " + speakerName + ") " + plan.answer()));
+				owner.sendSystemMessage(cobbieSays("(to " + speakerName + ") " + spoken));
 			}
+		}
+		if (acting) {
+			body.noteSpokenNow();
+		} else {
+			ActionTiming.resultSpoken(System.currentTimeMillis());
 		}
 		if (!plan.problems().isEmpty()) {
 			Cobbie.LOGGER.warn("Cobbie dropped actions from a reply: {}", plan.problems());
@@ -529,7 +550,13 @@ public final class CobbieBrain {
 			ServerPlayer owner = server.getPlayerList().getPlayer(ownerId);
 
 			if (owner != null) {
-				owner.sendSystemMessage(cobbieSays("result - " + shorten(report, 260)));
+				// One line, in his voice, without the report's coordinates and step logs. The full
+				// report still goes to memory below, where detail is worth having.
+				TaskPlan finished = cobbie.lastPlan();
+				String line = Narrator.jobLine(finished);
+				owner.sendSystemMessage(cobbieSays(line == null ? "done" : line));
+				cobbie.noteSpokenNow();
+				ActionTiming.resultSpoken(System.currentTimeMillis());
 			}
 			if (CobbieConfig.isMemoryEnabled()) {
 				CobbieMemory.noteDiscovery(ownerId, shorten(report, 140));
@@ -543,10 +570,16 @@ public final class CobbieBrain {
 			}
 			learnFromPlan(cobbie, report);
 
-			if (client != null && owner != null && CobbieConfig.isAutonomous()) {
+			if (client != null && owner != null && CobbieConfig.isAutonomous()
+					&& finished != null && finished.status() == TaskPlan.Status.FAILED) {
 				ask(cobbie, owner, server,
 						CobbiePrompt.feedbackMessage(cobbie.currentTaskDescription(), report));
 			}
+
+			// The model no longer gets a turn after every job: asking it to comment on a result the
+			// body can state itself cost a whole extra round trip per instruction and put a second
+			// message right behind the first. A job that FAILED part way through is the one case
+			// where the next move is a decision rather than a sentence, so that still goes to him.
 		});
 	}
 
@@ -604,6 +637,7 @@ public final class CobbieBrain {
 		UUID ownerId = cobbie.getOwner();
 		if (ownerId == null || inFlight.get() >= CobbieConfig.getMaxConcurrentRequests()) return;
 		inFlight.incrementAndGet();
+		ActionTiming.extraModelCall();
 
 		final String system = CobbiePrompt.systemPrompt(cobbie.perceive(),
 				CobbieConfig.isMemoryEnabled() ? CobbieMemory.longTermSummary(ownerId) : "",

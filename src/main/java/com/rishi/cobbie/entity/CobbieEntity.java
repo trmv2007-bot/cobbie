@@ -6,7 +6,12 @@ import com.rishi.cobbie.action.ActionIntent;
 import com.rishi.cobbie.action.ActionOutcome;
 import com.rishi.cobbie.action.ActionVocabulary;
 import com.rishi.cobbie.config.CobbieConfig;
+import com.rishi.cobbie.net.CobbiePanelPayload;
+import com.rishi.cobbie.presence.Narrator;
+import com.rishi.cobbie.presence.Sight;
+import com.rishi.cobbie.task.TaskPlan;
 import com.rishi.cobbie.task.TaskRunner;
+import com.rishi.cobbie.task.TaskStep;
 import com.rishi.cobbie.world.WorldPerception;
 import com.rishi.cobbie.world.WorldSnapshot;
 import net.minecraft.core.BlockPos;
@@ -77,7 +82,7 @@ import java.util.UUID;
  * relogging keeps him the same Cobbie with the same stuff. The tool he is holding is the real
  * stack (moved out of the bag, not copied), so nothing duplicates across a save/load cycle.
  */
-public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
+public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, TaskRunner.Listener {
 
 	private static final EntityDataAccessor<Boolean> DATA_WAVING =
 			SynchedEntityData.defineId(CobbieEntity.class, EntityDataSerializers.BOOLEAN);
@@ -89,6 +94,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 	private static final int MAX_WALK_REPATHS = 3;         // then repair a dropped path, a few times
 	private static final int FOLLOW_REPATH_INTERVAL = 12; // the pathfinder is not free
 	private static final int PICKUP_INTERVAL = 20;
+	/** How often he remarks on what he can see while he has nothing else to do (60s). */
+	private static final int OBSERVE_INTERVAL_TICKS = 1200;
 
 	/** Blocks a companion must never break, whatever the model asks for. */
 	private static final Set<Block> PROTECTED = Set.of(
@@ -137,6 +144,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 	private int lastPickupTick;
 	private int attackCooldownUntil;
 	private String lastActionResult = "nothing yet";
+	/** His voice: one short line per step, at most one every chat cooldown. */
+	private final Narrator narrator = new Narrator();
+	private int lastObservationTick;
 	/** Where he stood when the current plan started — the origin skill steps are stored relative to. */
 	private BlockPos planOrigin;
 	/** Items he already failed to take, so he does not claw at them every tick. */
@@ -149,6 +159,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 				CobbieConfig.getPlanStepLimit(),
 				CobbieConfig.getTaskRetryLimit(),
 				CobbieConfig.getTaskTimeoutSeconds() * 1000L);
+		this.tasks.setListener(this);
 		this.setPersistenceRequired(); // a companion must not despawn because you walked away
 	}
 
@@ -440,8 +451,14 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 		// learning, and the model's own feedback all hang off that single delivery).
 		String report = tasks.takeReport();
 		if (report != null) {
-			com.rishi.cobbie.brain.CobbieBrain.reportPlanSettled(this, tasks.plan());
+			com.rishi.cobbie.task.TaskPlan settledPlan = tasks.plan();
+			com.rishi.cobbie.presence.ActionTiming.settled(System.currentTimeMillis(),
+					settledPlan == null ? 0 : settledPlan.steps().size());
+			com.rishi.cobbie.brain.CobbieBrain.reportPlanSettled(this, settledPlan);
 		}
+
+		flushNarration();
+		observeWhenIdle();
 
 		// Pick up what is already within arm's reach. Quietly, no project attached.
 		if (CobbieConfig.isCollectionAllowed() && this.tickCount - lastPickupTick >= PICKUP_INTERVAL) {
@@ -483,9 +500,16 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 		Cobbie.LOGGER.info("Cobbie corpse: {} stack(s) placed on the ground", placed);
 	}
 
-	/** One word for what he is doing right now, for the tag above his head. */
+	/**
+	 * One word for what he is doing right now, for the tag above his head.
+	 *
+	 * <p>The order matters and used to be wrong: a queued thought outranked the body, so a companion
+	 * standing perfectly still read "thinking…" for as long as any request was out — including the
+	 * one he used to make after every job just to comment on it. Now the body wins, a model call only
+	 * shows while he is genuinely waiting on an answer, and "following you" is reserved for the
+	 * moments he is actually walking after you rather than for the whole time he is on follow.
+	 */
 	public String statusWord() {
-		if (com.rishi.cobbie.brain.CobbieBrain.inFlightCount() > 0) return "thinking…";
 		if (active != null) {
 			return switch (active.action()) {
 				case ActionVocabulary.WALK_TO -> "walking";
@@ -503,7 +527,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 		}
 		if (tasks != null && tasks.hasActiveTask()) return "working";
 		if (isBusy()) return "working";
-		if (following) return "following you";
+		if (com.rishi.cobbie.brain.CobbieBrain.inFlightCount() > 0) return "thinking…";
+		if (following && !getNavigation().isDone()) return "following you";
 		return "idle";
 	}
 
@@ -523,14 +548,58 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 		}
 	}
 
-	/** Shift-right-click hands back what he is doing and what is left to do. */
+	/**
+	 * Shift-right-click opens his panel: who he is, what he is doing, the job and its steps, and his
+	 * actual bag with icons and counts.
+	 *
+	 * <p>The chat readout is kept, but only as the fallback for a client that cannot receive the
+	 * panel packet — a dedicated-server client running the mod is the case that matters.
+	 */
 	@Override
 	protected net.minecraft.world.InteractionResult mobInteract(Player player, InteractionHand hand) {
 		if (!level().isClientSide() && player.isShiftKeyDown() && player instanceof ServerPlayer viewer) {
-			viewer.sendSystemMessage(Component.literal("§e[Cobbie] §f" + describeWork()));
+			if (net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking
+					.canSend(viewer, CobbiePanelPayload.TYPE)) {
+				net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(viewer, panelData());
+			} else {
+				viewer.sendSystemMessage(Component.literal("§e[Cobbie] §f" + describeWork()));
+			}
 			return net.minecraft.world.InteractionResult.SUCCESS;
 		}
 		return super.mobInteract(player, hand);
+	}
+
+	/** Everything the panel draws, assembled on the server where his bag actually lives. */
+	public CobbiePanelPayload panelData() {
+		TaskPlan plan = tasks == null ? null : tasks.plan();
+		List<String> steps = new ArrayList<>();
+		List<Integer> states = new ArrayList<>();
+		String job = "";
+		if (plan != null) {
+			job = plan.request();
+			for (TaskStep step : plan.steps()) {
+				steps.add(Narrator.stepLabel(step.intent()));
+				states.add(switch (step.status()) {
+					case RUNNING -> CobbiePanelPayload.RUNNING;
+					case DONE -> CobbiePanelPayload.DONE;
+					case FAILED -> CobbiePanelPayload.FAILED;
+					case SKIPPED -> CobbiePanelPayload.SKIPPED;
+					default -> CobbiePanelPayload.PENDING;
+				});
+			}
+		}
+		List<ItemStack> items = new ArrayList<>();
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			items.add(inventory.getItem(i).copy());
+		}
+		// The held tool has been raised out of the bag, so it would otherwise look as if he is
+		// carrying nothing while mining.
+		ItemStack held = this.getMainHandItem();
+		if (!held.isEmpty()) {
+			boolean known = items.stream().anyMatch(s -> !s.isEmpty() && ItemStack.isSameItemSameComponents(s, held));
+			if (!known) items.add(held.copy());
+		}
+		return new CobbiePanelPayload(this.getId(), "Cobbie", statusWord(), job, steps, states, items);
 	}
 
 	/** Everything the owner asked for: current job, its steps, and anything waiting behind it. */
@@ -611,7 +680,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 			if (owner != null) {
 				// Say what actually happened: claiming a handover that did not happen is worse than
 				// losing the items.
-				String where = "I died at " + this.blockPosition() + " — ";
+				// No position in this line either: what a player needs to know is whether their
+				// things survived, and "at BlockPos{x=2, y=-60, z=2}" is not that.
+				String where = "I died — ";
 				String what = handed == dropped
 						? "everything I was carrying is in your inventory."
 						: handed > 0
@@ -682,6 +753,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 		if (active != null) {
 			return ActionOutcome.fail(verb, "still busy with " + active.action());
 		}
+		if (!ActionVocabulary.ANSWER.equals(verb) && !ActionVocabulary.WAIT.equals(verb)) {
+			com.rishi.cobbie.presence.ActionTiming.firstStep(System.currentTimeMillis());
+		}
 
 		return switch (verb) {
 			case ActionVocabulary.ANSWER, ActionVocabulary.WAIT -> ActionOutcome.ok(verb, "nothing to do");
@@ -729,6 +803,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 
 	@Override
 	public void interrupt() {
+		narrator.clear();
 		active = null;
 		activeTarget = null;
 		workTarget = null;
@@ -850,12 +925,60 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor {
 	private ActionOutcome speak(String text) {
 		if (text == null || text.isBlank()) return ActionOutcome.fail("chat", "nothing to say");
 		String line = text.length() > 200 ? text.substring(0, 200) : text;
-		// In-world speech, heard by whoever is standing nearby — not a dimension-wide broadcast.
+		speakNearby(line);
+		narrator.noteSpokenAt(System.currentTimeMillis());
+		return ActionOutcome.ok("chat", "said: " + line);
+	}
+
+	/** In-world speech: heard by whoever is standing nearby, never a dimension-wide broadcast. */
+	private void speakNearby(String line) {
+		if (line == null || line.isBlank() || level() == null) return;
+		String text = line.length() > 200 ? line.substring(0, 200) : line;
 		for (Player p : level().getEntitiesOfClass(Player.class,
 				new AABB(this.blockPosition()).inflate(32.0))) {
-			p.sendSystemMessage(Component.literal("§e[Cobbie] §f" + line));
+			p.sendSystemMessage(Component.literal("§e[Cobbie] §f" + text));
 		}
-		return ActionOutcome.ok("chat", "said: " + line);
+	}
+
+	/**
+	 * Offer a line for the tag-side voice. It is said on a later tick, at most one every
+	 * {@code chat_cooldown_ms}, and a newer line replaces an older unsaid one — so narrating a
+	 * five-step job that finishes in two seconds produces two lines, not ten.
+	 */
+	public void narrate(String line) {
+		narrator.offer(line);
+	}
+
+	/** The brain answered a player itself; keep the next narrated line off its heels. */
+	public void noteSpokenNow() {
+		narrator.noteSpokenAt(System.currentTimeMillis());
+	}
+
+	private void flushNarration() {
+		String line = narrator.next(System.currentTimeMillis(), CobbieConfig.getChatCooldownMs());
+		if (line != null) speakNearby(line);
+	}
+
+	/** With nothing to do he says what he can see. Nothing to do is the precondition, not a mood. */
+	private void observeWhenIdle() {
+		if (isBusy() || active != null || pendingOutcome != null) return;
+		if (com.rishi.cobbie.brain.CobbieBrain.inFlightCount() > 0) return;
+		if (this.tickCount - lastObservationTick < OBSERVE_INTERVAL_TICKS) return;
+		lastObservationTick = this.tickCount;
+		narrator.offer(Sight.observe(WorldPerception.snapshot(this)));
+	}
+
+	@Override
+	public void onStepStarted(TaskStep step) {
+		if (step == null) return;
+		narrator.offer(Narrator.stepStart(step.intent()));
+	}
+
+	@Override
+	public void onStepSettled(TaskStep step, ActionOutcome outcome) {
+		if (step == null) return;
+		narrator.offer(Narrator.stepResult(step.intent(),
+				outcome != null && outcome.success(), outcome == null ? null : outcome.summary()));
 	}
 
 	private ActionOutcome startWalk(ActionIntent intent) {

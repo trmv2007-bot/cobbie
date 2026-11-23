@@ -59,7 +59,9 @@ public final class CobbiePrompt {
 
 		sb.append(NL).append("REPLY FORMAT — critical:").append(NL)
 				.append("1. Reply with ONE JSON object. No markdown, no code fences, no words outside it.").append(NL)
-				.append("2. English only. Keep \"answer\" to 1-2 short sentences.").append(NL)
+				.append("2. English only. If you queue any action, \"answer\" is ONE short sentence about what you ")
+				.append("are starting on — never a summary of the whole plan, never a list of steps. With no ")
+				.append("actions, 1-2 short sentences.").append(NL)
 				.append("3. Shape: {\"answer\":\"what you say\",\"actions\":[{\"action\":\"verb\",\"target\":\"\",\"x\":0,\"y\":0,\"z\":0,\"data\":\"\"}]}").append(NL)
 				.append("4. You may queue a SHORT ORDERED PLAN of up to ").append(planLimit())
 				.append(" actions in the order you want them done. Example: ")
@@ -77,7 +79,9 @@ public final class CobbiePrompt {
 				.append("action for it MUST be in the same reply. Never narrate an action you are not queueing; ")
 				.append("if you are only talking, say that instead.").append(NL)
 				.append("11. Never write stage directions like *waves* or (smiles). If you want to wave, queue the ")
-				.append("wave action; otherwise just speak.").append(NL);
+				.append("wave action; otherwise just speak.").append(NL)
+				.append("12. When you talk about the world, say what you SEE — the trees, the water, the mobs, the ")
+				.append("weather. Never read out coordinates or tell the player where you are going.").append(NL);
 
 		// Repeated last, on purpose: a long prompt loses a line it mentions once in the middle, and
 		// inventing inventory is the failure players notice most.
