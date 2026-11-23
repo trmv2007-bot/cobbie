@@ -57,6 +57,65 @@ fabricApi {
 	}
 }
 
+// ---------------------------------------------------------------------------------------------
+// Running a client game test on this machine
+//
+// `clearRunDirectory = false` is deliberate: the run directory holds the 1.7 GB asset cache under
+// `downloads/`, and wiping it turns every run into a re-download. What it also holds is a world per
+// previous run, so the preflight deletes `saves/` and nothing else: one run, one world, no state
+// carried in from last time.
+//
+// The other obstacle is the GPU. This is an 8 GB card and Ollama keeps lfm2.5:8b resident on ~6.2 GB
+// of it between requests; a live Minecraft client takes the rest. A second client then dies mid-way
+// through allocating its texture atlases, which looks exactly like a renderer bug and is not one.
+// tools/gametest-preflight.ps1 refuses that situation with a sentence, unloads the model, and checks
+// the headroom that is actually available before the client boots.
+//
+//   ./gradlew runClientGameTest                          # the whole suite
+//   ./gradlew runClientGameTest -PcobbieTests=Status     # one class (comma-separated for several)
+//   ./gradlew runClientGameTest -PskipGametestPreflight  # only if the guard is wrong about something
+// ---------------------------------------------------------------------------------------------
+tasks.register("gametestPreflight") {
+	group = "verification"
+	description = "Clears last run's worlds and refuses to boot a game-test client onto a GPU that is already occupied."
+
+	def script = file("tools/gametest-preflight.ps1")
+	def savesDir = layout.buildDirectory.dir("run/clientGameTest/saves")
+
+	doLast {
+		def saves = savesDir.get().asFile
+		if (saves.exists()) {
+			int stale = (saves.listFiles() ?: new File[0]).length
+			delete saves
+			logger.lifecycle("gametest preflight: cleared $stale world(s) from last run")
+		}
+
+		if (!org.gradle.internal.os.OperatingSystem.current().isWindows()) {
+			logger.lifecycle("gametest preflight: no VRAM guard on this OS, skipping")
+			return
+		}
+		def process = new ProcessBuilder("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+				"-File", script.absolutePath)
+				.directory(projectDir)
+				.inheritIO()
+				.start()
+		if (process.waitFor() != 0) {
+			throw new GradleException("gametest preflight refused to start the client — see its message above")
+		}
+	}
+}
+
+tasks.matching { it.name == "runClientGameTest" }.configureEach {
+	if (findProperty("skipGametestPreflight") == null) {
+		dependsOn "gametestPreflight"
+	}
+	def only = findProperty("cobbieTests")
+	if (only) {
+		jvmArgs "-Dcobbie.gametests=${only}"
+	}
+}
+
+
 // Tests are expected in src/gametest/java (Loom creates that source set, not src/clientGameTest).
 
 processResources {
