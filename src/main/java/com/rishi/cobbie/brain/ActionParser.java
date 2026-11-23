@@ -156,7 +156,8 @@ public final class ActionParser {
 			}
 		}
 		if ((verb.equals(ActionVocabulary.PLACE) || verb.equals(ActionVocabulary.ATTACK)
-				|| verb.equals(ActionVocabulary.CHAT)) && target.isBlank()) {
+				|| verb.equals(ActionVocabulary.CHAT) || verb.equals(ActionVocabulary.CRAFT))
+				&& target.isBlank()) {
 			problems.add("action #" + index + " (" + verb + ") needs a non-empty \"target\"");
 			return null;
 		}

@@ -135,12 +135,15 @@ public class CobbieConfigScreen extends Screen {
         o.addProperty("follow_distance", 4.0);
         o.addProperty("navigation_range", 24);
         o.addProperty("interaction_reach", 4.0);
+        o.addProperty("exploration_radius", 48);
+        o.addProperty("recall_distance", 0);
         o.addProperty("mining_allowed", false);
         o.addProperty("building_allowed", false);
         o.addProperty("combat_allowed", false);
         o.addProperty("player_combat_allowed", false);
         o.addProperty("exploration_allowed", true);
         o.addProperty("collection_allowed", true);
+        o.addProperty("crafting_allowed", false);
         o.addProperty("chat_mode", "MENTION");
         o.addProperty("allowed_players", "");
         o.addProperty("chat_cooldown_ms", 900);
@@ -179,6 +182,8 @@ public class CobbieConfigScreen extends Screen {
         numberField("follow_distance", "Follow Distance", 1.0, 64.0, 0.5);
         intField("navigation_range", "Navigation Range", 4, 256, 8);
         numberField("interaction_reach", "Interaction Reach", 1.0, 16.0, 0.5);
+        intField("exploration_radius", "Exploration Radius", 8, 256, 8);
+        intField("recall_distance", "Recall When Stuck Beyond (0 = off)", 0, 4096, 16);
 
         header("Permissions");
         boolField("mining_allowed", "Mining");
@@ -187,6 +192,7 @@ public class CobbieConfigScreen extends Screen {
         boolField("player_combat_allowed", "Player Combat (PvP)");
         boolField("exploration_allowed", "Exploration");
         boolField("collection_allowed", "Collection");
+        boolField("crafting_allowed", "Crafting");
 
         header("Chat");
         enumField("chat_mode", "Chat Mode", new String[]{"MENTION", "OWNER_MENTION", "ALWAYS_LISTEN", "ALLOWLIST"});

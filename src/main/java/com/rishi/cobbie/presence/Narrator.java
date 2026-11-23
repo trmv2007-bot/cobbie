@@ -94,6 +94,7 @@ public final class Narrator {
 			case ActionVocabulary.STAY -> "staying put";
 			case ActionVocabulary.WAVE -> "hullo";
 			case ActionVocabulary.EXPLORE -> "going to have a look";
+			case ActionVocabulary.CRAFT -> what == null ? "making something" : "making a " + what;
 			default -> null;
 		};
 	}
@@ -112,6 +113,7 @@ public final class Narrator {
 				case ActionVocabulary.EQUIP -> "ready";
 				case ActionVocabulary.GIVE -> "yours";
 				case ActionVocabulary.DROP -> "dropped it";
+				case ActionVocabulary.CRAFT -> "made it";
 				case ActionVocabulary.FOLLOW, ActionVocabulary.STAY, ActionVocabulary.WAVE,
 						ActionVocabulary.EXPLORE -> null;
 				default -> null;
@@ -127,6 +129,7 @@ public final class Narrator {
 			case ActionVocabulary.ATTACK -> "couldn't finish that fight" + why;
 			case ActionVocabulary.EQUIP -> "couldn't put that on" + why;
 			case ActionVocabulary.GIVE, ActionVocabulary.DROP -> "couldn't handle that" + why;
+			case ActionVocabulary.CRAFT -> "couldn't make that" + why;
 			default -> "that didn't work" + why;
 		};
 	}
@@ -150,6 +153,7 @@ public final class Narrator {
 			case ActionVocabulary.STAY -> "staying put";
 			case ActionVocabulary.WAVE -> "waving";
 			case ActionVocabulary.EXPLORE -> "exploring";
+			case ActionVocabulary.CRAFT -> "making";
 			case ActionVocabulary.CHAT -> "talking";
 			case ActionVocabulary.LOOKUP -> "looking something up";
 			case ActionVocabulary.WAIT -> "waiting";
