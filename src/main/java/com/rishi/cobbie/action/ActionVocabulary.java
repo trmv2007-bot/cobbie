@@ -33,11 +33,12 @@ public final class ActionVocabulary {
 	public static final String GIVE = "give";
 	public static final String DROP = "drop";
 	public static final String EQUIP = "equip";
+	public static final String CRAFT = "craft";
 	public static final String LOOKUP = "lookup";
 	public static final String WAIT = "wait";
 
 	private static final Set<String> ALLOWED = new LinkedHashSet<>(List.of(
-			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, LOOKUP, WAIT));
+			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, CRAFT, LOOKUP, WAIT));
 
 	/** Actions that are meaningless without an explicit target position. */
 	private static final Set<String> NEEDS_POSITION = Set.of(WALK_TO, MINE, PLACE, LIGHT);
@@ -50,7 +51,7 @@ public final class ActionVocabulary {
 	}
 
 	/** Actions that change the world and therefore need verification afterwards. */
-	private static final Set<String> WORLD_CHANGING = Set.of(MINE, PLACE, ATTACK, COLLECT, LIGHT, GIVE, DROP, EQUIP);
+	private static final Set<String> WORLD_CHANGING = Set.of(MINE, PLACE, ATTACK, COLLECT, LIGHT, GIVE, DROP, EQUIP, CRAFT);
 
 	private ActionVocabulary() {}
 
@@ -84,6 +85,7 @@ public final class ActionVocabulary {
 			case "hand", "hand-over", "handover", "deliver", "give-item" -> GIVE;
 			case "drop-item", "toss", "throw", "discard", "put-down", "unload" -> DROP;
 			case "wear", "put-on", "wield", "hold", "equip-item", "armour", "armor" -> EQUIP;
+			case "make", "craft-item", "crafting", "make-item", "build-item" -> CRAFT;
 			case "look-up", "search", "wiki", "google" -> LOOKUP;
 			case "say", "speak", "tell" -> CHAT;
 			case "wander", "roam", "look-around" -> EXPLORE;
@@ -101,6 +103,7 @@ public final class ActionVocabulary {
 			if (sb.length() > 0) sb.append(", ");
 			sb.append(verb);
 			if (needsPosition(verb)) sb.append(" (needs x,y,z)");
+			else if (CRAFT.equals(verb)) sb.append(" (needs target = the item to make, e.g. oak_planks)");
 		}
 		return sb.toString();
 	}

@@ -80,12 +80,21 @@ final class CobbieTestSupport {
     }
 
     static Optional<CobbieEntity> cobbie(MinecraftServer server) {
+        return cobbie(server, 48);
+    }
+
+    /**
+     * The companion within {@code radius} of the owner. A test that deliberately walks him a long
+     * way off needs a wider box than the everyday 48, or it finds nothing exactly when the
+     * behaviour under test is "he came back from far away".
+     */
+    static Optional<CobbieEntity> cobbie(MinecraftServer server, int radius) {
         if (server.getPlayerList().getPlayers().isEmpty()) {
             return Optional.empty();
         }
         ServerPlayer owner = owner(server);
         ServerLevel level = server.overworld();
-        AABB box = new AABB(owner.blockPosition()).inflate(48, 32, 48);
+        AABB box = new AABB(owner.blockPosition()).inflate(radius, 32, radius);
         List<Entity> found = level.getEntities((Entity) null, box, e -> e.getType() == CobbieEntities.COBBIE);
         return found.isEmpty() ? Optional.empty() : Optional.of((CobbieEntity) found.get(0));
     }

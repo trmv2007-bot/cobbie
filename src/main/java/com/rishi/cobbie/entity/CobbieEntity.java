@@ -6,6 +6,8 @@ import com.rishi.cobbie.action.ActionIntent;
 import com.rishi.cobbie.action.ActionOutcome;
 import com.rishi.cobbie.action.ActionVocabulary;
 import com.rishi.cobbie.config.CobbieConfig;
+import com.rishi.cobbie.craft.CraftChain;
+import com.rishi.cobbie.craft.CraftRecipes;
 import com.rishi.cobbie.net.CobbiePanelPayload;
 import com.rishi.cobbie.presence.Narrator;
 import com.rishi.cobbie.presence.Sight;
@@ -24,6 +26,8 @@ import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.FluidTags;
+import net.minecraft.util.Mth;
 import net.minecraft.world.Container;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.SimpleContainer;
@@ -50,14 +54,18 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.level.pathfinder.PathType;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -96,6 +104,34 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private static final int PICKUP_INTERVAL = 20;
 	/** How often he remarks on what he can see while he has nothing else to do (60s). */
 	private static final int OBSERVE_INTERVAL_TICKS = 1200;
+
+	/**
+	 * How far ahead the follow loop aims when you are further away than this. A pathfinder asked
+	 * to plan 60 blocks across terrain usually answers "no path"; asked for the next 24 it answers,
+	 * and the goal moves with you on the next re-path. That is the whole trick behind following at
+	 * distance — one step at a time toward where you are now, never one long plan from where he was.
+	 */
+	private static final double FOLLOW_STEP = 24.0;
+	/** Below this the follow loop aims at you directly instead of at a point along the way. */
+	private static final double FOLLOW_DIRECT_RANGE = 20.0;
+	/** How long the recall last resort watches for progress before deciding he is stuck. */
+	private static final int RECALL_PROGRESS_TICKS = 200;
+	/** Blocks of progress inside that window that count as "he is coming". */
+	private static final double RECALL_PROGRESS_BLOCKS = 4.0;
+
+	// ---- swimming ----
+	private static final double SWIM_PUSH = 0.055;         // per-tick horizontal thrust in water
+	private static final double SWIM_MAX_HORIZONTAL = 0.30; // never faster than a sprinting player
+	private static final double SWIM_RISE = 0.06;           // buoyancy toward the surface
+	private static final double SWIM_MAX_RISE = 0.16;
+	private static final int CRAFT_CHAIN_DEPTH = 6;
+	/**
+	 * Marks a walk he planned for himself rather than one he was asked for. The request limit
+	 * ({@code navigation_range}) exists so a model cannot send him across the map; his own wander
+	 * is bounded by {@code exploration_radius} instead, and without this it was bounded by the
+	 * smaller of the two — which is why "explore" barely left the spot.
+	 */
+	private static final String EXPLORE_WALK = "explore";
 
 	/** Blocks a companion must never break, whatever the model asks for. */
 	private static final Set<Block> PROTECTED = Set.of(
@@ -152,6 +188,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	/** Items he already failed to take, so he does not claw at them every tick. */
 	private final Set<UUID> skippedItems = new HashSet<>();
 
+	// ---- recall (the last resort, off by default) ----
+	private BlockPos recallSamplePos;
+	private int recallSampleTick;
+	/** Consecutive far re-paths the pathfinder refused; each one shortens the next step. */
+	private int followMisses;
+
 	public CobbieEntity(EntityType<? extends PathfinderMob> type, Level level) {
 		super(type, level);
 		this.inventory = new SimpleContainer(Math.max(1, CobbieConfig.getInventorySize()));
@@ -161,6 +203,13 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				CobbieConfig.getTaskTimeoutSeconds() * 1000L);
 		this.tasks.setListener(this);
 		this.setPersistenceRequired(); // a companion must not despawn because you walked away
+
+		// Water is walkable for him. Without this the ground navigator refuses to plan at all while
+		// he is in water (canUpdatePath is false), which is why a lake used to end the chase: he
+		// would bob in place with no path and no way to say why.
+		this.getNavigation().setCanFloat(true);
+		this.setPathfindingMalus(PathType.WATER, 4.0f);
+		this.setPathfindingMalus(PathType.WATER_BORDER, 2.0f);
 	}
 
 	public static AttributeSupplier.Builder createAttributes() {
@@ -441,6 +490,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		updateNameplate();
 		followOwnerTick();
+		swimTick();
 
 		ActionOutcome settled = driveActiveStep();
 		if (settled != null) pendingOutcome = settled;
@@ -512,7 +562,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	public String statusWord() {
 		if (active != null) {
 			return switch (active.action()) {
-				case ActionVocabulary.WALK_TO -> "walking";
+				case ActionVocabulary.WALK_TO -> this.isInWater() ? "swimming" : "walking";
 				case ActionVocabulary.MINE -> "mining";
 				case ActionVocabulary.PLACE -> "building";
 				case ActionVocabulary.LIGHT -> "lighting";
@@ -522,13 +572,14 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				case ActionVocabulary.EQUIP -> "gearing up";
 				case ActionVocabulary.GIVE -> "handing over";
 				case ActionVocabulary.EXPLORE -> "exploring";
+				case ActionVocabulary.CRAFT -> "crafting";
 				default -> "busy";
 			};
 		}
 		if (tasks != null && tasks.hasActiveTask()) return "working";
 		if (isBusy()) return "working";
 		if (com.rishi.cobbie.brain.CobbieBrain.inFlightCount() > 0) return "thinking…";
-		if (following && !getNavigation().isDone()) return "following you";
+		if (following && !getNavigation().isDone()) return this.isInWater() ? "swimming" : "following you";
 		return "idle";
 	}
 
@@ -709,28 +760,251 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (distSq <= follow * follow) {
 			// Standing next to you he stops walking — but never while a task is using his feet.
 			if (!isBusy() && this.tickCount % 20 == 0) getNavigation().stop();
+			recallSamplePos = null;
 			return;
 		}
-		double navLimit = Math.max(8.0, CobbieConfig.getNavigationRange() * 2.0);
-		if (distSq > navLimit * navLimit) return; // never path across the map for a teleport
+
+		if (recallIsWarranted(owner, distSq)) return;
 
 		if (this.tickCount - followRepathTick < FOLLOW_REPATH_INTERVAL) return;
 		followRepathTick = this.tickCount;
 		if (!level().isLoaded(owner.blockPosition())) return;
-		getNavigation().moveTo(owner.getX(), owner.getY(), owner.getZ(), 0.85);
+
+		if (distSq <= FOLLOW_DIRECT_RANGE * FOLLOW_DIRECT_RANGE) {
+			followMisses = getNavigation().moveTo(owner.getX(), owner.getY(), owner.getZ(), 0.9) ? 0 : 1;
+			return;
+		}
+		// Too far for one plan: walk to the next point along the line instead, and re-aim as it
+		// moves. Re-path failure at this distance is normal and not a reason to give up.
+		BlockPos step = stepToward(owner, followStepLength());
+		if (step == null) return;
+		if (getNavigation().moveTo(step.getX(), step.getY(), step.getZ(), 1.0)) {
+			followMisses = 0;
+		} else {
+			followMisses = Math.min(4, followMisses + 1);
+		}
 	}
 
+	/**
+	 * A shorter aim after each refusal. A steep hill between you and him can make the 24-block
+	 * waypoint unreachable while the six-block one is fine, so the reach collapses toward him
+	 * instead of hammering the same impossible plan.
+	 */
+	private double followStepLength() {
+		return Math.max(6.0, FOLLOW_STEP / (1.0 + followMisses * 0.5));
+	}
+
+	/**
+	 * A point {@code distance} blocks from him along the straight line toward the owner, snapped to
+	 * whatever he can stand on or swim in there.
+	 */
+	private BlockPos stepToward(ServerPlayer owner, double distance) {
+		double dx = owner.getX() - this.getX();
+		double dz = owner.getZ() - this.getZ();
+		double length = Math.sqrt(dx * dx + dz * dz);
+		if (length < 0.01) return owner.blockPosition();
+		double take = Math.min(length - 1.0, distance);
+		if (take <= 0) return owner.blockPosition();
+
+		int x = Mth.floor(this.getX() + dx / length * take);
+		int z = Mth.floor(this.getZ() + dz / length * take);
+		int surface = level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
+		BlockPos at = new BlockPos(x, surface, z);
+		// Heightmap counts water as blocking, so over a lake it points at the air above the surface.
+		// Aim at the water itself: he swims there, he cannot walk there.
+		if (level().getFluidState(at.below()).is(FluidTags.WATER)) at = at.below();
+		return level().isLoaded(at) ? at : null;
+	}
+
+	/**
+	 * The last resort, and only ever that: it is off by default, needs an explicit
+	 * {@code recall_distance}, and he says out loud that he did it. A companion that silently
+	 * teleports is a companion you cannot trust to be anywhere.
+	 *
+	 * @return true when he was recalled, so the caller stops pathing this tick
+	 */
+	private boolean recallIsWarranted(ServerPlayer owner, double distSq) {
+		int limit = CobbieConfig.getRecallDistance();
+		if (limit <= 0 || distSq <= (double) limit * limit) {
+			recallSamplePos = null;
+			return false;
+		}
+		// He has to be far AND making no progress: distance alone is not a failure, a walk takes
+		// time. Sample his position every few seconds and only act on a window with no movement.
+		if (recallSamplePos == null) {
+			recallSamplePos = this.blockPosition();
+			recallSampleTick = this.tickCount;
+			return false;
+		}
+		if (this.tickCount - recallSampleTick < RECALL_PROGRESS_TICKS) return false;
+
+		boolean moved = Math.sqrt(recallSamplePos.distSqr(this.blockPosition())) >= RECALL_PROGRESS_BLOCKS;
+		recallSamplePos = this.blockPosition();
+		recallSampleTick = this.tickCount;
+		if (moved) return false;
+		if (!getNavigation().isDone()) return false; // still has a path to follow: not stuck yet
+
+		BlockPos beside = standingSpotNear(owner.blockPosition());
+		if (beside == null) beside = owner.blockPosition();
+		this.teleportTo((ServerLevel) level(), beside.getX() + 0.5, beside.getY(), beside.getZ() + 0.5,
+				Set.of(), this.getYRot(), this.getXRot(), true);
+		getNavigation().stop();
+		recallSamplePos = null;
+		followRepathTick = this.tickCount;
+		String line = "I could not find a way to you from " + (int) Math.sqrt(distSq)
+				+ " blocks out, so I came the quick way. Tell me if you would rather I kept walking.";
+		owner.sendSystemMessage(Component.literal("§e[Cobbie] §f" + line));
+		Cobbie.LOGGER.info("Cobbie recalled to his owner from {} blocks away", (int) Math.sqrt(distSq));
+		return true;
+	}
+
+	/**
+	 * A wander with a real radius and a way home. The target is picked between about half and all of
+	 * {@code exploration_radius} from the owner, on ground he can stand on, and the plan carries a
+	 * second step back toward where the owner is — so "explore" never ends with a companion who
+	 * walked off and stayed gone.
+	 */
 	private void exploreSomewhereNearby() {
-		int range = Math.max(6, Math.min(CobbieConfig.getNavigationRange(), 16));
-		int dx = this.random.nextInt(range * 2 + 1) - range;
-		int dz = this.random.nextInt(range * 2 + 1) - range;
-		BlockPos guess = this.blockPosition().offset(dx, 0, dz);
-		int surface = level().getHeight(Heightmap.Types.MOTION_BLOCKING, guess.getX(), guess.getZ());
-		BlockPos stand = new BlockPos(guess.getX(), surface, guess.getZ());
-		if (!level().isLoaded(stand)) return;
-		offerPlan("looking around a bit",
-				List.of(new ActionIntent(ActionVocabulary.WALK_TO, "",
-						stand.getX(), stand.getY(), stand.getZ(), "")));
+		int radius = Math.max(8, CobbieConfig.getExplorationRadius());
+		ServerPlayer owner = owner();
+		BlockPos centre = owner != null ? owner.blockPosition() : this.blockPosition();
+
+		BlockPos target = null;
+		for (int attempt = 0; attempt < 12 && target == null; attempt++) {
+			double angle = this.random.nextDouble() * Math.PI * 2;
+			double distance = radius * (0.55 + this.random.nextDouble() * 0.45);
+			int x = centre.getX() + (int) Math.round(Math.cos(angle) * distance);
+			int z = centre.getZ() + (int) Math.round(Math.sin(angle) * distance);
+			int surface = level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
+			BlockPos stand = new BlockPos(x, surface, z);
+			if (!level().isLoaded(stand)) continue;
+			if (level().getFluidState(stand).is(FluidTags.WATER)) continue; // not the sea floor
+			if (level().getBlockState(stand.below()).isAir()) continue;      // needs ground
+			if (stand.distSqr(this.blockPosition()) < 64) continue;          // actually go somewhere
+			target = stand;
+		}
+		if (target == null) return;
+
+		List<ActionIntent> steps = new ArrayList<>();
+		steps.add(exploreWalk(target));
+		if (centre.distSqr(target) > 16 && level().isLoaded(centre)) steps.add(exploreWalk(centre));
+		offerPlan("looking around a bit", steps);
+	}
+
+	private static ActionIntent exploreWalk(BlockPos pos) {
+		return new ActionIntent(ActionVocabulary.WALK_TO, "", pos.getX(), pos.getY(), pos.getZ(), EXPLORE_WALK);
+	}
+
+	// ==================================================================
+	// Swimming
+	// ==================================================================
+
+	/**
+	 * Vanilla gives a land mob water physics and no idea what to do with them: it sinks, drifts and
+	 * drowns its speed in drag. This adds the two things a swimmer actually needs — thrust toward
+	 * where he is going and buoyancy at the surface — on top of the navigator's own path, which is
+	 * allowed to plan through water now that {@code canFloat} is on.
+	 */
+	private void swimTick() {
+		if (!this.isInWater()) return;
+		Vec3 motion = this.getDeltaMovement();
+		double vx = motion.x;
+		double vy = motion.y;
+		double vz = motion.z;
+
+		BlockPos goal = swimGoal();
+		double horizontal = 0;
+		if (goal != null) {
+			double dx = goal.getX() + 0.5 - this.getX();
+			double dz = goal.getZ() + 0.5 - this.getZ();
+			horizontal = Math.sqrt(dx * dx + dz * dz);
+			if (horizontal > 0.35) {
+				vx += dx / horizontal * SWIM_PUSH;
+				vz += dz / horizontal * SWIM_PUSH;
+			}
+		}
+
+		double speed = Math.sqrt(vx * vx + vz * vz);
+		if (speed > SWIM_MAX_HORIZONTAL) {
+			vx *= SWIM_MAX_HORIZONTAL / speed;
+			vz *= SWIM_MAX_HORIZONTAL / speed;
+		}
+
+		double surface = waterSurfaceY();
+		if (this.getY() + 1.2 < surface) {
+			vy = Math.min(vy + SWIM_RISE, SWIM_MAX_RISE);       // under the surface: come up
+		} else if (this.getY() + 1.0 > surface) {
+			vy = Math.max(vy - 0.04, -0.12);                    // riding too high: settle
+		}
+
+		// Climbing out. Floating at the waterline puts his feet a fraction below the bank, so he
+		// presses against the grass and bobs there forever — the shoreline oscillation this test
+		// caught. A hop and a shove toward the bank is what a player does, and it works because the
+		// bank's own column tells us exactly where to aim.
+		BlockPos bank = bankAhead(goal);
+		if (bank != null && this.tickCount % 6 == 0) {
+			vy = Math.max(vy, 0.36);
+			double ex = bank.getX() + 0.5 - this.getX();
+			double ez = bank.getZ() + 0.5 - this.getZ();
+			double length = Math.sqrt(ex * ex + ez * ez);
+			if (length > 0.05) {
+				vx += ex / length * 0.12;
+				vz += ez / length * 0.12;
+			}
+		}
+
+		this.setDeltaMovement(vx, vy, vz);
+	}
+
+	/**
+	 * A standable, dry column next to him that is further toward where he is going than he is. The
+	 * direction test is what stops him hopping back out the side he came from.
+	 */
+	private BlockPos bankAhead(BlockPos goal) {
+		BlockPos feet = this.blockPosition();
+		BlockPos[] around = {
+				feet.north(), feet.south(), feet.east(), feet.west(),
+				feet.north().east(), feet.north().west(), feet.south().east(), feet.south().west()
+		};
+		double hereToGoal = goal == null ? 0
+				: Math.sqrt(goal.distToCenterSqr(this.getX(), this.getY(), this.getZ()));
+		for (BlockPos column : around) {
+			if (!level().isLoaded(column)) continue;
+			BlockState ground = level().getBlockState(column);
+			if (ground.isAir() || !level().getFluidState(column).isEmpty()) continue; // needs dry ground
+			BlockPos standAt = column.above();
+			if (!level().getBlockState(standAt).isAir()) continue;
+			if (!level().getBlockState(standAt.above()).isAir()) continue;
+			if (goal != null) {
+				double thereToGoal = Math.sqrt(goal.distToCenterSqr(
+						standAt.getX() + 0.5, standAt.getY(), standAt.getZ() + 0.5));
+				if (thereToGoal >= hereToGoal - 0.5) continue; // the wrong bank
+			}
+			return standAt;
+		}
+		return null;
+	}
+
+	/** Where the swimming should head: the navigator's target, the walk in flight, or you. */
+	private BlockPos swimGoal() {
+		if (!getNavigation().isDone()) {
+			BlockPos nav = getNavigation().getTargetPos();
+			if (nav != null) return nav;
+		}
+		if (navigatingForAction && activeTarget != null) return activeTarget;
+		ServerPlayer owner = owner();
+		if (following && owner != null) return owner.blockPosition();
+		return null;
+	}
+
+	/** Y of the top of the water column he is in, or his own feet when he is somehow dry. */
+	private double waterSurfaceY() {
+		BlockPos base = this.blockPosition();
+		for (int dy = 3; dy >= -4; dy--) {
+			BlockPos probe = base.above(dy);
+			if (level().getFluidState(probe).is(FluidTags.WATER)) return probe.getY() + 0.9;
+		}
+		return base.getY() + 1.0;
 	}
 
 	// ==================================================================
@@ -782,6 +1056,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			case ActionVocabulary.GIVE -> giveToOwner(intent);
 			case ActionVocabulary.DROP -> dropFromBag(intent);
 			case ActionVocabulary.EQUIP -> equipFromBag(intent);
+			case ActionVocabulary.CRAFT -> craftFromBag(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
@@ -985,6 +1260,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		BlockPos target = new BlockPos(intent.x(), intent.y(), intent.z());
 		if (!level().isLoaded(target)) return ActionOutcome.fail("walk-to", "that area is not loaded");
 		double navLimit = Math.max(8, CobbieConfig.getNavigationRange());
+		if (EXPLORE_WALK.equals(intent.data())) {
+			navLimit = Math.max(navLimit, CobbieConfig.getExplorationRadius());
+		}
 		if (this.blockPosition().distSqr(target) > navLimit * navLimit) {
 			return ActionOutcome.fail("walk-to", describe(target) + " is further than I will walk ("
 					+ (int) navLimit + " blocks)");
@@ -1209,6 +1487,136 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			return ActionOutcome.fail("give", "your bag is full, so I kept the " + id);
 		}
 		return ActionOutcome.ok("give", "gave you 1 " + id);
+	}
+
+	/**
+	 * Make something out of what he is carrying, through the game's own recipe table.
+	 *
+	 * <p>The chain is resolved before anything is spent: if the result needs planks, and the planks
+	 * need logs, every step is known and accounted for first ({@link CraftChain}). Then each step is
+	 * run in that order and the bag is read back afterwards, so "I crafted it" is a count that went
+	 * up, not a call that returned.
+	 */
+	private ActionOutcome craftFromBag(ActionIntent intent) {
+		if (!CobbieConfig.isCraftingAllowed()) return ActionOutcome.fail("craft", "crafting is switched off");
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("craft", "no server world");
+
+		String wanted = resolveItemId(intent.target());
+		if (wanted == null) {
+			String asked = intent.target() == null ? "" : intent.target().trim();
+			return ActionOutcome.fail("craft", asked.isEmpty()
+					? "tell me what to craft"
+					: "there is no item called " + asked);
+		}
+		int quantity = craftQuantity(intent.data());
+
+		Map<String, CraftRecipes.Match> byRecipe = new LinkedHashMap<>();
+		CraftChain.Book book = itemId -> {
+			List<CraftChain.Recipe> recipes = new ArrayList<>();
+			for (CraftRecipes.Match match : CraftRecipes.allFor(serverLevel, itemId)) {
+				byRecipe.put(match.recipe().id(), match);
+				recipes.add(match.recipe());
+			}
+			return recipes;
+		};
+		CraftChain.Plan plan = CraftChain.plan(wanted, quantity, book, carriedByItem(), CRAFT_CHAIN_DEPTH);
+		if (!plan.possible()) return ActionOutcome.fail("craft", plan.failure());
+		if (plan.steps().isEmpty()) {
+			return ActionOutcome.ok("craft", "I already have " + countItem(wanted) + " " + wanted);
+		}
+
+		int before = countItem(wanted);
+		int stored = 0;
+		Map<String, Integer> spilled = new LinkedHashMap<>();
+		for (CraftChain.Step step : plan.steps()) {
+			for (String ingredient : step.consumes()) {
+				if (!consumeItem(ingredient, 1)) {
+					return ActionOutcome.fail("craft", "I ran out of " + ingredient + " while making " + wanted);
+				}
+			}
+			CraftRecipes.Match match = byRecipe.get(step.recipeId());
+			ItemStack made = match.output().copyWithCount(match.output().getCount() * step.runs());
+			ItemStack leftover = made.copy();
+			if (add(leftover, inventory)) stored += made.getCount() - leftover.getCount();
+			if (!leftover.isEmpty()) {
+				// A full bag must not delete what he just made; it goes on the ground at his feet.
+				ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
+				pile.setDefaultPickUpDelay();
+				if (!level().addFreshEntity(pile)) {
+					return ActionOutcome.fail("craft", "my bag is full and I could not put " + step.result()
+							+ " on the ground either");
+				}
+				spilled.merge(step.result(), leftover.getCount(), Integer::sum);
+			}
+		}
+
+		int expected = 0;
+		for (CraftChain.Step step : plan.steps()) {
+			if (step.result().equals(wanted)) expected += step.produced();
+		}
+		int gained = countItem(wanted) - before;
+		int dropped = spilled.getOrDefault(wanted, 0);
+		if (gained + dropped != expected) {
+			return ActionOutcome.fail("craft", "my bag says " + gained + " new " + wanted
+					+ " but the recipes should have made " + expected);
+		}
+		StringBuilder chain = new StringBuilder();
+		for (CraftChain.Step step : plan.steps()) {
+			if (chain.length() > 0) chain.append(", then ");
+			chain.append(step.runs()).append("x ").append(step.recipeId());
+		}
+		return ActionOutcome.ok("craft", "crafted " + gained + " " + wanted + " ("
+				+ chain + ")" + (dropped > 0 ? ", " + dropped + " on the ground beside me" : ""));
+	}
+
+	/**
+	 * "oak_planks", "minecraft:oak_planks" and "sticks" all have to find the same item — the model
+	 * writes all three, and a plural that resolves to nothing reads as "I have no recipe" to the
+	 * owner. A short alias list covers the names people actually say.
+	 */
+	private static String resolveItemId(String raw) {
+		if (raw == null || raw.isBlank()) return null;
+		String name = raw.trim().toLowerCase(Locale.ROOT).replace(' ', '_');
+		if (name.equals("planks") || name.equals("plank") || name.equals("wood_planks")) name = "oak_planks";
+		if (name.equals("logs") || name.equals("log") || name.equals("wood_log")) name = "oak_log";
+		for (String candidate : List.of(name, name.endsWith("s") ? name.substring(0, name.length() - 1) : name)) {
+			String full = candidate.contains(":") ? candidate : "minecraft:" + candidate;
+			Identifier id;
+			try {
+				id = Identifier.parse(full);
+			} catch (Exception e) {
+				continue;
+			}
+			if (BuiltInRegistries.ITEM.getOptional(id).orElse(null) != null) {
+				return BuiltInRegistries.ITEM.getKey(BuiltInRegistries.ITEM.getOptional(id).orElseThrow()).toString();
+			}
+		}
+		return null;
+	}
+
+	/** How many he should be holding at the end. The data field carries it; 1 when it does not. */
+	private static int craftQuantity(String data) {
+		if (data == null || data.isBlank()) return 1;
+		String digits = data.replaceAll("[^0-9]", "");
+		if (digits.isEmpty()) return 1;
+		try {
+			return Math.max(1, Math.min(64, Integer.parseInt(digits)));
+		} catch (NumberFormatException e) {
+			return 1;
+		}
+	}
+
+	/** Registry id → how many of it he is carrying, bag and raised hand together. */
+	private Map<String, Integer> carriedByItem() {
+		Map<String, Integer> counts = new LinkedHashMap<>();
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty()) continue;
+			counts.merge(itemId(stack), stack.getCount(), Integer::sum);
+		}
+		ItemStack hand = this.getMainHandItem();
+		if (!hand.isEmpty()) counts.merge(itemId(hand), hand.getCount(), Integer::sum);
+		return counts;
 	}
 
 	private ActionOutcome startPlace(ActionIntent intent) {

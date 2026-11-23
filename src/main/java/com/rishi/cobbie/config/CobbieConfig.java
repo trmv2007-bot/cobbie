@@ -112,6 +112,12 @@ public final class CobbieConfig {
 	private static double followDistance = 4.0;
 	private static int navigationRange = 24;
 	private static double interactionReach = 4.0;
+	/** How far from his owner a wander may aim. Separate from navigation_range: that is how far he
+	 *  will walk for a request, this is how far he will go looking around. */
+	private static int explorationRadius = 48;
+	/** An explicit last resort, off by default: teleport to the owner when this far away and making
+	 *  no progress. 0 disables it. Never the normal way he travels. */
+	private static int recallDistance = 0;
 
 	// ---- Permissions (re-checked at execution time, never only at parse time) ----
 	private static boolean miningAllowed = false;
@@ -120,6 +126,7 @@ public final class CobbieConfig {
 	private static boolean playerCombatAllowed = false;
 	private static boolean explorationAllowed = true;
 	private static boolean collectionAllowed = true;
+	private static boolean craftingAllowed = false;
 
 	// ---- Chat ----
 	private static ChatMode chatMode = ChatMode.MENTION;
@@ -210,6 +217,8 @@ public final class CobbieConfig {
 		followDistance = dbl(root, "follow_distance", followDistance, 1.0, 64.0);
 		navigationRange = integer(root, "navigation_range", navigationRange, 4, 256);
 		interactionReach = dbl(root, "interaction_reach", interactionReach, 1.0, 16.0);
+		explorationRadius = integer(root, "exploration_radius", explorationRadius, 8, 256);
+		recallDistance = integer(root, "recall_distance", recallDistance, 0, 4096);
 
 		miningAllowed = bool(root, "mining_allowed", miningAllowed);
 		buildingAllowed = bool(root, "building_allowed", buildingAllowed);
@@ -217,6 +226,7 @@ public final class CobbieConfig {
 		playerCombatAllowed = bool(root, "player_combat_allowed", playerCombatAllowed);
 		explorationAllowed = bool(root, "exploration_allowed", explorationAllowed);
 		collectionAllowed = bool(root, "collection_allowed", collectionAllowed);
+		craftingAllowed = bool(root, "crafting_allowed", craftingAllowed);
 
 		chatMode = ChatMode.parse(str(root, "chat_mode", chatMode.name()), chatMode);
 		chatCooldownMs = integer(root, "chat_cooldown_ms", chatCooldownMs, 0, 10000);
@@ -365,6 +375,8 @@ public final class CobbieConfig {
 	public static double getFollowDistance() { ensureLoaded(); return followDistance; }
 	public static int getNavigationRange() { ensureLoaded(); return navigationRange; }
 	public static double getInteractionReach() { ensureLoaded(); return interactionReach; }
+	public static int getExplorationRadius() { ensureLoaded(); return explorationRadius; }
+	public static int getRecallDistance() { ensureLoaded(); return recallDistance; }
 
 	public static boolean isMiningAllowed() { ensureLoaded(); return miningAllowed; }
 	public static boolean isBuildingAllowed() { ensureLoaded(); return buildingAllowed; }
@@ -372,6 +384,7 @@ public final class CobbieConfig {
 	public static boolean isPlayerCombatAllowed() { ensureLoaded(); return playerCombatAllowed; }
 	public static boolean isExplorationAllowed() { ensureLoaded(); return explorationAllowed; }
 	public static boolean isCollectionAllowed() { ensureLoaded(); return collectionAllowed; }
+	public static boolean isCraftingAllowed() { ensureLoaded(); return craftingAllowed; }
 
 	public static ChatMode getChatMode() { ensureLoaded(); return chatMode; }
 	public static List<String> getAllowedPlayers() { ensureLoaded(); return List.copyOf(allowedPlayers); }
@@ -424,6 +437,7 @@ public final class CobbieConfig {
 			case "attack" -> combatAllowed;
 			case "explore" -> explorationAllowed && autonomyMode != AutonomyMode.OFF;
 			case "collect" -> collectionAllowed;
+			case "craft" -> craftingAllowed;
 			case "follow", "stay", "wave", "chat", "answer", "wait", "walk-to", "give", "drop", "equip", "lookup" -> true;
 			default -> false;
 		};
@@ -464,6 +478,8 @@ public final class CobbieConfig {
 			root.addProperty("follow_distance", followDistance);
 			root.addProperty("navigation_range", navigationRange);
 			root.addProperty("interaction_reach", interactionReach);
+			root.addProperty("exploration_radius", explorationRadius);
+			root.addProperty("recall_distance", recallDistance);
 
 			root.addProperty("mining_allowed", miningAllowed);
 			root.addProperty("building_allowed", buildingAllowed);
@@ -471,6 +487,7 @@ public final class CobbieConfig {
 			root.addProperty("player_combat_allowed", playerCombatAllowed);
 			root.addProperty("exploration_allowed", explorationAllowed);
 			root.addProperty("collection_allowed", collectionAllowed);
+			root.addProperty("crafting_allowed", craftingAllowed);
 
 			root.addProperty("chat_mode", chatMode.name());
 			JsonArray players = new JsonArray();
@@ -520,6 +537,7 @@ public final class CobbieConfig {
 			case "player_combat", "playercombat", "pvp" -> playerCombatAllowed = value;
 			case "exploration", "explore" -> explorationAllowed = value;
 			case "collection", "collect", "pickup" -> collectionAllowed = value;
+			case "crafting", "craft" -> craftingAllowed = value;
 			default -> {
 				return false;
 			}
@@ -546,8 +564,9 @@ public final class CobbieConfig {
 				+ "\nautonomy=" + autonomyMode + " chat=" + chatMode
 				+ "\nmining=" + miningAllowed + " building=" + buildingAllowed + " combat=" + combatAllowed
 				+ " (players=" + playerCombatAllowed + ") explore=" + explorationAllowed
-				+ " collect=" + collectionAllowed
+				+ " collect=" + collectionAllowed + " craft=" + craftingAllowed
 				+ "\nfollow=" + followDistance + " nav=" + navigationRange + " reach=" + interactionReach
+				+ " exploreRadius=" + explorationRadius + " recall=" + (recallDistance <= 0 ? "off" : recallDistance)
 				+ "\nsteps=" + planStepLimit + " retries=" + taskRetryLimit
 				+ " history=" + maxChatHistory + " slots=" + inventorySize;
 	}
