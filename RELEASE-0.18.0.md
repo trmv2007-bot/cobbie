@@ -109,11 +109,11 @@ The permanent numbers in the table are the ones the tests can hold still: 400 ms
 2 027 ms of provider, ≤50 ms to the first movement, 1 799 ms of work, 0 ms to the closing line, one
 call.
 
-A note that cost him real time and is not a code fault: his saved `config/cobbie.json` still carries
-0.16-era `max_tokens: 300` and `read_timeout: 120`. 0.17.0's defaults are 800 and 30, and a
-reasoning model given 300 tokens often spends them all on hidden thinking and returns nothing. The
-mod never rewrites a config it did not create, so this is one press of **Save** in `/cobbie config`
-away.
+One thing to know about these numbers, because it is not a code fault: a `config/cobbie.json`
+written by an older version keeps its own values until somebody presses **Save** in `/cobbie config`.
+A long `read_timeout` from an older config turns a dead or throttled gateway into a five-minute hang
+instead of a fast failure — 0.18.0's default is 30 seconds, and nothing in the mod rewrites a file it
+did not create.
 
 ## Verification — what was observed, and what was not
 

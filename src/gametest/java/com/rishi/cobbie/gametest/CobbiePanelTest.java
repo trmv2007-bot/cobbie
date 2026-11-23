@@ -53,8 +53,10 @@ public final class CobbiePanelTest implements FabricClientGameTest {
 			// A job with a real step in it, and something in his bag for the panel to draw.
 			BlockPos target = server.computeOnServer(s -> CobbieTestSupport.owner(s).blockPosition().offset(2, 0, 2));
 			server.computeOnServer(s -> {
-				CobbieTestSupport.command(s, "setblock " + target.getX() + " " + target.getY() + " "
-						+ target.getZ() + " minecraft:stone");
+				// Placed through the world, not with /setblock: a command prints "Changed the block
+				// at x, y, z" into the same chat this test screenshots, and that line would look
+				// exactly like a coordinate leak from him.
+				s.overworld().setBlockAndUpdate(target, net.minecraft.world.level.block.Blocks.STONE.defaultBlockState());
 				var cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
 				cobbie.addItem(new ItemStack(Items.IRON_PICKAXE, 1));
 				cobbie.addItem(new ItemStack(Items.DIRT, 16));
