@@ -26,7 +26,13 @@ public record CobbiePanelPayload(
 		String job,
 		List<String> steps,
 		List<Integer> stepStates,
-		List<ItemStack> items) implements CustomPacketPayload {
+		List<ItemStack> items,
+		int heldIndex) implements CustomPacketPayload {
+
+	/** Which drawn slot is the one in his hand, or -1 when he is carrying nothing there. */
+	public boolean isHeld(int index) {
+		return heldIndex >= 0 && heldIndex == index;
+	}
 
 	/** 0 pending, 1 running, 2 done, 3 failed, 4 skipped — the screen colours each one. */
 	public static final int PENDING = 0, RUNNING = 1, DONE = 2, FAILED = 3, SKIPPED = 4;
@@ -44,6 +50,7 @@ public record CobbiePanelPayload(
 					ByteBufCodecs.STRING_UTF8.apply(ByteBufCodecs.list()), CobbiePanelPayload::steps,
 					ByteBufCodecs.VAR_INT.apply(ByteBufCodecs.list()), CobbiePanelPayload::stepStates,
 					ItemStack.OPTIONAL_LIST_STREAM_CODEC, CobbiePanelPayload::items,
+					ByteBufCodecs.VAR_INT, CobbiePanelPayload::heldIndex,
 					CobbiePanelPayload::new);
 
 	public CobbiePanelPayload {

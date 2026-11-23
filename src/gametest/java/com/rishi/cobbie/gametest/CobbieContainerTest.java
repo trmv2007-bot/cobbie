@@ -103,7 +103,36 @@ public final class CobbieContainerTest implements FabricClientGameTest {
                         + " result=" + furnaceSlot(server, furnace, 2), t);
             }
 
+            // 3. The ring that used to happen: a container bigger than his bag. 45 slots absorb it.
+            server.computeOnServer(s -> {
+                var be = s.overworld().getBlockEntity(chest);
+                if (be instanceof net.minecraft.world.Container container) {
+                    container.setItem(0, new ItemStack(Items.COBBLESTONE, 40));
+                }
+                return null;
+            });
+            int before = carried(server, "minecraft:cobblestone");
+            String bulkRefusal = offer(server, ActionVocabulary.TAKE, "", chest, "64");
+            if (bulkRefusal != null) throw new AssertionError("bulk take refused: " + bulkRefusal);
+            try {
+                server.waitFor(s -> carried(s, "minecraft:cobblestone") >= before + 40, 300);
+            } catch (Throwable t) {
+                throw new AssertionError("A 40-stack did not fit in his bag; he carries "
+                        + carried(server, "minecraft:cobblestone") + " cobblestone and "
+                        + inventory(server), t);
+            }
+            int spilled = server.computeOnServer(s -> s.overworld()
+                    .getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,
+                            new net.minecraft.world.phys.AABB(start).inflate(8.0),
+                            e -> e.getItem().is(Items.COBBLESTONE))
+                    .stream().mapToInt(e -> e.getItem().getCount()).sum());
+            if (spilled > 0) {
+                throw new AssertionError(spilled + " cobblestone was dropped on the ground instead of "
+                        + "going in his bag — that is the nine-slot overflow coming back");
+            }
+
             System.out.println("[gametest] container ok: chest round-trip of 16 cobblestone, then "
+                    + "40 more taken in one go with nothing spilled, then "
                     + carried(server, "minecraft:iron_ingot") + " iron ingot(s) smelted from raw ore; "
                     + lastReport(server));
         }
