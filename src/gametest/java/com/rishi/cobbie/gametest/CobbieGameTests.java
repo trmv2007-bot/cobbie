@@ -42,6 +42,7 @@ public final class CobbieGameTests implements FabricClientGameTest {
             new CobbieMineTest(),
             new CobbieDoorTest(),
             new CobbieContainerTest(),
+            new CobbieBagMigrationTest(),
             new CobbiePlaceTest(),
             new CobbieCombatTest(),
             new CobbiePersistenceTest(),
