@@ -8,3 +8,6 @@ out/
 # Loom run directories (dev client / gametest worlds and assets)
 /run/
 
+
+# Cobbie run logs are local, never tracked
+logs/
