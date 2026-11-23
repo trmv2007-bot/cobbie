@@ -118,6 +118,41 @@ final class CobbieTestSupport {
         command(server, "cobbie permit " + which + " " + (on ? "on" : "off"));
     }
 
+    /**
+     * Wait until no model request is in flight anywhere in the process.
+     *
+     * <p>{@code CobbieBrain.inFlightCount()} is static and shared by every test class in one run, so
+     * "he is not thinking" is only meaningful once the previous class's reply has landed. A local
+     * model takes seconds to answer, which is long enough for the next class to start.
+     */
+    static void awaitQuietBrain(TestServerContext server) {
+        try {
+            server.waitFor(s -> com.rishi.cobbie.brain.CobbieBrain.inFlightCount() == 0, 200);
+        } catch (Throwable t) {
+            throw new AssertionError("A model request was still in flight after 200 ticks ("
+                    + com.rishi.cobbie.brain.CobbieBrain.inFlightCount() + " outstanding); the counter never "
+                    + "dropped back to zero, which is a stuck request and not a status-tag problem", t);
+        }
+    }
+
+    /**
+     * What a right-click on him does from a given sneaking state — the same call the server makes
+     * when the client sends its interaction packet, so the shift gate is the real one.
+     */
+    static net.minecraft.world.InteractionResult rightClick(TestServerContext server, boolean sneaking) {
+        return server.computeOnServer(s -> {
+            ServerPlayer owner = owner(s);
+            CobbieEntity cobbie = cobbie(s).orElseThrow();
+            owner.setShiftKeyDown(sneaking);
+            try {
+                return owner.interactOn(cobbie, net.minecraft.world.InteractionHand.MAIN_HAND,
+                        net.minecraft.world.phys.Vec3.atCenterOf(cobbie.blockPosition()));
+            } finally {
+                owner.setShiftKeyDown(false);
+            }
+        });
+    }
+
     /** Teleport the owner properly: a server-side snap is undone by the client's next position packet. */
     static void teleportOwner(TestServerContext server, double dx, double dy, double dz) {
         server.computeOnServer(s -> {
