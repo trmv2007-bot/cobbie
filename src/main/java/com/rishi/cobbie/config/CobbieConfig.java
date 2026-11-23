@@ -144,7 +144,9 @@ public final class CobbieConfig {
 	private static boolean persistentMemory = true;
 
 	// ---- Entity / server ----
-	private static int inventorySize = 9;
+	// 36 slots plus a 9-slot hotbar's worth: the same carrying capacity a player's inventory rows give,
+	// which is what stops "empty that chest into your bag" landing on the floor after nine stacks.
+	private static int inventorySize = 45;
 	private static boolean gatedToAllowlist = false;
 	private static int maxCobbiesPerPlayer = 1;
 

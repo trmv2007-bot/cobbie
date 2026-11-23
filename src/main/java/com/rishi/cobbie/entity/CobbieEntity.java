@@ -206,6 +206,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	/** Consecutive far re-paths the pathfinder refused; each one shortens the next step. */
 	private int followMisses;
 
+	/** Items whose slots no longer exist after a bag size change; spilled once, never deleted. */
+	private final List<ItemStack> pendingSpill = new ArrayList<>();
+
 	/** The job in flight when it spans ticks: crafting through a furnace, or smelting on purpose. */
 	private Work work;
 
@@ -557,6 +560,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			this.entityData.set(DATA_WAVING, false);
 		}
 
+		spillOverflow();
 		updateNameplate();
 		followOwnerTick();
 		swimTick();
@@ -713,13 +717,24 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			items.add(inventory.getItem(i).copy());
 		}
 		// The held tool has been raised out of the bag, so it would otherwise look as if he is
-		// carrying nothing while mining.
+		// carrying nothing while mining. It is also marked, so the panel can show which slot is in
+		// his hand rather than making you guess.
 		ItemStack held = this.getMainHandItem();
+		int heldIndex = -1;
 		if (!held.isEmpty()) {
-			boolean known = items.stream().anyMatch(s -> !s.isEmpty() && ItemStack.isSameItemSameComponents(s, held));
-			if (!known) items.add(held.copy());
+			for (int i = 0; i < items.size(); i++) {
+				ItemStack stack = items.get(i);
+				if (!stack.isEmpty() && ItemStack.isSameItemSameComponents(stack, held)) {
+					heldIndex = i;
+					break;
+				}
+			}
+			if (heldIndex < 0) {
+				items.add(held.copy());
+				heldIndex = items.size() - 1;
+			}
 		}
-		return new CobbiePanelPayload(this.getId(), "Cobbie", statusWord(), job, steps, states, items);
+		return new CobbiePanelPayload(this.getId(), "Cobbie", statusWord(), job, steps, states, items, heldIndex);
 	}
 
 	/** Everything the owner asked for: current job, its steps, and anything waiting behind it. */
@@ -1793,6 +1808,17 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return null;
 	}
 
+	/** Put saved items whose slots no longer exist on the ground where he stands. Runs once. */
+	private void spillOverflow() {
+		if (pendingSpill.isEmpty()) return;
+		for (ItemStack stack : pendingSpill) {
+			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), stack);
+			pile.setDefaultPickUpDelay();
+			if (!level().addFreshEntity(pile)) addItem(stack);
+		}
+		pendingSpill.clear();
+	}
+
 	/** A fuel item out of his bag, or empty. Judged by the component the furnace itself reads. */
 	private ItemStack takeFuelFromBag() {
 		for (int i = 0; i < inventory.getContainerSize(); i++) {
@@ -2598,9 +2624,28 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		try {
 			List<ItemStack> items = in.read("CobbieItems", ITEM_LIST).orElse(List.of());
-			for (int i = 0; i < inventory.getContainerSize(); i++) {
+			int slots = inventory.getContainerSize();
+			for (int i = 0; i < slots; i++) {
 				ItemStack stack = i < items.size() ? items.get(i) : null;
 				inventory.setItem(i, stack == null || stack.isEmpty() ? ItemStack.EMPTY : stack.copy());
+			}
+			// The bag shrank since that save (a config change), so anything past the last slot would
+			// be deleted on load. It goes on the ground at his feet instead, once he is in a world.
+			for (int i = slots; i < items.size(); i++) {
+				ItemStack extra = items.get(i);
+				if (extra != null && !extra.isEmpty()) pendingSpill.add(extra.copy());
+			}
+			if (!pendingSpill.isEmpty()) {
+				StringBuilder what = new StringBuilder();
+				int total = 0;
+				for (ItemStack stack : pendingSpill) {
+					total += stack.getCount();
+					if (what.length() > 0) what.append(", ");
+					what.append(stack.getCount()).append("x ")
+							.append(BuiltInRegistries.ITEM.getKey(stack.getItem()));
+				}
+				Cobbie.LOGGER.warn("Cobbie's bag holds {} slots but that save has more: {} ({}) will be"
+						+ " put on the ground beside him rather than lost", slots, total, what);
 			}
 		} catch (Exception e) {
 			Cobbie.LOGGER.warn("Cobbie's saved bag could not be read: {}", e.toString());

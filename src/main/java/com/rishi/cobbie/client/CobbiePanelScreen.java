@@ -222,7 +222,8 @@ public class CobbiePanelScreen extends Screen {
 			int x = gridX + col * SLOT;
 			int y = gridY + row * SLOT;
 			graphics.fill(x, y, x + SLOT - 2, y + SLOT - 2, SLOT_BG);
-			graphics.outline(x, y, SLOT - 2, SLOT - 2, SLOT_EDGE);
+			// The slot in his hand gets the accent, so "what is he actually holding" is a glance.
+			graphics.outline(x, y, SLOT - 2, SLOT - 2, data.isHeld(i) ? ACCENT : SLOT_EDGE);
 
 			ItemStack stack = items.get(i);
 			if (stack == null || stack.isEmpty()) continue;
@@ -250,5 +251,10 @@ public class CobbiePanelScreen extends Screen {
 	/** The stacks the panel draws, in slot order. */
 	public List<ItemStack> shownItems() {
 		return data.items();
+	}
+
+	/** Which drawn slot is in his hand, or -1. Asserted by the panel gametest. */
+	public int shownHeldIndex() {
+		return data.heldIndex();
 	}
 }
