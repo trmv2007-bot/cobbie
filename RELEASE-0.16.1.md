@@ -1,7 +1,7 @@
 # Cobbie 0.16.1 — the in-game check runs, and says what it saw
 
-Artifact: `cobbie-0.16.1.jar`, installed into `mods/`. 109 unit tests green, **15 of 15 in-game
-classes green** in 2m16s. No gameplay changes: this release exists to make "it works in game" a claim
+Artifact: `cobbie-0.16.1.jar`, installed into `mods/`. 109 unit tests green. **15 of 15 in-game
+classes green** in 2m16s on the recorded run; one class is flaky for a reason that is not Cobbie (below). No gameplay changes: this release exists to make "it works in game" a claim
 the harness can back up, and to fix the reason the last attempt could not.
 
 ## What actually stopped 0.16.0
@@ -59,8 +59,23 @@ BUILD SUCCESSFUL in 2m 16s
 Run one class while iterating: `./gradlew runClientGameTest -PcobbieTests=Status` (comma-separated
 for several).
 
-## Verified in game — the tag and the readout
+## One class is still flaky, and it is the model's fault
 
+`CobbieChatTest` is the only in-game class that needs the local model to actually answer. Across four
+launches of this harness it passed three times and failed once, from inside a full 15-class run:
+
+```
+CobbieChatTest FAILED after 93103ms: No reply reached memory within 90s;
+brain state=REQUEST_FAILED detail=model returned no text
+```
+
+That is `lfm2.5:8b` returning an empty completion on both attempts — the brain reported the failure and
+told the player, so he was not silent, but no reply reached memory and the assertion is right to
+object. Alone, the same class passes in 25s with a real answer. So: **the harness is repeatable, one
+class's result is not**, and the honest number is 15/15 on a good run and 14/15 when the model hiccups.
+Making the test retry would hide a real never-silent regression, so it does not retry.
+
+## Verified in game — the tag and the readout
 `CobbieStatusTest`, observed passing inside a real Minecraft 26.3 client:
 
 ```
