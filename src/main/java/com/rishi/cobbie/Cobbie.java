@@ -7,6 +7,7 @@ import com.rishi.cobbie.config.CobbieConfig;
 import com.rishi.cobbie.entity.CobbieEntities;
 import com.rishi.cobbie.memory.CobbieMemory;
 import net.fabricmc.api.ModInitializer;
+import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,9 +43,16 @@ public class Cobbie implements ModInitializer {
 					CobbieMemory.save();
 				}
 			});
-			LOGGER.info("Cobbie 0.5.0 ready - say his name (◕‿◕)");
+			LOGGER.info("Cobbie {} ready - say his name (◕‿◕)", version());
 		} catch (Throwable t) {
 			LOGGER.warn("Cobbie tick wiring unavailable on this side: {}", t.toString());
 		}
+	}
+
+	/** The real version from the mod metadata, so the boot line can be trusted as evidence. */
+	public static String version() {
+		return FabricLoader.getInstance().getModContainer(MOD_ID)
+				.map(container -> container.getMetadata().getVersion().getFriendlyString())
+				.orElse("unknown");
 	}
 }

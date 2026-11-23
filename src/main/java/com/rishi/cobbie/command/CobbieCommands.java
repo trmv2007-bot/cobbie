@@ -2,8 +2,10 @@ package com.rishi.cobbie.command;
 
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
+import com.rishi.cobbie.brain.BrainPresets;
 import com.rishi.cobbie.brain.CobbieBrain;
 import com.rishi.cobbie.brain.ConnectionState;
+import com.rishi.cobbie.brain.ConnectionTest;
 import com.rishi.cobbie.brain.OllamaDiscovery;
 import com.rishi.cobbie.config.CobbieConfig;
 import com.rishi.cobbie.entity.CobbieEntity;
@@ -148,14 +150,20 @@ public final class CobbieCommands {
 		return 1;
 	}
 
+	/**
+	 * Same check the config screen's button runs, so chat and GUI can never disagree: a real
+	 * completion, classified into key rejected / model missing / unreachable / ready.
+	 */
 	private static int testConnection(CommandContext<CommandSourceStack> ctx) {
 		CommandSourceStack source = ctx.getSource();
-		reply(ctx, "§7Probing " + CobbieConfig.getProvider() + " at " + CobbieConfig.getBaseUrl() + "...");
-		OllamaDiscovery.probeConfiguredAsync().thenAccept(probe -> {
-			CobbieBrain.noteProbe(probe);
-			source.getServer().execute(() -> reply(ctx, "§f" + probe.state() + " — " + probe.describe()));
+		BrainPresets.Preset preset = BrainPresets.infer(CobbieConfig.getProvider(), CobbieConfig.getBaseUrl());
+		reply(ctx, "§7Testing " + preset.label() + " (" + CobbieConfig.getModel() + ")...");
+		ConnectionTest.run(CobbieBrain.client(), preset.label()).thenAccept(report -> {
+			if (report.healthy()) CobbieBrain.noteRequestSuccess();
+			source.getServer().execute(() -> reply(ctx,
+					(report.healthy() ? "§a" : "§c") + report.line()));
 		}).exceptionally(ex -> {
-			source.getServer().execute(() -> reply(ctx, "§cProbe threw: " + ex));
+			source.getServer().execute(() -> reply(ctx, "§cTest threw: " + ex.getClass().getSimpleName()));
 			return null;
 		});
 		return 1;

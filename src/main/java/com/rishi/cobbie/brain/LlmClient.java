@@ -33,7 +33,12 @@ import java.util.function.Function;
  *   <li>The {@code Authorization} header is only attached when an API key is configured. Ollama
  *       rejects a null/empty bearer token, which is what made 0.1.0 "work but never answer".</li>
  *   <li>Retries are bounded ({@code max_retries}) and only for transport errors and 5xx/429 —
- *       a 404 (wrong model/endpoint) is reported immediately instead of hammered.</li>
+ *       a 404 (wrong model/endpoint) is reported immediately instead of hammered. Two protocol
+ *       corrections are exempt because retrying them is guaranteed to be the right move: dropping
+ *       Ollama's {@code think} when a server rejects it, and renaming {@code max_tokens} to
+ *       {@code max_completion_tokens} when an OpenAI reasoning model demands it.</li>
+ *   <li>The key never leaves the {@code Authorization} header: not in the body, not in a log line,
+ *       and not in the error text a {@link Result} carries (error bodies are redacted against it).</li>
  * </ul>
  */
 public final class LlmClient {
@@ -44,12 +49,45 @@ public final class LlmClient {
 	public record Msg(String role, String content) {}
 
 	/**
-	 * Structured outcome of a request. {@code retryable} tells the caller (and the retry loop)
-	 * whether asking again could plausibly help.
+	 * What went wrong, as a small closed vocabulary so the UI, the chat fallback and the release
+	 * notes all use the same words. {@link #NONE} is a successful reply.
 	 */
-	public record Result(String content, boolean success, String error, boolean retryable) {
+	public enum Failure {
+		NONE(""),
+		KEY_REJECTED("the AI rejected my key"),
+		MODEL_NOT_FOUND("the AI could not find my model"),
+		TIMEOUT("the AI took too long to answer"),
+		UNREACHABLE("the AI server is unreachable"),
+		SERVER("the AI is having trouble");
+
+		private final String playerLine;
+
+		Failure(String playerLine) {
+			this.playerLine = playerLine;
+		}
+
+		/** Player-safe wording: never a URL, key or stack trace. */
+		public String playerLine() {
+			return playerLine;
+		}
+	}
+
+	/**
+	 * Structured outcome of a request. {@code retryable} tells the caller (and the retry loop)
+	 * whether asking again could plausibly help; {@code reasoningTokens} is what the provider
+	 * billed for hidden thinking before the visible answer ({@code 0} when it reports none).
+	 */
+	public record Result(String content, boolean success, String error, boolean retryable, int reasoningTokens) {
+		public Result(String content, boolean success, String error, boolean retryable) {
+			this(content, success, error, retryable, 0);
+		}
+
 		public static Result success(String content) {
-			return new Result(content, true, null, false);
+			return success(content, 0);
+		}
+
+		public static Result success(String content, int reasoningTokens) {
+			return new Result(content, true, null, false, reasoningTokens);
 		}
 
 		public static Result failure(String error) {
@@ -57,20 +95,33 @@ public final class LlmClient {
 		}
 
 		public static Result failure(String error, boolean retryable) {
-			return new Result(null, false, error, retryable);
+			return new Result(null, false, error, retryable, 0);
 		}
 
 		/** Player-safe wording: never leaks a URL, key or stack trace. */
 		public String friendlyError() {
 			if (error == null) return "the AI did not answer";
+			return kind().playerLine();
+		}
+
+		/** The closed-vocabulary classification of this outcome. */
+		public Failure kind() {
+			if (success) return Failure.NONE;
+			if (error == null) return Failure.SERVER;
 			String e = error.toLowerCase(Locale.ROOT);
-			if (e.contains("unauthorized") || e.contains("401")) return "the AI rejected my key";
-			if (e.contains("404")) return "the AI could not find my model";
-			if (e.contains("timeout") || e.contains("timed out")) return "the AI took too long to answer";
-			if (e.contains("refused") || e.contains("unknown host") || e.contains("connect")) {
-				return "the AI server is unreachable";
+			if (e.contains("unauthorized") || e.contains("401") || e.contains("forbidden") || e.contains("403")) {
+				return Failure.KEY_REJECTED;
 			}
-			return "the AI is having trouble";
+			if (e.contains("404") || e.contains("model not found") || e.contains("no such model")) {
+				return Failure.MODEL_NOT_FOUND;
+			}
+			// Before "connect": HttpConnectTimeoutException is a timeout, not a refusal.
+			if (e.contains("timed out") || e.contains("timeout")) return Failure.TIMEOUT;
+			if (e.contains("refused") || e.contains("unknown host") || e.contains("connect")
+					|| e.contains("unresolved") || e.contains("no route")) {
+				return Failure.UNREACHABLE;
+			}
+			return Failure.SERVER;
 		}
 	}
 
@@ -178,6 +229,14 @@ public final class LlmClient {
 					Cobbie.LOGGER.info("Cobbie: this server rejects \"think\", reasoning tokens are back on");
 					return attempt(payload, attemptNo);
 				}
+				// OpenAI's reasoning models take max_completion_tokens and reject max_tokens with a
+				// 400. Same protocol correction: rename the field once instead of failing the turn.
+				if (payload.has("max_tokens") && maxTokensParameterWasRejected(res.error())) {
+					JsonElement budget = payload.remove("max_tokens");
+					payload.add("max_completion_tokens", budget);
+					Cobbie.LOGGER.info("Cobbie: this model wants max_completion_tokens, retrying with it");
+					return attempt(payload, attemptNo);
+				}
 				if (!res.retryable() || attemptNo >= maxRetries) {
 					return CompletableFuture.completedFuture(res);
 				}
@@ -195,6 +254,12 @@ public final class LlmClient {
 		if (error == null) return false;
 		String e = error.toLowerCase(Locale.ROOT);
 		return e.contains("400") && e.contains("think");
+	}
+
+	private static boolean maxTokensParameterWasRejected(String error) {
+		if (error == null) return false;
+		String e = error.toLowerCase(Locale.ROOT);
+		return e.contains("400") && e.contains("max_tokens") && e.contains("max_completion_tokens");
 	}
 
 	private CompletableFuture<Result> sendOnce(String body) {
@@ -218,17 +283,31 @@ public final class LlmClient {
 					if (ex != null) {
 						Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
 						String msg = cause.getClass().getSimpleName() + ": " + cause.getMessage();
-						return Result.failure(msg, true); // transport-level: worth one retry
+						// A timeout is not worth a second wait: the player is already looking at a
+						// silent companion, and the never-silent fallback line is due now, not in
+						// another read-timeout. Everything else transport-level gets one retry.
+						boolean timeout = cause instanceof java.util.concurrent.TimeoutException
+								|| cause instanceof java.net.http.HttpTimeoutException;
+						return Result.failure(msg, !timeout);
 					}
 					int code = resp.statusCode();
 					if (code == 200) {
 						String content = extractContent(resp.body());
+						int reasoning = reasoningTokens(resp.body());
 						if (content == null || content.isBlank()) {
-							// An empty reply is usually a reasoning block that swallowed the whole
-							// token budget. It is worth one retry: the next sample often answers.
+							if (reasoning > 0) {
+								// The budget went into hidden thinking and the visible answer never
+								// arrived. Retrying would spend another budget the same way, so this
+								// is reported with its cause instead of being papered over.
+								Cobbie.LOGGER.warn("Cobbie: no text back after {} reasoning tokens on a "
+										+ "{} token budget — raise max_tokens", reasoning, maxTokens);
+								return new Result(null, false, "model returned no text after "
+										+ reasoning + " reasoning tokens (raise max_tokens)", false, reasoning);
+							}
+							// No reasoning reported: an ordinary empty sample, worth one retry.
 							return Result.failure("model returned no text", true);
 						}
-						return Result.success(content);
+						return Result.success(content, reasoning);
 					}
 					if (code == 429 || code >= 500) {
 						return Result.failure("HTTP " + code, true);
@@ -239,7 +318,7 @@ public final class LlmClient {
 						Cobbie.LOGGER.warn("Cobbie request rejected; body was {} chars, starts: {}",
 								body.length(), body.length() > 300 ? body.substring(0, 300) : body);
 					}
-					return Result.failure("HTTP " + code + " " + snip(resp.body()), false);
+					return Result.failure("HTTP " + code + " " + redact(snip(resp.body())), false);
 				})
 				.whenComplete((res, ignored) -> inFlight.decrementAndGet());
 	}
@@ -248,6 +327,39 @@ public final class LlmClient {
 		if (body == null) return "";
 		String s = body.replaceAll("\\s+", " ").trim();
 		return s.length() > 120 ? s.substring(0, 120) + "..." : s;
+	}
+
+	/**
+	 * Belt and braces for error text: some gateways echo the presented credential back in a 401
+	 * body, and that text ends up in chat and in the log. Anything matching the configured key is
+	 * replaced before it can travel.
+	 */
+	private String redact(String text) {
+		if (text == null || apiKey.length() < 8) return text;
+		return text.replace(apiKey, "***");
+	}
+
+	/**
+	 * How many tokens the provider says it spent thinking before answering. OpenAI-compatible
+	 * servers put it under {@code usage.completion_tokens_details.reasoning_tokens}, some Ollama
+	 * builds under {@code usage.reasoning_tokens}. A reply that burned the whole budget on this is
+	 * the difference between "no text" and a real answer, so the number is worth carrying.
+	 */
+	private static int reasoningTokens(String responseBody) {
+		try {
+			JsonElement parsed = JsonParser.parseString(responseBody);
+			if (!parsed.isJsonObject()) return 0;
+			JsonObject usage = parsed.getAsJsonObject().getAsJsonObject("usage");
+			if (usage == null) return 0;
+			if (usage.has("reasoning_tokens")) return usage.get("reasoning_tokens").getAsInt();
+			JsonObject details = usage.getAsJsonObject("completion_tokens_details");
+			if (details != null && details.has("reasoning_tokens")) {
+				return details.get("reasoning_tokens").getAsInt();
+			}
+			return 0;
+		} catch (Exception malformed) {
+			return 0;
+		}
 	}
 
 	// ---- wire format ----

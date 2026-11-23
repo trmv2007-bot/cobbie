@@ -108,6 +108,12 @@ public final class CobbieBrain {
 		lastStateDetail = probe.describe();
 	}
 
+	/** A test succeeded: clear any stale failure so {@code /cobbie status} stops reporting it. */
+	public static void noteRequestSuccess() {
+		lastState = ConnectionState.MODEL_AVAILABLE;
+		lastStateDetail = "answered a test request";
+	}
+
 	public static void noteRequestFailure(String error) {
 		lastState = ConnectionState.REQUEST_FAILED;
 		lastStateDetail = error == null ? "unknown" : error;

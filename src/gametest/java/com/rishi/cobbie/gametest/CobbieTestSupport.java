@@ -1,5 +1,6 @@
 package com.rishi.cobbie.gametest;
 
+import com.rishi.cobbie.brain.CobbieBrain;
 import com.rishi.cobbie.entity.CobbieEntities;
 import com.rishi.cobbie.entity.CobbieEntity;
 import net.fabricmc.fabric.api.client.gametest.v1.context.ClientGameTestContext;
@@ -90,6 +91,7 @@ final class CobbieTestSupport {
     }
 
     static CobbieEntity spawn(ClientGameTestContext context, TestServerContext server) {
+        awaitQuietBrain(server);
         command(server, "spawncobbie");
         try {
             server.waitFor(s -> cobbie(s).isPresent(), 400);
@@ -122,16 +124,19 @@ final class CobbieTestSupport {
      * Wait until no model request is in flight anywhere in the process.
      *
      * <p>{@code CobbieBrain.inFlightCount()} is static and shared by every test class in one run, so
-     * "he is not thinking" is only meaningful once the previous class's reply has landed. A local
-     * model takes seconds to answer, which is long enough for the next class to start.
+     * "he is not thinking" is only meaningful once the previous class's reply has landed — a request
+     * started in the last world can still be running, and a fresh companion then looks like he is
+     * thinking about a conversation from a world that no longer exists. Spawning waits on this, and so
+     * does the status tag's precondition. A hosted reply takes seconds; a local model takes longer, so
+     * the bound is generous on purpose. If it never drains, that is a stuck request, not a tag problem.
      */
     static void awaitQuietBrain(TestServerContext server) {
         try {
-            server.waitFor(s -> com.rishi.cobbie.brain.CobbieBrain.inFlightCount() == 0, 200);
+            server.waitFor(s -> CobbieBrain.inFlightCount() == 0, 600);
         } catch (Throwable t) {
-            throw new AssertionError("A model request was still in flight after 200 ticks ("
-                    + com.rishi.cobbie.brain.CobbieBrain.inFlightCount() + " outstanding); the counter never "
-                    + "dropped back to zero, which is a stuck request and not a status-tag problem", t);
+            throw new AssertionError("A model request was still in flight after 600 ticks ("
+                    + CobbieBrain.inFlightCount() + " outstanding); the counter never dropped back to zero, "
+                    + "which is a stuck request and not a status-tag problem", t);
         }
     }
 
