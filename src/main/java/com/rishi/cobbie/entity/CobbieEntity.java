@@ -2034,6 +2034,21 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	}
 
 	/**
+	 * Which face of a block a player would be clicking.
+	 *
+	 * <p>This is not cosmetic: seeds plant on the face they are clicked against, so a horizontal face
+	 * sends them nowhere and the crop never appears. Standing at the block with air above it, a player
+	 * clicks the top; from any other angle they click the side facing them.
+	 */
+	private Direction useFace(BlockPos pos) {
+		if (level().getBlockState(pos.above()).isAir() && this.getY() > pos.getY() + 0.5) return Direction.UP;
+		double dx = this.getX() - (pos.getX() + 0.5);
+		double dz = this.getZ() - (pos.getZ() + 0.5);
+		if (Math.abs(dx) > Math.abs(dz)) return dx > 0 ? Direction.EAST : Direction.WEST;
+		return dz > 0 ? Direction.SOUTH : Direction.NORTH;
+	}
+
+	/**
 	 * Raise the item to use: whatever is in his hand if it matches, otherwise the matching stack out of
 	 * the bag. A blank target means "whatever I am holding".
 	 */
@@ -2059,7 +2074,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		com.rishi.cobbie.actor.FakeActor.Outcome outcome;
 		try {
 			outcome = atBlock
-					? com.rishi.cobbie.actor.FakeActor.useOnBlock(this, pos, facingFrom(pos), used)
+					? com.rishi.cobbie.actor.FakeActor.useOnBlock(this, pos, useFace(pos), used)
 					: com.rishi.cobbie.actor.FakeActor.useInAir(this, used);
 		} catch (RuntimeException e) {
 			return ActionOutcome.fail("use", "using that went wrong (" + e.getClass().getSimpleName() + ")");
