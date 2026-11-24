@@ -10,6 +10,7 @@ import com.rishi.cobbie.craft.CraftChain;
 import com.rishi.cobbie.craft.CraftRecipes;
 import com.rishi.cobbie.station.Brewing;
 import com.rishi.cobbie.station.Containers;
+import com.rishi.cobbie.station.Smithing;
 import com.rishi.cobbie.net.CobbiePanelPayload;
 import com.rishi.cobbie.presence.Narrator;
 import com.rishi.cobbie.presence.Sight;
@@ -1276,6 +1277,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			case ActionVocabulary.ENCHANT -> enchantFromBag(intent);
 			case ActionVocabulary.ANVIL -> anvilFromBag(intent);
 			case ActionVocabulary.BREW -> startBrew(intent);
+			case ActionVocabulary.SMITH -> smithFromBag(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
@@ -2698,6 +2700,115 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			if (level().getBlockState(probe).is(Blocks.BREWING_STAND)) return probe.immutable();
 		}
 		return null;
+	}
+
+	/**
+	 * Upgrade something at a real smithing table — the netherite path, and armour trims.
+	 *
+	 * <p>The table's menu is three input slots and a result slot whose whole job is
+	 * {@code getRecipeFor(SMITHING, input, level)} then {@code assemble(input)}, with no charge and no
+	 * menu-side state, so this is that lookup and nothing else. The result is
+	 * {@code TransmuteRecipe.createWithOriginalComponents}: it rewrites the base item and carries the
+	 * base's components — enchantments, name, damage — onto the result. That is what makes netherite
+	 * an upgrade of <em>his</em> pickaxe instead of a fresh one, and it is why the base goes in as the
+	 * real stack.
+	 */
+	private ActionOutcome smithFromBag(ActionIntent intent) {
+		if (!CobbieConfig.isCraftingAllowed()) {
+			return ActionOutcome.fail("smith", "making things is switched off — /cobbie permit crafting on");
+		}
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("smith", "no server world");
+		BlockPos table = Smithing.tableNear(serverLevel, this.blockPosition(), FURNACE_SEARCH);
+		if (table == null) return ActionOutcome.fail("smith", "I need a smithing table and there is none near me");
+
+		String wantedBase = intent.target() == null || intent.target().isBlank() ? null : resolveItemId(intent.target());
+		String wantedAddition = intent.data() == null || intent.data().isBlank() ? null : resolveItemId(intent.data());
+
+		// Only the slots the table itself would accept are worth trying, which takes 45^3 recipe
+		// searches down to a handful of candidate trios.
+		List<Integer> bases = new ArrayList<>();
+		List<Integer> templates = new ArrayList<>();
+		List<Integer> additions = new ArrayList<>();
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty()) continue;
+			if (Smithing.isBase(serverLevel, stack)) bases.add(i);
+			if (Smithing.isTemplate(serverLevel, stack)) templates.add(i);
+			if (Smithing.isAddition(serverLevel, stack)) additions.add(i);
+		}
+
+		int baseSlot = -1;
+		int templateSlot = -1;
+		int additionSlot = -1;
+		net.minecraft.world.item.crafting.SmithingRecipe recipe = null;
+		// An upgrade changes the item and a trim only decorates one. Both are smithing recipes, so
+		// without this preference "make my pickaxe netherite" could resolve to a trim on a chestplate
+		// that happened to match first.
+		for (int pass = 0; pass < 2 && recipe == null; pass++) {
+			for (int b : bases) {
+				if (wantedBase != null && !wantedBase.equals(itemId(inventory.getItem(b)))) continue;
+				for (int t : templates) {
+					if (t == b) continue;
+					for (int a : additions) {
+						if (a == b || a == t) continue;
+						if (wantedAddition != null && !wantedAddition.equals(itemId(inventory.getItem(a)))) continue;
+						var match = Smithing.match(serverLevel, inventory.getItem(t), inventory.getItem(b),
+								inventory.getItem(a));
+						if (match.isEmpty()) continue;
+						if (pass == 0 && !Smithing.isUpgrade(match.get().value())) continue;
+						recipe = match.get().value();
+						baseSlot = b;
+						templateSlot = t;
+						additionSlot = a;
+						break;
+					}
+					if (recipe != null) break;
+				}
+				if (recipe != null) break;
+			}
+		}
+		if (recipe == null) {
+			if (wantedBase != null && !inventoryHas(wantedBase)) {
+				return ActionOutcome.fail("smith", "I have no " + wantedBase);
+			}
+			return ActionOutcome.fail("smith", wantedBase == null
+					? "I have nothing a smithing table would change"
+					: "I have no template and material that would upgrade " + wantedBase);
+		}
+
+		ItemStack base = inventory.getItem(baseSlot);
+		ItemStack template = inventory.getItem(templateSlot);
+		ItemStack addition = inventory.getItem(additionSlot);
+		ItemStack made = Smithing.assemble(recipe, template.copyWithCount(1), base.copy(), addition.copyWithCount(1));
+		if (made.isEmpty()) return ActionOutcome.fail("smith", "the table made nothing out of those");
+
+		// The menu spends exactly one of each on a take; so does this.
+		shrinkSlot(baseSlot, 1);
+		shrinkSlot(templateSlot, 1);
+		shrinkSlot(additionSlot, 1);
+		ItemStack leftover = made.copy();
+		if (!add(leftover, inventory)) {
+			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
+			pile.setDefaultPickUpDelay();
+			level().addFreshEntity(pile);
+		}
+		String did = Smithing.isUpgrade(recipe) ? "upgraded " + itemId(base) + " into " : "put a trim on ";
+		return ActionOutcome.ok("smith", did + itemId(made));
+	}
+
+	/** Take {@code amount} out of one bag slot, emptying it rather than leaving a zero-count stack. */
+	private void shrinkSlot(int slot, int amount) {
+		ItemStack stack = inventory.getItem(slot);
+		if (stack.isEmpty()) return;
+		stack.shrink(amount);
+		if (stack.isEmpty()) inventory.setItem(slot, ItemStack.EMPTY);
+	}
+
+	private boolean inventoryHas(String registryId) {
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			if (registryId.equals(itemId(inventory.getItem(i)))) return true;
+		}
+		return false;
 	}
 
 	/**
