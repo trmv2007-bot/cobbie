@@ -92,18 +92,24 @@ public final class CobbieAnvilTest implements FabricClientGameTest {
     }
 
     /**
-     * A sharpness book, made by the game rather than by my guess at a component's shape: put a book in
-     * the owner's hand and enchant it, which is exactly how vanilla writes stored enchantments.
+     * A sharpness book, built through the enchantment API.
+     *
+     * <p>Not with {@code /enchant}: on a held book that command leaves an *empty* stored-enchantment map,
+     * which the anvil then refuses — and a presence-only assertion on the component passes anyway. The
+     * oracle that proved this was a real player at the same anvil getting no result from that book and
+     * one from this one.
      */
     private static ItemStack sharpnessBook(MinecraftServer server, int level) {
-        var owner = CobbieTestSupport.owner(server);
-        CobbieTestSupport.command(server, "item replace entity @s weapon.mainhand with minecraft:enchanted_book 1");
-        CobbieTestSupport.command(server, "enchant @s minecraft:sharpness " + level);
-        ItemStack book = owner.getMainHandItem().copy();
-        owner.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, ItemStack.EMPTY);
-        if (book.isEmpty() || book.get(DataComponents.STORED_ENCHANTMENTS) == null) {
-            throw new AssertionError("Setup failed: /enchant did not produce a stored-enchantment book ("
-                    + book + ")");
+        ItemStack book = new ItemStack(Items.ENCHANTED_BOOK);
+        var lookup = server.registryAccess().lookupOrThrow(net.minecraft.core.registries.Registries.ENCHANTMENT);
+        var sharpness = lookup.getOrThrow(net.minecraft.world.item.enchantment.Enchantments.SHARPNESS);
+        var mutable = new net.minecraft.world.item.enchantment.ItemEnchantments.Mutable(
+                net.minecraft.world.item.enchantment.ItemEnchantments.EMPTY);
+        mutable.set(sharpness, level);
+        book.set(DataComponents.STORED_ENCHANTMENTS, mutable.toImmutable());
+        var stored = book.get(DataComponents.STORED_ENCHANTMENTS);
+        if (stored == null || stored.isEmpty()) {
+            throw new AssertionError("Setup failed: the book carries no enchantment");
         }
         return book;
     }
