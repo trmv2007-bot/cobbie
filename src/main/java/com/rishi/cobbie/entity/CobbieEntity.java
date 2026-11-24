@@ -1840,7 +1840,14 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return xpNeededFor(experienceLevel);
 	}
 
-	/** The experience a level costs — the game's own curve, not an invention. */
+	/**
+	 * The experience one level costs.
+	 *
+	 * <p><b>This is a copy of {@code Player.getXpNeededForNextLevel()}</b>, which is not callable from a
+	 * mob. It is the only place these numbers live in this mod, so if the curve ever changes in a new
+	 * Minecraft version, this is the one function to bring back in line: otherwise his levels drift from
+	 * a player's and nothing says so until an enchant costs the wrong amount.
+	 */
 	private static int xpNeededFor(int level) {
 		if (level >= 30) return 112 + (level - 30) * 9;
 		if (level >= 15) return 37 + (level - 15) * 5;

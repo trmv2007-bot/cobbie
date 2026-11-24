@@ -42,6 +42,17 @@ The enchanting table and the anvil are next, and both now have something to spen
 always be the honest one — "I need N levels for that and I have M" — never a quiet withdrawal from
 somewhere else.
 
+## The one number in here that could go stale
+
+The level curve is written out by hand — `7 + 2n`, then `37 + 5(n-15)`, then `112 + 9(n-30)` — because
+`Player.getXpNeededForNextLevel()` is player-only. That is a copy of a Mojang constant, and it is the
+durable risk in this release: if a future Minecraft changes the curve before it gives mobs an accessor,
+his levels drift from a player's, and nobody would notice until an enchant cost the wrong amount.
+
+It lives in exactly one function (`CobbieEntity.xpNeededFor`) with a comment naming the accessor it
+mirrors, so a reader has a chance of finding it. When that accessor becomes reachable, the function
+should go and the call should replace it.
+
 ## Verification
 
 **Unit (`./gradlew cleanTest test`):** 178 green, 6 skipped.
@@ -54,6 +65,12 @@ new and green.
 to the *owner* — after a spawn he stands right next to Cobbie, and a player absorbs orbs faster than a
 companion can. The test now moves the owner twelve blocks away before awarding orbs, which is also the
 realistic case.
+
+**A note on the version itself:** it is set in `gradle.properties`, and the way to trust it is to read
+it out of the built jar (`build/libs/cobbie-<version>.jar`) rather than out of the edit. A blind replace
+in this release silently did nothing because the branch was based on an older version line, and the
+first sign was the artefact's filename — which is the sort of mistake that names a release after the
+previous one.
 
 **Not verified:** orbs from real mining and combat — the test awards them directly — and anything that
 spends a level, since nothing spends one yet.
