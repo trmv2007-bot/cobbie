@@ -1726,6 +1726,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			CraftRecipes.Match match = job.matches.get(step.recipeId());
 			if (match == null) return abortWork("craft", "I lost the recipe for " + step.result());
 			if (step.needsFurnace()) return furnaceStepTick(job, step);
+			if (step.needsStonecutter() && !hasStationNearby(job, true)) {
+				return abortWork("craft", "I need a stonecutter for " + step.result()
+						+ " and there is none near me");
+			}
 
 			for (String ingredient : step.consumes()) {
 				if (!consumeItem(ingredient, 1)) {
@@ -1853,6 +1857,28 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			return one;
 		}
 		return ItemStack.EMPTY;
+	}
+
+	/**
+	 * Is there a station of the kind the step needs within reach? The stonecutter is remembered on the
+	 * job so it is not searched for again on every step, the same way the furnace is.
+	 */
+	private boolean hasStationNearby(Work job, boolean stonecutter) {
+		if (job.station != null) return true;
+		job.station = findStonecutter();
+		return job.station != null;
+	}
+
+	private BlockPos findStonecutter() {
+		BlockPos base = this.blockPosition();
+		for (BlockPos probe : BlockPos.betweenClosed(
+				base.offset(-FURNACE_SEARCH, -6, -FURNACE_SEARCH),
+				base.offset(FURNACE_SEARCH, 6, FURNACE_SEARCH))) {
+			if (level().getBlockState(probe).getBlock() instanceof net.minecraft.world.level.block.StonecutterBlock) {
+				return probe.immutable();
+			}
+		}
+		return null;
 	}
 
 	private BlockPos findFurnace() {

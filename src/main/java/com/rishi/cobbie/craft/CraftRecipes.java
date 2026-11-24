@@ -106,7 +106,8 @@ public final class CraftRecipes {
 		List<Match> matches = new ArrayList<>();
 		for (RecipeHolder<?> holder : manager.getRecipes()) {
 			if (!(holder.value() instanceof SingleItemRecipe recipe)) continue;
-			if (recipe.getType() != RecipeType.SMELTING) continue;
+			String station = stationFor(recipe);
+			if (station == null) continue;
 			ItemStack output;
 			try {
 				output = recipe.assemble(new SingleRecipeInput(ItemStack.EMPTY));
@@ -119,10 +120,19 @@ public final class CraftRecipes {
 			List<String> ids = itemIds(recipe.input());
 			if (ids.isEmpty()) continue;
 			CraftChain.Recipe shape = new CraftChain.Recipe(holder.id().identifier().toString(), produced,
-					output.getCount(), List.of(ids), CraftChain.FURNACE);
+					output.getCount(), List.of(ids), station);
 			matches.add(new Match(shape, output.copy()));
 		}
 		return matches;
+	}
+
+	/** Which station a single-ingredient recipe needs, or null for the ones that are not his to use. */
+	private static String stationFor(SingleItemRecipe recipe) {
+		if (recipe.getType() == RecipeType.SMELTING) return CraftChain.FURNACE;
+		// A stonecutter makes stairs, slabs and walls out of one block, instantly, and is how a builder
+		// actually asks for them: one stone is one stair, where the table wants six.
+		if (recipe.getType() == RecipeType.STONECUTTING) return CraftChain.STONECUTTER;
+		return null;
 	}
 
 	/**
