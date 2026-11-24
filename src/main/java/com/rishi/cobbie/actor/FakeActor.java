@@ -191,17 +191,20 @@ public final class FakeActor {
 			var menu = new net.minecraft.world.inventory.AnvilMenu(0, actor.getInventory(), access);
 			menu.getSlot(0).set(item.copyWithCount(1));
 			menu.getSlot(1).set(book.copyWithCount(1));
-			menu.createResult();
-
-			ItemStack offered = menu.getSlot(2).getItem().copy();
-			if (offered.isEmpty()) {
-				return new AnvilOutcome(false, "the anvil will not put that book on that", item, xpLevel,
-						progress, 0);
-			}
+			// His level has to be in place *before* the result is worked out: the anvil decides what to
+			// offer against the player's own level, so an actor at zero makes it offer nothing.
 			boolean wasInstabuild = actor.getAbilities().instabuild;
 			actor.getAbilities().instabuild = false;
 			actor.experienceLevel = xpLevel;
 			actor.experienceProgress = progress;
+			menu.createResult();
+
+			ItemStack offered = menu.getSlot(2).getItem().copy();
+			if (offered.isEmpty()) {
+				actor.getAbilities().instabuild = wasInstabuild;
+				return new AnvilOutcome(false, "the anvil will not put that book on that", item, xpLevel,
+						progress, 0);
+			}
 			menu.clicked(2, 0, net.minecraft.world.inventory.ContainerInput.PICKUP, actor);
 			ItemStack taken = menu.getCarried().copy();
 			int after = actor.experienceLevel;
