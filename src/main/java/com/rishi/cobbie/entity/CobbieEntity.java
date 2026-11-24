@@ -126,6 +126,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	/** Blocks of progress inside that window that count as "he is coming". */
 	private static final double RECALL_PROGRESS_BLOCKS = 4.0;
 
+	// ---- climbing ----
+	/** Upward push on a ladder or vine: a player's climb is about this much per tick. */
+	private static final double CLIMB_UP = 0.16;
+	private static final double CLIMB_DOWN = -0.14;
+
 	// ---- swimming ----
 	private static final double SWIM_PUSH = 0.055;         // per-tick horizontal thrust in water
 	private static final double SWIM_MAX_HORIZONTAL = 0.30; // never faster than a sprinting player
@@ -570,6 +575,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		updateNameplate();
 		followOwnerTick();
 		swimTick();
+		climbTick();
 
 		ActionOutcome settled = driveActiveStep();
 		if (settled != null) pendingOutcome = settled;
@@ -1076,6 +1082,49 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return null;
 	}
 
+	/**
+	 * Ladders and vines.
+	 *
+	 * <p>The pathfinder has no "climb" node, so it will not plan up a ladder, and a mob that simply
+	 * walks into one stands at its foot forever. A player climbs by holding forward against it; this
+	 * does the same — an upward push while he is on a climbable and his goal is above him, and a
+	 * downward one when it is below.
+	 */
+	private void climbTick() {
+		if (!this.onClimbable()) return;
+		BlockPos goal = climbGoal();
+		if (goal == null) return;
+		double up = goal.getY() - this.getY();
+		Vec3 motion = this.getDeltaMovement();
+		double sideways = 0.4; // hold him to the ladder rather than letting him drift off it
+		if (up > 0.6) {
+			this.setDeltaMovement(motion.x * sideways, CLIMB_UP, motion.z * sideways);
+		} else if (up < -0.6) {
+			this.setDeltaMovement(motion.x * sideways, CLIMB_DOWN, motion.z * sideways);
+		} else {
+			this.setDeltaMovement(motion.x * sideways, Math.max(0.0, motion.y * 0.5), motion.z * sideways);
+		}
+	}
+
+	/** Where a climb should aim: the walk in flight, the navigator's target, or you. */
+	private BlockPos climbGoal() {
+		if (navigatingForAction && activeTarget != null) return activeTarget;
+		BlockPos nav = getNavigation().isDone() ? null : getNavigation().getTargetPos();
+		if (nav != null) return nav;
+		ServerPlayer owner = owner();
+		return following && owner != null ? owner.blockPosition() : null;
+	}
+
+	/** The climbable block he is in or pressed against, or null. */
+	private BlockPos climbableNextTo() {
+		BlockPos feet = this.blockPosition();
+		for (BlockPos probe : new BlockPos[]{feet, feet.north(), feet.south(), feet.east(), feet.west()}) {
+			if (!level().isLoaded(probe)) continue;
+			if (level().getBlockState(probe).is(net.minecraft.tags.BlockTags.CLIMBABLE)) return probe.immutable();
+		}
+		return null;
+	}
+
 	/** Where the swimming should head: the navigator's target, the walk in flight, or you. */
 	private BlockPos swimGoal() {
 		if (!getNavigation().isDone()) {
@@ -1221,6 +1270,14 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 					walkRepaths++;
 					walkStartTick = this.tickCount;
 					getNavigation().moveTo(activeTarget.getX(), activeTarget.getY(), activeTarget.getZ(), 0.9);
+					return null;
+				}
+				// A target above a ladder is not unreachable — the pathfinder simply cannot plan the
+				// climb. If he is beside a climbable and the goal is above him, let the climb assist
+				// work and try the path again once he is higher.
+				if (climbableNextTo() != null && activeTarget.getY() > this.blockPosition().getY() + 0.9) {
+					walkStartTick = this.tickCount;
+					walkRepaths = 0;
 					return null;
 				}
 				interrupt();
