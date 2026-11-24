@@ -64,6 +64,16 @@ turn, and the precondition checked before scoring:
 Six of six across brew, anvil, grind, shear, weave and map. A station is not a capability until he
 picks it from a plain ask, and both of these now do.
 
+## One test predicate fixed on the way
+
+`CobbieChatTest` went red on the full suite and reproduced alone: it counted non-blank assistant
+messages, took that as `before`, and waited for the count to grow. With persisted memory already
+holding this same question from an earlier run, the new reply evicted an old one and the count never
+moved — the test reported *"No reply reached memory within 90s"* while printing a history that
+contained the reply. It waits for the **last reply to differ** now, which is invariant under memory
+pruning and under anything else writing to the same memory. The file is untouched by the stations
+themselves; it is here because a suite that is red for a test bug is not a green suite.
+
 ## Verification
 
 **Unit (`./gradlew cleanTest test`):** 178 green, 6 skipped. Jar builds as `cobbie-0.37.0.jar`.
