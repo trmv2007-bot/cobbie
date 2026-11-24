@@ -1290,6 +1290,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			case ActionVocabulary.ANVIL -> anvilFromBag(intent);
 			case ActionVocabulary.BREW -> startBrew(intent);
 			case ActionVocabulary.SMITH -> smithFromBag(intent);
+			case ActionVocabulary.GRIND -> grindFromBag(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
@@ -2821,6 +2822,69 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			if (registryId.equals(itemId(inventory.getItem(i)))) return true;
 		}
 		return false;
+	}
+
+	/**
+	 * Take the enchantments off something at a real grindstone.
+	 *
+	 * <p>The grindstone's menu holds no XP in 26.3 — its {@code removed} only clears the input slots —
+	 * so there is no cost to price and nothing to invent: the item goes into a real
+	 * {@code GrindstoneMenu}, {@code computeResult} decides whether it is something that can be
+	 * stripped, and the take is a real click on the result slot. What comes back is verified to have
+	 * no enchantments on it, because "the menu offered something" and "the enchantments are gone" are
+	 * not the same claim.
+	 */
+	private ActionOutcome grindFromBag(ActionIntent intent) {
+		if (!CobbieConfig.isCraftingAllowed()) {
+			return ActionOutcome.fail("grind", "making things is switched off — /cobbie permit crafting on");
+		}
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("grind", "no server world");
+		BlockPos stone = findGrindstone();
+		if (stone == null) return ActionOutcome.fail("grind", "I need a grindstone and there is none near me");
+
+		String wanted = intent.target() == null || intent.target().isBlank() ? null : resolveItemId(intent.target());
+		int slot = -1;
+		for (int i = 0; i < inventory.getContainerSize() && slot < 0; i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty() || !net.minecraft.world.item.enchantment.EnchantmentHelper.hasAnyEnchantments(stack)) {
+				continue;
+			}
+			if (wanted == null || wanted.equals(itemId(stack))) slot = i;
+		}
+		if (slot < 0) {
+			return ActionOutcome.fail("grind", wanted == null
+					? "I have nothing with an enchantment on it to take off"
+					: "I have no enchanted " + wanted);
+		}
+
+		ItemStack item = inventory.getItem(slot);
+		com.rishi.cobbie.actor.FakeActor.Outcome used = com.rishi.cobbie.actor.FakeActor.grind(this, serverLevel,
+				stone, item.copy());
+		if (used == null || !used.result().consumesAction() || used.remaining().isEmpty()) {
+			return ActionOutcome.fail("grind", "the grindstone will not take the enchantments off " + itemId(item));
+		}
+		if (net.minecraft.world.item.enchantment.EnchantmentHelper.hasAnyEnchantments(used.remaining())) {
+			return ActionOutcome.fail("grind", "that came back still enchanted, so I left it alone");
+		}
+
+		shrinkSlot(slot, 1);
+		ItemStack leftover = used.remaining().copy();
+		if (!add(leftover, inventory)) {
+			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
+			pile.setDefaultPickUpDelay();
+			level().addFreshEntity(pile);
+		}
+		return ActionOutcome.ok("grind", "took the enchantments off " + itemId(item));
+	}
+
+	private BlockPos findGrindstone() {
+		BlockPos base = this.blockPosition();
+		for (BlockPos probe : BlockPos.betweenClosed(
+				base.offset(-FURNACE_SEARCH, -6, -FURNACE_SEARCH),
+				base.offset(FURNACE_SEARCH, 6, FURNACE_SEARCH))) {
+			if (level().getBlockState(probe).is(Blocks.GRINDSTONE)) return probe.immutable();
+		}
+		return null;
 	}
 
 	/**
