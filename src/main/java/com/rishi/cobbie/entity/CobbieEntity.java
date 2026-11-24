@@ -620,10 +620,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		spillOverflow();
 		absorbExperience();
-		if (this.tickCount % 40 == 0) {
-			System.out.println("[probe] tick=" + this.tickCount + " at=" + this.blockPosition()
-					+ " dim=" + level().dimension().location().getPath());
-		}
+		// Keeps him findable by the server tick if his chunk ever stops ticking.
+		CrossDimensionFollow.remember(this);
 		updateNameplate();
 		followOwnerTick();
 		swimTick();

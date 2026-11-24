@@ -40,6 +40,9 @@ public class Cobbie implements ModInitializer {
 					(message, sender, params) -> CobbieBrain.handleChat(message, sender));
 			ServerTickEvents.END_SERVER_TICK.register(server -> {
 				CobbieBrain.onServerTick(server);
+				// A companion whose chunk is unloaded does not tick, so a pending portal crossing has to
+				// be driven from here rather than from his own tick.
+				com.rishi.cobbie.entity.CrossDimensionFollow.tick(server);
 				// Memory writes are batched, not per-message: 30s is invisible to the player and
 				// keeps a chatty session from rewriting the file on every turn.
 				if (++ticksSinceMemorySave >= 600) {
@@ -47,6 +50,7 @@ public class Cobbie implements ModInitializer {
 					CobbieMemory.save();
 				}
 			});
+			ServerTickEvents.END_SERVER_TICK.register(server -> { });
 			LOGGER.info("Cobbie {} ready - say his name (◕‿◕)", version());
 		} catch (Throwable t) {
 			LOGGER.warn("Cobbie tick wiring unavailable on this side: {}", t.toString());
