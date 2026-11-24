@@ -867,6 +867,18 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		followRepathTick = this.tickCount;
 		if (!level().isLoaded(owner.blockPosition())) return;
 
+		// You are above him: the pathfinder cannot plan up a ladder, so aim at the ladder itself and let
+		// the climb assist do the rest. Without this the follow loop keeps asking for the top of a wall
+		// and gets nothing, which is exactly "he stands at the bottom while you are up there".
+		if (owner.getY() > this.getY() + 1.0) {
+			BlockPos climb = climbableNextTo();
+			if (climb == null) climb = climbableToward(owner.blockPosition());
+			if (climb != null) {
+				followMisses = getNavigation().moveTo(climb.getX() + 0.5, climb.getY(), climb.getZ() + 0.5, 1.0)
+						? 0 : 1;
+				return;
+			}
+		}
 		if (distSq <= FOLLOW_DIRECT_RANGE * FOLLOW_DIRECT_RANGE) {
 			followMisses = getNavigation().moveTo(owner.getX(), owner.getY(), owner.getZ(), 0.9) ? 0 : 1;
 			return;
@@ -1091,9 +1103,18 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 * downward one when it is below.
 	 */
 	private void climbTick() {
-		if (!this.onClimbable()) return;
 		BlockPos goal = climbGoal();
 		if (goal == null) return;
+		if (!this.onClimbable()) {
+			// Standing beside a ladder with the goal above him is not "not climbing yet" — it is the
+			// state he would sit in forever. Step into the rungs and let the assist take over.
+			BlockPos beside = climbableNextTo();
+			if (beside == null || goal.getY() <= this.getY() + 0.9) return;
+			double dx = beside.getX() + 0.5 - this.getX();
+			double dz = beside.getZ() + 0.5 - this.getZ();
+			this.setDeltaMovement(dx * 0.2, 0.12, dz * 0.2);
+			return;
+		}
 		double up = goal.getY() - this.getY();
 		Vec3 motion = this.getDeltaMovement();
 		double sideways = 0.4; // hold him to the ladder rather than letting him drift off it
@@ -1123,6 +1144,28 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			if (level().getBlockState(probe).is(net.minecraft.tags.BlockTags.CLIMBABLE)) return probe.immutable();
 		}
 		return null;
+	}
+
+	/**
+	 * The nearest ladder or vine that goes up toward {@code target}: the foot of it, so the navigator has
+	 * something walkable to aim at before the climb assist takes over.
+	 */
+	private BlockPos climbableToward(BlockPos target) {
+		BlockPos base = this.blockPosition();
+		BlockPos best = null;
+		double bestDist = Double.MAX_VALUE;
+		for (BlockPos probe : BlockPos.betweenClosed(base.offset(-4, -1, -4), base.offset(4, 5, 4))) {
+			if (!level().isLoaded(probe)) continue;
+			if (!level().getBlockState(probe).is(net.minecraft.tags.BlockTags.CLIMBABLE)) continue;
+			// Only a ladder that actually leads toward where you are.
+			if (probe.getY() > target.getY() + 1) continue;
+			double d = this.distanceToSqr(probe.getX() + 0.5, this.getY(), probe.getZ() + 0.5);
+			if (d < bestDist) {
+				bestDist = d;
+				best = probe.immutable();
+			}
+		}
+		return best;
 	}
 
 	/** Where the swimming should head: the navigator's target, the walk in flight, or you. */

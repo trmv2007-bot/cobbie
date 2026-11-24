@@ -7,7 +7,7 @@ The first slice of travel, and the same complaint as the water one, one dimensio
 does not follow.
 
 ```
-[gametest] climb ok: went from y=-60 to -56.5 up a ladder
+[gametest] climb ok: went from y=-60 to -56.4, then followed you up it
 ```
 
 ## Why he could not climb
@@ -27,21 +27,24 @@ Two reasons, and both had to go:
 - **A walk-to no longer abandons a target above a ladder.** When the navigator gives up but he is beside
   a climbable and the goal is above him, the step stays alive and the climb assist does the work; the
   path is re-tried once he is higher. The step deadline still bounds it, so this cannot hang.
+- **Following needed its own fix, and that is the finding worth keeping.** "The same assist serves both"
+  was wrong, as it has been every time this week. The follow loop kept asking for the top of a wall,
+  which no path exists for, so it stood at the bottom — exactly the complaint. Following now aims at
+  the *ladder* when you are above it, and the assist steps him into the rungs when he is beside one
+  rather than waiting to be on it.
 
 ## Verification
 
 **Unit (`./gradlew cleanTest test`):** 178 green, 6 skipped. Jar builds as `cobbie-0.27.0.jar`.
 
-**In game:** `CobbieClimbTest` is new and green. A three-wide, five-tall wall with a ladder on its face
-and a walk to the top of it: he goes from y=-60 to -56.5 and stands on the wall.
+**In game:** `CobbieClimbTest` is new and green, and it asserts two separate things now. A three-wide,
+five-tall wall with a ladder on its face: first a walk-to the top (y=-60 to -56.4), then — the case that
+motivated the work — the owner goes up and Cobbie follows him to the top.
 
 **Not verified, worth saying plainly:**
 
 - **Vines and scaffolding have not been climbed in a run.** They are in the same tag and take the same
   path, but the test builds a ladder.
-- **Climbing while following you** is the case that motivated this and is *not* what the test proves —
-  the test drives a walk-to. Following uses the same assist through the navigation target, but no run
-  has watched him follow an owner up a ladder.
 - **Going down** is one line of the assist and has not been exercised.
 - **Portals are next**, and are the worse version of this failure: today he parks at the frame while you
   are in another dimension.

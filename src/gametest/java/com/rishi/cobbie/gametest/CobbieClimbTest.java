@@ -66,10 +66,34 @@ public final class CobbieClimbTest implements FabricClientGameTest {
                         + " and the top is at " + target.toShortString(), t);
             }
 
+            // The case that actually motivated this: you go up, and he follows. A walk-to is not the
+            // same path — following goes through the navigation target and the follow loop — so it gets
+            // its own stage rather than being assumed.
+            server.computeOnServer(s -> {
+                CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
+                cobbie.teleportTo(s.overworld(), x + 0.5, ground, wallZ - 2.5, java.util.Set.of(),
+                        0.0F, 0.0F, true);
+                cobbie.startFollowing();
+                return null;
+            });
+            server.computeOnServer(s -> {
+                var owner = CobbieTestSupport.owner(s);
+                owner.teleportTo(s.overworld(), x + 0.5, ground + HEIGHT + 1, wallZ + 1.5,
+                        java.util.Set.of(), 0.0F, 0.0F, true);
+                return null;
+            });
+            try {
+                server.waitFor(s -> CobbieTestSupport.cobbie(s)
+                        .map(c -> c.getY() >= ground + HEIGHT - 0.5)
+                        .orElse(false), 900);
+            } catch (Throwable t) {
+                throw new AssertionError("He did not follow you up the ladder; he is at " + where(server), t);
+            }
+
             double top = server.computeOnServer(s -> CobbieTestSupport.cobbie(s)
                     .map(c -> (double) c.getY()).orElse(-1.0));
             System.out.println("[gametest] climb ok: went from y=" + ground + " to "
-                    + String.format("%.1f", top) + " up a ladder");
+                    + String.format("%.1f", top) + ", then followed you up it");
         }
     }
 
