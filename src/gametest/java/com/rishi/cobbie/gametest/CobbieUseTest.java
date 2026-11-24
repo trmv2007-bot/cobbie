@@ -151,7 +151,32 @@ public final class CobbieUseTest implements FabricClientGameTest {
                         + server.computeOnServer(s -> s.overworld().getBlockState(lever).toString()), t);
             }
 
-            // 6. A second bare-handed block: a button. Pressing it is a momentary state, so the test
+            // 6. An item that acts on its own: a bucket. Filling is not a block interaction in this
+            // version - it raycasts from the eye - so the water is placed right beside him and the
+            // plan runs immediately, which is the state the probe showed working.
+            BlockPos water = server.computeOnServer(s ->
+                    CobbieTestSupport.cobbie(s).orElseThrow().blockPosition().offset(2, 0, 0));
+            server.computeOnServer(s -> {
+                CobbieTestSupport.command(s, "fill " + (water.getX() - 1) + " " + water.getY() + " "
+                        + (water.getZ() - 1) + " " + (water.getX() + 1) + " " + water.getY() + " "
+                        + (water.getZ() + 1) + " minecraft:water");
+                CobbieTestSupport.cobbie(s).orElseThrow().addItem(new ItemStack(Items.BUCKET, 1));
+                return null;
+            });
+            String fill = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow().offerPlan(
+                    "fill the bucket",
+                    List.of(new ActionIntent(ActionVocabulary.USE, "bucket", water.getX(), water.getY(),
+                            water.getZ(), ""))));
+            if (fill != null) throw new AssertionError("bucket use refused: " + fill);
+            try {
+                server.waitFor(s -> carried(s, "minecraft:water_bucket") >= 1, 300);
+            } catch (Throwable t) {
+                throw new AssertionError("No water bucket was filled; he carries " + inventory(server)
+                        + " and the water is " + server.computeOnServer(s ->
+                        s.overworld().getBlockState(water).toString()), t);
+            }
+
+            // 7. A second bare-handed block: a button. Pressing it is a momentary state, so the test
             // watches for it during the press rather than after.
             BlockPos button = new BlockPos(start.getX() - 3, start.getY(), start.getZ());
             server.computeOnServer(s -> {
@@ -178,7 +203,8 @@ public final class CobbieUseTest implements FabricClientGameTest {
             }
 
             System.out.println("[gametest] use ok: sowed wheat on farmland, bone meal took age " + ageBefore
-                    + " -> " + ageAfter + "; a bare hand toggled a lever and pressed a button; a throwing"
+                    + " -> " + ageAfter + "; a bare hand toggled a lever and pressed a button; a bucket"
+                    + " came back as a water bucket; a throwing"
                     + " use left his bag and the actor's hand untouched; no phantom player data in the"
                     + " save");
         }
