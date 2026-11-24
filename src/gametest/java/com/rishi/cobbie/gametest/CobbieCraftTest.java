@@ -90,6 +90,10 @@ public final class CobbieCraftTest implements FabricClientGameTest {
                 throw new AssertionError("The pickaxe did not come from his logs: logs " + logsBefore
                         + " -> " + logsAfter);
             }
+            // Each stage starts only once the previous job has settled: queueing behind a retry is the
+            // race that made an earlier test assert against a plan that had not begun.
+            CobbieTestSupport.awaitPlanSettled(server, 300);
+
             // 4. The stonecutter: one stone is one stair, where the crafting table would want six, so a
             // pass here can only come from the stonecutting recipe.
             BlockPos saw = server.computeOnServer(s ->
@@ -108,6 +112,8 @@ public final class CobbieCraftTest implements FabricClientGameTest {
                 throw new AssertionError("No stair was cut from a single stone. He carries "
                         + inventory(server) + "; " + lastReport(server), t);
             }
+
+            CobbieTestSupport.awaitPlanSettled(server, 300);
 
             // 5. The grid-reading specials. Repair: two damaged pickaxes become one, mended.
             server.computeOnServer(s -> {
@@ -129,6 +135,8 @@ public final class CobbieCraftTest implements FabricClientGameTest {
                 throw new AssertionError("The pickaxes were not mended; best damage is "
                         + server.computeOnServer(CobbieCraftTest::bestPickaxeDamage) + ". " + lastReport(server), t);
             }
+
+            CobbieTestSupport.awaitPlanSettled(server, 300);
 
             // 6. Dye: red dye plus leather boots, decided by the game's own DyeRecipe.
             server.computeOnServer(s -> {
