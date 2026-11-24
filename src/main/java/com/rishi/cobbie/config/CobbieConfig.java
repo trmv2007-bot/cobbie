@@ -450,7 +450,7 @@ public final class CobbieConfig {
 			case "collect" -> collectionAllowed;
 			case "craft", "smelt", "take", "put" -> craftingAllowed || containersAllowed;
 			// Mending and dyeing are crafting: they are a grid of his own things, not a station.
-			case "repair", "dye", "enchant" -> craftingAllowed;
+			case "repair", "dye", "enchant", "anvil" -> craftingAllowed;
 			case "follow", "stay", "wave", "chat", "answer", "wait", "walk-to", "give", "drop", "equip", "lookup" -> true;
 			default -> false;
 		};
