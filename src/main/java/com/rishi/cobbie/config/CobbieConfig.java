@@ -451,6 +451,8 @@ public final class CobbieConfig {
 			case "craft", "smelt", "take", "put" -> craftingAllowed || containersAllowed;
 			// Mending and dyeing are crafting: they are a grid of his own things, not a station.
 			case "repair", "dye", "enchant", "anvil" -> craftingAllowed;
+			// Brewing is a station job like smelting: a stand in the world he puts things into.
+			case "brew" -> containersAllowed;
 			case "follow", "stay", "wave", "chat", "answer", "wait", "walk-to", "give", "drop", "equip", "lookup" -> true;
 			default -> false;
 		};
