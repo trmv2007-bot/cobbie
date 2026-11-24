@@ -45,11 +45,13 @@ public final class ActionVocabulary {
 	public static final String BREW = "brew";
 	public static final String SMITH = "smith";
 	public static final String GRIND = "grind";
+	public static final String WEAVE = "weave";
+	public static final String MAP = "map";
 	public static final String LOOKUP = "lookup";
 	public static final String WAIT = "wait";
 
 	private static final Set<String> ALLOWED = new LinkedHashSet<>(List.of(
-			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE, REPAIR, DYE, ENCHANT, ANVIL, BREW, SMITH, GRIND, LOOKUP, WAIT));
+			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE, REPAIR, DYE, ENCHANT, ANVIL, BREW, SMITH, GRIND, WEAVE, MAP, LOOKUP, WAIT));
 
 	/** Actions that are meaningless without an explicit target position. */
 	private static final Set<String> NEEDS_POSITION = Set.of(WALK_TO, MINE, PLACE, LIGHT, TAKE, PUT, SMELT);
@@ -64,7 +66,7 @@ public final class ActionVocabulary {
 	/** Actions that change the world and therefore need verification afterwards. */
 	private static final Set<String> WORLD_CHANGING =
 			Set.of(MINE, PLACE, ATTACK, COLLECT, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE,
-					REPAIR, DYE, ENCHANT, ANVIL, BREW, SMITH, GRIND);
+					REPAIR, DYE, ENCHANT, ANVIL, BREW, SMITH, GRIND, WEAVE, MAP);
 
 	private ActionVocabulary() {}
 
@@ -110,6 +112,8 @@ public final class ActionVocabulary {
 			case "brew-potion", "alchemy", "make-potion", "make-potions", "potions" -> BREW;
 			case "smithing", "upgrade", "netherite", "apply-template", "trim", "smithing-table" -> SMITH;
 			case "grindstone", "disenchant", "unenchant", "strip", "strip-enchantments" -> GRIND;
+			case "loom", "banner", "banner-pattern", "pattern-on", "weave-banner" -> WEAVE;
+			case "cartography", "cartography-table", "map-making", "zoom-map", "make-map" -> MAP;
 			case "colour", "color", "dye-item", "paint" -> DYE;
 			case "look-up", "search", "wiki", "google" -> LOOKUP;
 			case "say", "speak", "tell" -> CHAT;
@@ -143,6 +147,8 @@ public final class ActionVocabulary {
 			else if (BREW.equals(verb)) sb.append(" (target = the ingredient to brew in, e.g. nether_wart)");
 			else if (SMITH.equals(verb)) sb.append(" (target = the item to upgrade, e.g. diamond_pickaxe)");
 			else if (GRIND.equals(verb)) sb.append(" (target = the enchanted thing to take the enchantments off)");
+			else if (WEAVE.equals(verb)) sb.append(" (target = the banner pattern item, e.g. creeper_banner_pattern; data = the colour)");
+			else if (MAP.equals(verb)) sb.append(" (target = the map; data = paper to zoom, empty_map to copy, glass_pane to lock)");
 		}
 		return sb.toString();
 	}

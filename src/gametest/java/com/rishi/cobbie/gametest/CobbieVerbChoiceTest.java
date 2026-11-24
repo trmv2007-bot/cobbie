@@ -58,7 +58,9 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
             new Ask("cobbie brew me a potion of healing", "brew", null),
             new Ask("cobbie put this enchanted book on my sword", "anvil", null),
             new Ask("cobbie take the sharpness off this axe", "grind", null),
-            new Ask("cobbie shear that sheep", "use", "minecraft:sheep"));
+            new Ask("cobbie shear that sheep", "use", "minecraft:sheep"),
+            new Ask("cobbie put a creeper pattern on my banner", "weave", null),
+            new Ask("cobbie zoom my map out with paper", "map", null));
 
     @Override
     public void runTest(ClientGameTestContext context) {
@@ -80,7 +82,8 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
             server.computeOnServer(s -> {
                 CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
                 int offset = 0;
-                for (String block : List.of("brewing_stand", "anvil", "grindstone")) {
+                for (String block : List.of("brewing_stand", "anvil", "grindstone", "loom",
+                        "cartography_table")) {
                     CobbieTestSupport.command(s, "setblock " + (at.getX() + offset) + " " + (at.getY() - 1) + " "
                             + (at.getZ() + 2) + " minecraft:" + block);
                     offset++;
@@ -96,6 +99,12 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                 cobbie.addItem(book(s));
                 cobbie.addItem(enchantedAxe(s));
                 cobbie.addItem(new ItemStack(Items.SHEARS, 1));
+                cobbie.addItem(new ItemStack(Items.BANNER.white(), 1));
+                cobbie.addItem(new ItemStack(Items.DYE.red(), 2));
+                cobbie.addItem(new ItemStack(Items.CREEPER_BANNER_PATTERN, 1));
+                cobbie.addItem(net.minecraft.world.item.MapItem.create(s.overworld(), at.getX(), at.getZ(),
+                        (byte) 0, true, false));
+                cobbie.addItem(new ItemStack(Items.PAPER, 4));
                 Sheep sheep = new Sheep(EntityTypes.SHEEP, s.overworld());
                 sheep.setPos(at.getX() + 2.5, at.getY() + 0.1, at.getZ());
                 // No AI: a wandering sheep leaves the 12-block perception range mid-run and the ask
