@@ -117,14 +117,17 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
 
             List<String> right = new ArrayList<>();
             List<String> wrong = new ArrayList<>();
+            int retries = 0;
             for (Ask ask : ASKS) {
                 long before = server.computeOnServer(s -> planId(s));
-                context.runOnClient(mc -> mc.getConnection().sendChat(ask.words()));
-                boolean planned = true;
-                try {
-                    server.waitFor(s -> planId(s) != before, 800);
-                } catch (Throwable t) {
-                    planned = false;
+                // A cold call to a hosted gateway occasionally lands on the 30-second read timeout.
+                // One retry keeps a slow reply from being recorded as the model choosing nothing —
+                // and the retry is counted, so a run that needed it says so.
+                boolean planned = sendAndWait(context, server, ask, before);
+                if (!planned && answeredTooSlowly(server, ownerId)) {
+                    retries++;
+                    before = server.computeOnServer(s -> planId(s));
+                    planned = sendAndWait(context, server, ask, before);
                 }
                 server.waitFor(s -> s.getTickCount() % 10 == 0, 40);
                 String transcript = server.computeOnServer(s -> {
@@ -150,7 +153,8 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
             }
 
             System.out.println("[gametest] VerbChoice summary: " + right.size() + " right, "
-                    + wrong.size() + " wrong of " + ASKS.size());
+                    + wrong.size() + " wrong of " + ASKS.size()
+                    + (retries == 0 ? "" : " (" + retries + " ask(s) retried after a gateway timeout)"));
             if (wrong.isEmpty()) return;
 
             // Reports rather than reddens by default, and that is deliberate. A class that is red
@@ -167,6 +171,26 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                     + " plain request(s) got no step planned. A prompt or vocabulary finding, not a"
                     + " flake — the verbs themselves are proved by their own tests.");
         }
+    }
+
+    private static boolean sendAndWait(ClientGameTestContext context, TestServerContext server, Ask ask,
+            long before) {
+        context.runOnClient(mc -> mc.getConnection().sendChat(ask.words()));
+        try {
+            server.waitFor(s -> planId(s) != before, 800);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** The read-timeout reply, which means "no answer", not "no thanks". */
+    private static boolean answeredTooSlowly(TestServerContext server, UUID ownerId) {
+        return server.computeOnServer(s -> CobbieMemory.history(ownerId, 6).stream()
+                .filter(m -> "assistant".equals(m.role()))
+                .reduce((a, b) -> b).map(CobbieMemory.Message::content)
+                .map(c -> c.toLowerCase(java.util.Locale.ROOT).contains("took too long"))
+                .orElse(false));
     }
 
     /** A brought-up brain, or false with whatever the connection state says. */
