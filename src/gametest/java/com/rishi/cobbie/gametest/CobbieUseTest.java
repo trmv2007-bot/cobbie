@@ -125,9 +125,62 @@ public final class CobbieUseTest implements FabricClientGameTest {
                 throw new AssertionError("The player list has " + players + " entries, expected 1");
             }
 
+            // 5. Bare-handed block use: a lever has to toggle. This is the branch with no item at all.
+            BlockPos lever = new BlockPos(start.getX() - 2, start.getY(), start.getZ());
+            server.computeOnServer(s -> {
+                CobbieTestSupport.command(s, "setblock " + lever.getX() + " " + (lever.getY() - 1) + " "
+                        + lever.getZ() + " minecraft:stone");
+                CobbieTestSupport.command(s, "setblock " + lever.getX() + " " + lever.getY() + " "
+                        + lever.getZ() + " minecraft:lever[face=floor,facing=north,powered=false]");
+                return null;
+            });
+            if (server.computeOnServer(s -> !s.overworld().getBlockState(lever)
+                    .is(net.minecraft.world.level.block.Blocks.LEVER))) {
+                throw new AssertionError("Setup failed: no lever at " + lever.toShortString());
+            }
+            String pull = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow().offerPlan(
+                    "pull the lever",
+                    List.of(new ActionIntent(ActionVocabulary.USE, "", lever.getX(), lever.getY(),
+                            lever.getZ(), ""))));
+            if (pull != null) throw new AssertionError("bare-hand use refused: " + pull);
+            try {
+                server.waitFor(s -> s.overworld().getBlockState(lever)
+                        .getValue(net.minecraft.world.level.block.LeverBlock.POWERED), 300);
+            } catch (Throwable t) {
+                throw new AssertionError("The lever never moved; it reads "
+                        + server.computeOnServer(s -> s.overworld().getBlockState(lever).toString()), t);
+            }
+
+            // 6. A second bare-handed block: a button. Pressing it is a momentary state, so the test
+            // watches for it during the press rather than after.
+            BlockPos button = new BlockPos(start.getX() - 3, start.getY(), start.getZ());
+            server.computeOnServer(s -> {
+                CobbieTestSupport.command(s, "setblock " + button.getX() + " " + (button.getY() - 1) + " "
+                        + button.getZ() + " minecraft:stone");
+                CobbieTestSupport.command(s, "setblock " + button.getX() + " " + button.getY() + " "
+                        + button.getZ() + " minecraft:stone_button[face=floor,facing=north,powered=false]");
+                return null;
+            });
+            String press = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow().offerPlan(
+                    "press the button",
+                    List.of(new ActionIntent(ActionVocabulary.USE, "", button.getX(), button.getY(),
+                            button.getZ(), ""))));
+            if (press != null) throw new AssertionError("button use refused: " + press);
+            boolean pressed = false;
+            for (int i = 0; i < 60 && !pressed; i++) {
+                context.waitTicks(1);
+                pressed = server.computeOnServer(s -> s.overworld().getBlockState(button)
+                        .getValue(net.minecraft.world.level.block.ButtonBlock.POWERED));
+            }
+            if (!pressed) {
+                throw new AssertionError("The button was never pressed; it reads "
+                        + server.computeOnServer(s -> s.overworld().getBlockState(button).toString()));
+            }
+
             System.out.println("[gametest] use ok: sowed wheat on farmland, bone meal took age " + ageBefore
-                    + " -> " + ageAfter + "; a throwing use left his bag and the actor's hand untouched;"
-                    + " no phantom player data in the save");
+                    + " -> " + ageAfter + "; a bare hand toggled a lever and pressed a button; a throwing"
+                    + " use left his bag and the actor's hand untouched; no phantom player data in the"
+                    + " save");
         }
     }
 
@@ -140,6 +193,14 @@ public final class CobbieUseTest implements FabricClientGameTest {
     private static int cropAge(MinecraftServer server, BlockPos soil) {
         var state = server.overworld().getBlockState(soil.above());
         return state.getBlock() instanceof CropBlock ? state.getValue(CropBlock.AGE) : -1;
+    }
+
+    private static int carried(TestServerContext server, String id) {
+        return server.computeOnServer(s -> carried(s, id));
+    }
+
+    private static int carried(MinecraftServer server, String id) {
+        return CobbieTestSupport.cobbie(server).map(c -> c.countItem(id)).orElse(-1);
     }
 
     private static String inventory(TestServerContext server) {
