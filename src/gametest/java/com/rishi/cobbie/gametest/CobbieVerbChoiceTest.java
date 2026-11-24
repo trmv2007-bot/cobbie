@@ -51,13 +51,14 @@ import java.util.UUID;
 public final class CobbieVerbChoiceTest implements FabricClientGameTest {
 
     /** Each request in plain player words, and the verb that has to appear in what he plans. */
-    private record Ask(String words, String verb) {}
+    /** @param needsInSight a mob id the ask is about, or null when it needs nothing in particular */
+    private record Ask(String words, String verb, String needsInSight) {}
 
     private static final List<Ask> ASKS = List.of(
-            new Ask("cobbie brew me a potion of healing", "brew"),
-            new Ask("cobbie put this enchanted book on my sword", "anvil"),
-            new Ask("cobbie take the sharpness off this axe", "grind"),
-            new Ask("cobbie shear that sheep", "use"));
+            new Ask("cobbie brew me a potion of healing", "brew", null),
+            new Ask("cobbie put this enchanted book on my sword", "anvil", null),
+            new Ask("cobbie take the sharpness off this axe", "grind", null),
+            new Ask("cobbie shear that sheep", "use", "minecraft:sheep"));
 
     @Override
     public void runTest(ClientGameTestContext context) {
@@ -97,6 +98,12 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                 cobbie.addItem(new ItemStack(Items.SHEARS, 1));
                 Sheep sheep = new Sheep(EntityTypes.SHEEP, s.overworld());
                 sheep.setPos(at.getX() + 2.5, at.getY() + 0.1, at.getZ());
+                // No AI: a wandering sheep leaves the 12-block perception range mid-run and the ask
+                // stops being measurable. Two runs scored the sheep ask as a miss while the model's
+                // answer — "I don't see any sheep around me right now" — was exactly right, because
+                // the snapshot said entities=[].
+                sheep.setNoAi(true);
+                sheep.setPersistenceRequired();
                 s.overworld().addFreshEntity(sheep);
                 return null;
             });
@@ -110,6 +117,7 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
             List<String> right = new ArrayList<>();
             List<String> wrong = new ArrayList<>();
             int retries = 0;
+            int unmeasurable = 0;
             for (Ask ask : ASKS) {
                 long before = server.computeOnServer(s -> planId(s));
                 // A cold call to a hosted gateway occasionally lands on the 30-second read timeout.
@@ -131,7 +139,16 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                 String reply = server.computeOnServer(s -> CobbieMemory.history(ownerId, 40).stream()
                         .filter(m -> "assistant".equals(m.role()) && !m.content().isBlank())
                         .reduce((a, b) -> b).map(CobbieMemory.Message::content).orElse(""));
-                System.out.println("[gametest] VerbChoice world: " + seen(server));
+                String glimpse = seen(server);
+                System.out.println("[gametest] VerbChoice world: " + glimpse);
+                if (ask.needsInSight() != null && !glimpse.contains(ask.needsInSight())) {
+                    System.out.println("[gametest] VerbChoice not-measurable \"" + ask.words()
+                            + "\" — no " + ask.needsInSight() + " in the snapshot this turn, so the world"
+                            + " did not offer the precondition and this is not scored either way");
+                    unmeasurable++;
+                    CobbieTestSupport.awaitPlanSettled(server, 1200);
+                    continue;
+                }
                 boolean chose = transcript.contains(ask.verb());
                 String line = "\"" + ask.words() + "\" wanted " + ask.verb() + " — "
                         + (planned ? transcript : "no action planned") + " | he said: \""
@@ -146,7 +163,8 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
             }
 
             System.out.println("[gametest] VerbChoice summary: " + right.size() + " right, "
-                    + wrong.size() + " wrong of " + ASKS.size()
+                    + wrong.size() + " wrong of " + (ASKS.size() - unmeasurable) + " measurable"
+                    + (unmeasurable == 0 ? "" : " (" + unmeasurable + " not measurable)")
                     + (retries == 0 ? "" : " (" + retries + " ask(s) retried after a gateway timeout)"));
             if (wrong.isEmpty()) return;
 
