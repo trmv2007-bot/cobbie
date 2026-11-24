@@ -40,11 +40,12 @@ public final class ActionVocabulary {
 	public static final String USE = "use";
 	public static final String REPAIR = "repair";
 	public static final String DYE = "dye";
+	public static final String ENCHANT = "enchant";
 	public static final String LOOKUP = "lookup";
 	public static final String WAIT = "wait";
 
 	private static final Set<String> ALLOWED = new LinkedHashSet<>(List.of(
-			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE, REPAIR, DYE, LOOKUP, WAIT));
+			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE, REPAIR, DYE, ENCHANT, LOOKUP, WAIT));
 
 	/** Actions that are meaningless without an explicit target position. */
 	private static final Set<String> NEEDS_POSITION = Set.of(WALK_TO, MINE, PLACE, LIGHT, TAKE, PUT, SMELT);
@@ -59,7 +60,7 @@ public final class ActionVocabulary {
 	/** Actions that change the world and therefore need verification afterwards. */
 	private static final Set<String> WORLD_CHANGING =
 			Set.of(MINE, PLACE, ATTACK, COLLECT, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE,
-					REPAIR, DYE);
+					REPAIR, DYE, ENCHANT);
 
 	private ActionVocabulary() {}
 
@@ -100,6 +101,7 @@ public final class ActionVocabulary {
 			case "right-click", "rightclick", "interact", "use-item", "plant", "sow", "bonemeal", "till",
 					"activate" -> USE;
 			case "mend", "fix", "repair-item" -> REPAIR;
+			case "enchant-item", "enchanting", "imbue" -> ENCHANT;
 			case "colour", "color", "dye-item", "paint" -> DYE;
 			case "look-up", "search", "wiki", "google" -> LOOKUP;
 			case "say", "speak", "tell" -> CHAT;
@@ -125,6 +127,7 @@ public final class ActionVocabulary {
 			else if (USE.equals(verb)) sb.append(" (x,y,z of the block to use, or 0,0,0 to use in the air)");
 			else if (REPAIR.equals(verb)) sb.append(" (target = which of my things to mend)");
 			else if (DYE.equals(verb)) sb.append(" (target = the colour; data = what to dye)");
+			else if (ENCHANT.equals(verb)) sb.append(" (target = what to enchant; data = low|mid|high)");
 		}
 		return sb.toString();
 	}

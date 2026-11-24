@@ -70,7 +70,71 @@ public final class FakeActor {
 	public static final String PROFILE_NAME = "[Cobbie]";
 	private static final GameProfile PROFILE = new GameProfile(PROFILE_ID, PROFILE_NAME);
 
+	/**
+	 * What came of driving the enchanting table: the enchanted item, and where his level ended up.
+	 *
+	 * @param reason why it failed, or null
+	 */
+	public record EnchantOutcome(boolean success, String reason, ItemStack remaining, int levelAfter,
+			float progressAfter, int levelsSpent) {}
+
 	private FakeActor() {}
+
+	/**
+	 * Enchant an item at a real table, through the real menu.
+	 *
+	 * <p>{@code EnchantmentMenu} wants a {@code Player.Inventory}, which is the one thing the actor has
+	 * that a mob does not. His item goes in slot 0, his lapis in slot 1, his level into the actor before
+	 * {@code clickMenuButton} and back out afterwards — and the price is read from the menu's own
+	 * {@code costs[]} first, so a refusal quotes the table rather than a constant of mine.
+	 */
+	public static EnchantOutcome enchant(CobbieEntity body, ServerLevel level, BlockPos table, ItemStack item,
+			int lapis, int xpLevel, float progress, int tier) {
+		FakePlayer actor = place(body, level, ItemStack.EMPTY, null);
+		try {
+			var access = net.minecraft.world.inventory.ContainerLevelAccess.create(level, table);
+			var menu = new net.minecraft.world.inventory.EnchantmentMenu(0, actor.getInventory(), access);
+			menu.getSlot(0).set(item.copyWithCount(1));
+			menu.getSlot(1).set(new ItemStack(net.minecraft.world.item.Items.LAPIS_LAZULI, Math.max(1, lapis)));
+			// What vanilla actually charges: the button's own index + 1, which is also the lapis cost.
+			// `costs[]` is the *enchantment power* the option rolls with, not its price — proven by
+			// putting a real player at level 4 in front of the same table, where a cost of 2 charged one
+			// level (4 -> 3), exactly as this path does.
+			int slot = Math.max(0, Math.min(2, tier));
+			int price = slot + 1;
+			if (menu.costs[slot] <= 0) {
+				return new EnchantOutcome(false, "the table is not offering that", item, xpLevel, progress, 0);
+			}
+			if (xpLevel < price) {
+				return new EnchantOutcome(false, "I need " + price + " levels for that and I have " + xpLevel,
+						item, xpLevel, progress, 0);
+			}
+			// FakePlayer starts with creative-style abilities, and a menu that sees instabuild does not
+			// charge for anything: the first run of this test enchanted a sword for free. He has to be
+			// made to pay like anyone else.
+			boolean wasInstabuild = actor.getAbilities().instabuild;
+			actor.getAbilities().instabuild = false;
+			actor.experienceLevel = xpLevel;
+			actor.experienceProgress = progress;
+			boolean did = menu.clickMenuButton(actor, slot);
+			int after = actor.experienceLevel;
+			float afterProgress = actor.experienceProgress;
+			ItemStack out = menu.getSlot(0).getItem().copy();
+			menu.getSlot(0).set(ItemStack.EMPTY);
+			menu.getSlot(1).set(ItemStack.EMPTY);
+			actor.experienceLevel = 0;
+			actor.experienceProgress = 0.0f;
+			actor.getAbilities().instabuild = wasInstabuild;
+			if (!did) return new EnchantOutcome(false, "the table refused", item, xpLevel, progress, 0);
+			if (out.isEmpty() || out.get(net.minecraft.core.component.DataComponents.ENCHANTMENTS) == null) {
+				return new EnchantOutcome(false, "nothing was enchanted", item, xpLevel, progress, 0);
+			}
+			return new EnchantOutcome(true, null, out, after, afterProgress, xpLevel - after);
+		} catch (RuntimeException e) {
+			return new EnchantOutcome(false, "the table went wrong (" + e.getClass().getSimpleName() + ")",
+					item, xpLevel, progress, 0);
+		}
+	}
 
 	/** Right-click a block: seeds on farmland, bone meal on a crop, a lever, a button. */
 	public static Outcome useOnBlock(CobbieEntity body, BlockPos pos, Direction face, ItemStack held) {

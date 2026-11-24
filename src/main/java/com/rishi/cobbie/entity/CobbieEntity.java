@@ -1153,6 +1153,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			case ActionVocabulary.USE -> startUse(intent);
 			case ActionVocabulary.REPAIR -> repairFromBag(intent);
 			case ActionVocabulary.DYE -> dyeFromBag(intent);
+			case ActionVocabulary.ENCHANT -> enchantFromBag(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
@@ -1874,6 +1875,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (gained > 0) addExperience(gained);
 	}
 
+	/** Put his experience at a given level — for a save that is being restored, or an admin. */
+	public void setExperience(int level, float progress) {
+		this.experienceLevel = Math.max(0, level);
+		this.experienceProgress = Math.max(0.0f, progress);
+	}
+
 	/** Add experience the way a player does: fill the bar, level up, carry the remainder. */
 	public void addExperience(int amount) {
 		if (amount <= 0) return;
@@ -2194,6 +2201,84 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			level().addFreshEntity(pile);
 		}
 		return ActionOutcome.ok("dye", "dyed " + itemId(target) + " with " + dyeId);
+	}
+
+	/**
+	 * Enchant something at a real enchanting table, spending his own levels and lapis.
+	 *
+	 * <p>This is the first thing in the mod that has to drive a *menu*: `EnchantmentMenu` takes a
+	 * {@code Player.Inventory}, so the actor from 0.21.0 holds the item and the lapis, his level goes
+	 * into the actor before {@code clickMenuButton} and comes back out afterwards, and the cost is read
+	 * from the menu's own {@code costs[]} before anything is spent. Nothing here invents a price.
+	 */
+	private ActionOutcome enchantFromBag(ActionIntent intent) {
+		if (!CobbieConfig.isCraftingAllowed()) {
+			return ActionOutcome.fail("enchant", "making things is switched off — /cobbie permit crafting on");
+		}
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("enchant", "no server world");
+
+		BlockPos table = findEnchantingTable();
+		if (table == null) return ActionOutcome.fail("enchant", "I need an enchanting table and there is none near me");
+
+		// Which of his things to enchant.
+		String wanted = intent.target() == null || intent.target().isBlank() ? null : resolveItemId(intent.target());
+		int slot = -1;
+		for (int i = 0; i < inventory.getContainerSize() && slot < 0; i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty()) continue;
+			if (wanted == null ? stack.isEnchantable() : wanted.equals(itemId(stack))) slot = i;
+		}
+		if (slot < 0) {
+			return ActionOutcome.fail("enchant", wanted == null
+					? "I have nothing that can be enchanted"
+					: "I have no " + wanted + " to enchant");
+		}
+
+		int tier = enchantTier(intent.data());
+		int lapisNeeded = tier + 1;
+		if (countItem("minecraft:lapis_lazuli") < lapisNeeded) {
+			return ActionOutcome.fail("enchant", "I need " + lapisNeeded + " lapis for that and I have "
+					+ countItem("minecraft:lapis_lazuli"));
+		}
+
+		com.rishi.cobbie.actor.FakeActor.EnchantOutcome used = com.rishi.cobbie.actor.FakeActor.enchant(this,
+				serverLevel, table, inventory.getItem(slot).copy(), lapisNeeded, experienceLevel,
+				experienceProgress, tier);
+		if (used == null) return ActionOutcome.fail("enchant", "the enchanting table would not take it");
+		if (!used.success()) return ActionOutcome.fail("enchant", used.reason());
+
+		// Spend what the table charged, keep the enchanted item, consume the lapis.
+		this.experienceLevel = used.levelAfter();
+		this.experienceProgress = used.progressAfter();
+		consumeItem("minecraft:lapis_lazuli", lapisNeeded);
+		inventory.setItem(slot, ItemStack.EMPTY);
+		ItemStack leftover = used.remaining();
+		if (!add(leftover, inventory)) {
+			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
+			pile.setDefaultPickUpDelay();
+			level().addFreshEntity(pile);
+		}
+		String name = used.remaining().isEmpty() ? "it" : itemId(used.remaining());
+		return ActionOutcome.ok("enchant", "enchanted " + name + " for " + used.levelsSpent()
+				+ " level(s) and " + lapisNeeded + " lapis");
+	}
+
+	/** "low", "mid", "high" (or blank for the cheapest on offer) to a menu button index. */
+	private static int enchantTier(String data) {
+		String v = data == null ? "" : data.trim().toLowerCase(Locale.ROOT);
+		if (v.contains("high") || v.contains("3") || v.contains("best")) return 2;
+		if (v.contains("mid") || v.contains("2") || v.contains("middle")) return 1;
+		return 0;
+	}
+
+	private BlockPos findEnchantingTable() {
+		BlockPos base = this.blockPosition();
+		for (BlockPos probe : BlockPos.betweenClosed(
+				base.offset(-FURNACE_SEARCH, -6, -FURNACE_SEARCH),
+				base.offset(FURNACE_SEARCH, 6, FURNACE_SEARCH))) {
+			if (level().getBlockState(probe).is(Blocks.ENCHANTING_TABLE)) return probe.immutable();
+		}
+		return null;
 	}
 
 	/**
