@@ -1,6 +1,7 @@
 package com.rishi.cobbie.actor;
 
 import com.rishi.cobbie.entity.CobbieEntity;
+import com.mojang.authlib.GameProfile;
 import net.fabricmc.fabric.api.entity.FakePlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -10,6 +11,9 @@ import net.minecraft.world.InteractionResult;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
+
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 
 /**
  * "Do it the way a player would" — without putting a player in his world.
@@ -57,6 +61,15 @@ public final class FakeActor {
 	 */
 	public record Outcome(InteractionResult result, ItemStack remaining) {}
 
+	/**
+	 * His identity on the event bus: a fixed id so anything that logs or filters him sees the same
+	 * actor every time, and a name that says what he is. The id is derived from a constant string, not
+	 * random, so it is stable across worlds and a test can look for his player data by name.
+	 */
+	public static final UUID PROFILE_ID = UUID.nameUUIDFromBytes("cobbie:actor".getBytes(StandardCharsets.UTF_8));
+	public static final String PROFILE_NAME = "[Cobbie]";
+	private static final GameProfile PROFILE = new GameProfile(PROFILE_ID, PROFILE_NAME);
+
 	private FakeActor() {}
 
 	/** Right-click a block: seeds on farmland, bone meal on a crop, a lever, a button, a bucket. */
@@ -68,10 +81,11 @@ public final class FakeActor {
 			BlockHitResult where = new BlockHitResult(hit, face, pos, false);
 			InteractionResult result = actor.gameMode.useItemOn(actor, level,
 					actor.getItemInHand(InteractionHand.MAIN_HAND), InteractionHand.MAIN_HAND, where);
-			return new Outcome(result, takeBack(actor));
-		} catch (RuntimeException e) {
-			takeBack(actor);
-			throw e;
+			return new Outcome(result, actor.getItemInHand(InteractionHand.MAIN_HAND).copy());
+		} finally {
+			// Nothing may survive the call, including a throwing one: the actor is cached per level and
+			// its hand is shared state.
+			clearHand(actor);
 		}
 	}
 
@@ -82,17 +96,22 @@ public final class FakeActor {
 		try {
 			InteractionResult result = actor.gameMode.useItem(actor, level,
 					actor.getItemInHand(InteractionHand.MAIN_HAND), InteractionHand.MAIN_HAND);
-			return new Outcome(result, takeBack(actor));
-		} catch (RuntimeException e) {
-			takeBack(actor);
-			throw e;
+			return new Outcome(result, actor.getItemInHand(InteractionHand.MAIN_HAND).copy());
+		} finally {
+			clearHand(actor);
 		}
 	}
 
-	/** Stand the actor where the body is and put the stack in his hand. */
+	/**
+	 * Stand the actor where the body is and put the stack in his hand.
+	 *
+	 * <p>Position and rotation are set on <em>every</em> call, because {@link FakePlayer#get} caches
+	 * one actor per level: a stale position would run a block interaction from wherever the previous
+	 * call left him, which reads as Cobbie acting at a distance.
+	 */
 	private static FakePlayer place(CobbieEntity body, ServerLevel level, ItemStack held) {
 		if (level == null) return null;
-		FakePlayer actor = FakePlayer.get(level);
+		FakePlayer actor = FakePlayer.get(level, PROFILE);
 		actor.setPos(body.getX(), body.getY(), body.getZ());
 		actor.setYRot(body.getYRot());
 		actor.setXRot(body.getXRot());
@@ -100,10 +119,7 @@ public final class FakeActor {
 		return actor;
 	}
 
-	/** Clear the fake player's hand and hand back what is in it. */
-	private static ItemStack takeBack(FakePlayer actor) {
-		ItemStack left = actor.getItemInHand(InteractionHand.MAIN_HAND);
+	private static void clearHand(FakePlayer actor) {
 		actor.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
-		return left == null ? ItemStack.EMPTY : left;
 	}
 }

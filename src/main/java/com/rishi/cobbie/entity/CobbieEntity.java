@@ -1144,6 +1144,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			case ActionVocabulary.SMELT -> startSmelt(intent);
 			case ActionVocabulary.TAKE -> startTake(intent);
 			case ActionVocabulary.PUT -> startPut(intent);
+			case ActionVocabulary.USE -> startUse(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
@@ -1256,6 +1257,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			}
 			case ActionVocabulary.PUT -> {
 				ActionOutcome outcome = putInto(work, active);
+				clearActive();
+				yield outcome;
+			}
+			case ActionVocabulary.USE -> {
+				ActionOutcome outcome = useAt(work, true, active);
 				clearActive();
 				yield outcome;
 			}
@@ -1996,6 +2002,83 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		}
 		return ActionOutcome.ok("put", "put " + moved + (what.isBlank() ? " item(s)" : " " + what)
 				+ " in the " + Containers.nameOf(serverLevel, pos));
+	}
+
+	/**
+	 * Use what he is holding the way a player would: seeds into farmland, bone meal on a crop, a lever,
+	 * a button. The block methods that implement all of that take a {@code Player}, so the actor in
+	 * {@link com.rishi.cobbie.actor.FakeActor} stands in for one — see that class for what that costs.
+	 */
+	private ActionOutcome startUse(ActionIntent intent) {
+		if (!CobbieConfig.permits("use")) {
+			return ActionOutcome.fail("use", "my owner has not allowed building — /cobbie permit building on");
+		}
+		if (!(level() instanceof ServerLevel)) return ActionOutcome.fail("use", "no server world");
+		boolean atBlock = intent.x() != 0 || intent.y() != 0 || intent.z() != 0;
+		BlockPos pos = new BlockPos(intent.x(), intent.y(), intent.z());
+
+		if (atBlock && !level().isLoaded(pos)) return ActionOutcome.fail("use", "that area is not loaded");
+		ItemStack held = useItemFor(intent.target());
+		if (held.isEmpty() && !atBlock) {
+			return ActionOutcome.fail("use", intent.target() == null || intent.target().isBlank()
+					? "I am not holding anything to use"
+					: "I have no " + intent.target() + " to use");
+		}
+		if (atBlock && this.blockPosition().distSqr(pos) > reachSquared()) {
+			BlockPos stand = standingSpotNear(pos);
+			if (stand == null) return ActionOutcome.fail("use", "nowhere to stand at " + describe(pos));
+			beginWalking(intent, stand, pos);
+			return null;
+		}
+		return useAt(pos, atBlock, intent);
+	}
+
+	/**
+	 * Raise the item to use: whatever is in his hand if it matches, otherwise the matching stack out of
+	 * the bag. A blank target means "whatever I am holding".
+	 */
+	private ItemStack useItemFor(String target) {
+		ItemStack held = this.getMainHandItem();
+		if (matchesItem(target, held)) return held;
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty() || !matchesItem(target, stack)) continue;
+			if (!held.isEmpty()) add(held.copy(), inventory);
+			inventory.setItem(i, ItemStack.EMPTY);
+			this.setItemInHand(InteractionHand.MAIN_HAND, stack);
+			return stack;
+		}
+		return ItemStack.EMPTY;
+	}
+
+	/** Perform the use, put back what came of it, and verify that something actually happened. */
+	private ActionOutcome useAt(BlockPos pos, boolean atBlock, ActionIntent intent) {
+		ItemStack before = this.getMainHandItem().copy();
+		BlockState stateBefore = atBlock ? level().getBlockState(pos) : null;
+		ItemStack used = before.isEmpty() ? ItemStack.EMPTY : before.copyWithCount(before.getCount());
+		com.rishi.cobbie.actor.FakeActor.Outcome outcome;
+		try {
+			outcome = atBlock
+					? com.rishi.cobbie.actor.FakeActor.useOnBlock(this, pos, facingFrom(pos), used)
+					: com.rishi.cobbie.actor.FakeActor.useInAir(this, used);
+		} catch (RuntimeException e) {
+			return ActionOutcome.fail("use", "using that went wrong (" + e.getClass().getSimpleName() + ")");
+		}
+		if (outcome == null) return ActionOutcome.fail("use", "no server world");
+
+		// The actor's hand is the truth after the call: spent seeds leave it empty, a bucket leaves
+		// the bucket, a damaged tool comes back worn.
+		ItemStack after = outcome.remaining();
+		this.setItemInHand(InteractionHand.MAIN_HAND, after.isEmpty() ? ItemStack.EMPTY : after);
+
+		boolean blockChanged = atBlock && stateBefore != null && !level().getBlockState(pos).equals(stateBefore);
+		boolean handChanged = before.getCount() != after.getCount() || !ItemStack.isSameItemSameComponents(before, after);
+		if (!outcome.result().consumesAction() && !blockChanged && !handChanged) {
+			return ActionOutcome.fail("use", "nothing happened when I used "
+					+ (before.isEmpty() ? "my hand" : itemId(before)) + " on that");
+		}
+		String what = before.isEmpty() ? "my hand" : itemId(before);
+		return ActionOutcome.ok("use", "used " + what + (atBlock ? " at " + describe(pos) : ""));
 	}
 
 	/** How many items he is carrying in total, bag and raised hand together. */
