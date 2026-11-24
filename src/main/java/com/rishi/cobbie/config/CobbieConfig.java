@@ -442,7 +442,9 @@ public final class CobbieConfig {
 		ensureLoaded();
 		return switch (action == null ? "" : action) {
 			case "mine" -> miningAllowed;
-			case "place", "light" -> buildingAllowed;
+			// Block use - planting, bone meal, levers, buttons - sits under building rather than
+			// inventing a switch per verb: it is all "change the world with your hands".
+			case "place", "light", "use" -> buildingAllowed;
 			case "attack" -> combatAllowed;
 			case "explore" -> explorationAllowed && autonomyMode != AutonomyMode.OFF;
 			case "collect" -> collectionAllowed;
