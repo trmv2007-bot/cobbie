@@ -112,6 +112,9 @@ public class CobbiePanelScreen extends Screen {
 
 		graphics.text(font, Component.literal(data.name()), panelX + 14, panelY + 9, ACCENT);
 		statusPill(graphics, panelX + PANEL_W - 14 - pillWidth(), panelY + 8);
+		// His own level, on the header line: the one thing a person would otherwise have to ask about.
+		graphics.text(font, Component.literal("LV " + data.xpLevel() + " · " + data.xpProgress()
+				+ "/" + data.xpNeeded()), panelX + 90, panelY + 10, MUTED);
 
 		avatar(graphics, mouseX, mouseY);
 		job(graphics);
@@ -251,6 +254,11 @@ public class CobbiePanelScreen extends Screen {
 	/** The stacks the panel draws, in slot order. */
 	public List<ItemStack> shownItems() {
 		return data.items();
+	}
+
+	/** The level line the panel draws, for the gametest. */
+	public String shownLevelLine() {
+		return "LV " + data.xpLevel() + " · " + data.xpProgress() + "/" + data.xpNeeded();
 	}
 
 	/** Which drawn slot is in his hand, or -1. Asserted by the panel gametest. */

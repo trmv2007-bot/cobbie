@@ -206,6 +206,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	/** Consecutive far re-paths the pathfinder refused; each one shortens the next step. */
 	private int followMisses;
 
+	// ---- experience: his own, earned and kept ----
+	private int experienceLevel;
+	private float experienceProgress;
+
 	/** Items whose slots no longer exist after a bag size change; spilled once, never deleted. */
 	private final List<ItemStack> pendingSpill = new ArrayList<>();
 
@@ -561,6 +565,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		}
 
 		spillOverflow();
+		absorbExperience();
 		updateNameplate();
 		followOwnerTick();
 		swimTick();
@@ -734,7 +739,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				heldIndex = items.size() - 1;
 			}
 		}
-		return new CobbiePanelPayload(this.getId(), "Cobbie", statusWord(), job, steps, states, items, heldIndex);
+		return new CobbiePanelPayload(this.getId(), "Cobbie", statusWord(), job, steps, states, items, heldIndex,
+				experienceLevel, Math.round(experienceProgress), experienceNeeded());
 	}
 
 	/** Everything the owner asked for: current job, its steps, and anything waiting behind it. */
@@ -1820,6 +1826,64 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return null;
 	}
 
+	/** His level, for the panel and for anything that has to spend one. */
+	public int experienceLevel() {
+		return experienceLevel;
+	}
+
+	public float experienceProgress() {
+		return experienceProgress;
+	}
+
+	/** How much the next level costs, the same curve a player climbs. */
+	public int experienceNeeded() {
+		return xpNeededFor(experienceLevel);
+	}
+
+	/**
+	 * The experience one level costs.
+	 *
+	 * <p><b>This is a copy of {@code Player.getXpNeededForNextLevel()}</b>, which is not callable from a
+	 * mob. It is the only place these numbers live in this mod, so if the curve ever changes in a new
+	 * Minecraft version, this is the one function to bring back in line: otherwise his levels drift from
+	 * a player's and nothing says so until an enchant costs the wrong amount.
+	 */
+	private static int xpNeededFor(int level) {
+		if (level >= 30) return 112 + (level - 30) * 9;
+		if (level >= 15) return 37 + (level - 15) * 5;
+		return 7 + level * 2;
+	}
+
+	/**
+	 * Orbs are how experience exists in the world, and only a {@code Player}'s tick absorbs them. He
+	 * takes them the way a player would — the game's own value, a small radius, a short delay so an orb
+	 * he just earned is not consumed mid-animation — but without a phantom pickup: the orb is discarded
+	 * by him rather than touched by the actor, so no other mod sees a second hand in it.
+	 */
+	private void absorbExperience() {
+		if (this.tickCount % 4 != 0) return;
+		List<net.minecraft.world.entity.ExperienceOrb> orbs = level().getEntitiesOfClass(
+				net.minecraft.world.entity.ExperienceOrb.class,
+				new AABB(this.blockPosition()).inflate(1.5),
+				orb -> orb.isAlive() && orb.tickCount > 10);
+		int gained = 0;
+		for (var orb : orbs) {
+			gained += orb.getValue();
+			orb.discard();
+		}
+		if (gained > 0) addExperience(gained);
+	}
+
+	/** Add experience the way a player does: fill the bar, level up, carry the remainder. */
+	public void addExperience(int amount) {
+		if (amount <= 0) return;
+		this.experienceProgress += amount;
+		while (this.experienceProgress >= xpNeededFor(this.experienceLevel)) {
+			this.experienceProgress -= xpNeededFor(this.experienceLevel);
+			this.experienceLevel++;
+		}
+	}
+
 	/** Put saved items whose slots no longer exist on the ground where he stands. Runs once. */
 	private void spillOverflow() {
 		if (pendingSpill.isEmpty()) return;
@@ -2856,6 +2920,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	protected void addAdditionalSaveData(ValueOutput out) {
 		super.addAdditionalSaveData(out);
 		out.putBoolean("CobbieFollowing", following);
+		out.putInt("CobbieXpLevel", experienceLevel);
+		out.putFloat("CobbieXpProgress", experienceProgress);
 		if (ownerUuid != null) {
 			out.putLong("CobbieOwnerMost", ownerUuid.getMostSignificantBits());
 			out.putLong("CobbieOwnerLeast", ownerUuid.getLeastSignificantBits());
@@ -2875,6 +2941,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	protected void readAdditionalSaveData(ValueInput in) {
 		super.readAdditionalSaveData(in);
 		following = in.getBooleanOr("CobbieFollowing", true);
+		// A level he earned is his: death does not take it back, unlike a player's.
+		experienceLevel = Math.max(0, in.getIntOr("CobbieXpLevel", 0));
+		experienceProgress = Math.max(0.0f, in.getFloatOr("CobbieXpProgress", 0.0f));
 
 		Optional<Long> most = in.getLong("CobbieOwnerMost");
 		Optional<Long> least = in.getLong("CobbieOwnerLeast");
