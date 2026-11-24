@@ -898,9 +898,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		// other kind of plan (talking, waving, a queued single step) must not freeze his feet.
 		if (navigatingForAction) return;
 		ServerPlayer owner = owner();
-		if (owner == null) {
-			// Offline, or through a portal. If it is a portal, that is a follow problem, not a reason
-			// to stand still: he should walk into one himself rather than park at the frame.
+		// `getPlayerByUUID` can answer with a player who is in another dimension, and distance to them
+		// is then meaningless — that is the portal case, not a reason to stand still.
+		if (owner == null || owner.level() != this.level()) {
 			followThroughPortal();
 			return;
 		}
@@ -979,9 +979,25 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			return;
 		}
 		portalNoticeShown = false;
+		// A portal block is not a node the pathfinder will plan to, so aim at the floor in front of it
+		// and then step in — the game takes over once he is inside the frame.
+		if (this.blockPosition().distSqr(portal) <= 6) {
+			Vec3 motion = this.getDeltaMovement();
+			double dx = portal.getX() + 0.5 - this.getX();
+			double dz = portal.getZ() + 0.5 - this.getZ();
+			double length = Math.sqrt(dx * dx + dz * dz);
+			if (length > 0.05) {
+				this.setDeltaMovement(dx / length * 0.14, motion.y, dz / length * 0.14);
+			}
+			return;
+		}
 		if (this.tickCount - followRepathTick < FOLLOW_REPATH_INTERVAL) return;
 		followRepathTick = this.tickCount;
-		getNavigation().moveTo(portal.getX() + 0.5, portal.getY(), portal.getZ() + 0.5, 1.0);
+		int towardX = Integer.signum(this.blockPosition().getX() - portal.getX());
+		int towardZ = Integer.signum(this.blockPosition().getZ() - portal.getZ());
+		BlockPos approach = portal.offset(towardX, 0, towardZ);
+		if (!level().getBlockState(approach).isAir()) approach = portal;
+		getNavigation().moveTo(approach.getX() + 0.5, approach.getY(), approach.getZ() + 0.5, 1.0);
 	}
 
 	/** The nearest portal block within a short walk, or null. */
