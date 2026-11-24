@@ -105,9 +105,26 @@ public final class CobbieBrewTest implements FabricClientGameTest {
                 throw new AssertionError("He left " + leftInStand + " bottle(s) in the stand");
             }
 
+            // 3. A finished brew has to leave him free. A job that reports success without clearing
+            // the step in flight poisons the next one — a walk-then-anvil plan failed both steps with
+            // "lost track of the brewing" and "still busy with walk-to" until this was fixed.
+            String next = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow().offerPlan(
+                    "step aside",
+                    List.of(new ActionIntent(ActionVocabulary.WALK_TO, "", start.getX() + 2, start.getY(),
+                            start.getZ(), ""))));
+            if (next != null) throw new AssertionError("He was still busy after a finished brew: " + next);
+            CobbieTestSupport.awaitPlanSettled(server, 600);
+            String afterBrew = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .lastPlan().status().toString());
+            if (!"COMPLETED".equals(afterBrew)) {
+                throw new AssertionError("The first step after a brew did not run (" + afterBrew + "): "
+                        + lastReport(server));
+            }
+
             System.out.println("[gametest] brew ok: 3 water bottles -> 3 awkward potions in a real stand,"
                     + " one nether wart spent, the stand emptied; a reagent the stand will not take was"
-                    + " refused and cost nothing");
+                    + " refused and cost nothing; and a plan right after a brew ran instead of hitting a"
+                    + " job that had already finished");
         }
     }
 
