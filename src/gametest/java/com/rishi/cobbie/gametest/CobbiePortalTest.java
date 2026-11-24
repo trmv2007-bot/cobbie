@@ -102,6 +102,12 @@ public final class CobbiePortalTest implements FabricClientGameTest {
                         + levelAfter);
             }
 
+            // The ticket exists only while a crossing is pending: after it, nothing may be held open.
+            int pending = com.rishi.cobbie.entity.CrossDimensionFollow.pending();
+            if (pending != 0) {
+                throw new AssertionError("A chunk ticket leaked: " + pending + " crossing(s) still held open");
+            }
+
             System.out.println("[gametest] portal ok: walked into the portal with the owner in the nether,"
                     + " crossed, arrived carrying " + diamondsAfter + " diamonds and level " + levelAfter);
         }
