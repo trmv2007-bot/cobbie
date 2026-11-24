@@ -2649,13 +2649,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			return ActionOutcome.fail("brew", "lost track of the brewing");
 		}
 		if (!(level() instanceof ServerLevel serverLevel)) {
-			this.brew = null;
-			return ActionOutcome.fail("brew", "no server world");
+			return endBrew(ActionOutcome.fail("brew", "no server world"));
 		}
 		net.minecraft.world.level.block.entity.BrewingStandBlockEntity stand = Brewing.at(serverLevel, job.stand);
 		if (stand == null) {
-			this.brew = null;
-			return ActionOutcome.fail("brew", "the brewing stand is gone, and my bottles were in it");
+			return endBrew(ActionOutcome.fail("brew", "the brewing stand is gone, and my bottles were in it"));
 		}
 
 		boolean ready = true;
@@ -2670,16 +2668,29 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		int waited = this.tickCount - job.startedTick;
 		if (waited > STATION_STEP_TICKS) {
-			this.brew = null;
-			return ActionOutcome.fail("brew", "the stand never finished the " + job.reagent + " batch");
+			return endBrew(ActionOutcome.fail("brew", "the stand never finished the " + job.reagent + " batch"));
 		}
 		// The reagent is spent at the moment the batch completes, so this only counts as a refusal
 		// well after the stand would have had it.
 		if (waited > 60 && stand.getItem(Brewing.INGREDIENT_SLOT).isEmpty()) {
-			this.brew = null;
-			return ActionOutcome.fail("brew", "the stand took the " + job.reagent + " and brewed nothing");
+			return endBrew(ActionOutcome.fail("brew", "the stand took the " + job.reagent + " and brewed nothing"));
 		}
 		return null;
+	}
+
+	/**
+	 * Finish a brew, outcome and all.
+	 *
+	 * <p>The job has to end in the same way every other verb does, or the entity stays "busy with
+	 * brew" after reporting success: the next step of the plan is then either refused outright ("still
+	 * busy with brew") or handed the previous step's stale outcome. Measured, not feared — a
+	 * two-step plan of walk-then-anvil failed both steps this way, the first with "lost track of the
+	 * brewing", because a finished batch left {@code active} pointing at a job that no longer existed.
+	 */
+	private ActionOutcome endBrew(ActionOutcome outcome) {
+		this.brew = null;
+		clearActive();
+		return outcome;
 	}
 
 	private ActionOutcome collectBrewed(net.minecraft.world.level.block.entity.BrewingStandBlockEntity stand,
@@ -2700,9 +2711,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			}
 		}
 		stand.setChanged();
-		this.brew = null;
-		if (taken == 0) return ActionOutcome.fail("brew", "nothing came out of the stand");
-		return ActionOutcome.ok("brew", "brewed " + taken + " " + (potion == null ? "potions" : potion));
+		if (taken == 0) return endBrew(ActionOutcome.fail("brew", "nothing came out of the stand"));
+		return endBrew(ActionOutcome.ok("brew", "brewed " + taken + " " + (potion == null ? "potions" : potion)));
 	}
 
 	private BlockPos findBrewingStand() {
