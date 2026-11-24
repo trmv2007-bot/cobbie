@@ -72,10 +72,10 @@ public final class FakeActor {
 
 	private FakeActor() {}
 
-	/** Right-click a block: seeds on farmland, bone meal on a crop, a lever, a button, a bucket. */
+	/** Right-click a block: seeds on farmland, bone meal on a crop, a lever, a button. */
 	public static Outcome useOnBlock(CobbieEntity body, BlockPos pos, Direction face, ItemStack held) {
 		if (!(body.level() instanceof ServerLevel level)) return null;
-		FakePlayer actor = place(body, level, held);
+		FakePlayer actor = place(body, level, held, pos);
 		try {
 			Vec3 hit = Vec3.atCenterOf(pos).relative(face, 0.5);
 			BlockHitResult where = new BlockHitResult(hit, face, pos, false);
@@ -89,10 +89,15 @@ public final class FakeActor {
 		}
 	}
 
-	/** Right-click with nothing in front of him: a bucket into air, a potion, a bow being drawn. */
-	public static Outcome useInAir(CobbieEntity body, ItemStack held) {
+	/**
+	 * Right-click with an item that acts on its own: a bucket (which raycasts for fluid from the eye in
+	 * this version rather than using a block), a potion, a bow being drawn.
+	 *
+	 * @param aimAt the block to look at, or null to keep the body's own facing
+	 */
+	public static Outcome useInAir(CobbieEntity body, ItemStack held, BlockPos aimAt) {
 		if (!(body.level() instanceof ServerLevel level)) return null;
-		FakePlayer actor = place(body, level, held);
+		FakePlayer actor = place(body, level, held, aimAt);
 		try {
 			InteractionResult result = actor.gameMode.useItem(actor, level,
 					actor.getItemInHand(InteractionHand.MAIN_HAND), InteractionHand.MAIN_HAND);
@@ -109,12 +114,24 @@ public final class FakeActor {
 	 * one actor per level: a stale position would run a block interaction from wherever the previous
 	 * call left him, which reads as Cobbie acting at a distance.
 	 */
-	private static FakePlayer place(CobbieEntity body, ServerLevel level, ItemStack held) {
+	private static FakePlayer place(CobbieEntity body, ServerLevel level, ItemStack held, BlockPos aimAt) {
 		if (level == null) return null;
 		FakePlayer actor = FakePlayer.get(level, PROFILE);
 		actor.setPos(body.getX(), body.getY(), body.getZ());
-		actor.setYRot(body.getYRot());
-		actor.setXRot(body.getXRot());
+		if (aimAt == null) {
+			actor.setYRot(body.getYRot());
+			actor.setXRot(body.getXRot());
+		} else {
+			// Aim, because an item that raycasts from the eye (a bucket, most obviously) finds nothing
+			// unless it is actually looking at the block.
+			Vec3 eye = body.getEyePosition();
+			double dx = aimAt.getX() + 0.5 - eye.x;
+			double dy = aimAt.getY() + 0.5 - eye.y;
+			double dz = aimAt.getZ() + 0.5 - eye.z;
+			double flat = Math.sqrt(dx * dx + dz * dz);
+			actor.setYRot((float) (Math.atan2(dz, dx) * 180.0 / Math.PI) - 90.0f);
+			actor.setXRot((float) (-(Math.atan2(dy, flat) * 180.0 / Math.PI)));
+		}
 		actor.setItemInHand(InteractionHand.MAIN_HAND, held == null ? ItemStack.EMPTY : held.copy());
 		return actor;
 	}

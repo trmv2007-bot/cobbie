@@ -2073,9 +2073,20 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		ItemStack used = before.isEmpty() ? ItemStack.EMPTY : before.copyWithCount(before.getCount());
 		com.rishi.cobbie.actor.FakeActor.Outcome outcome;
 		try {
-			outcome = atBlock
-					? com.rishi.cobbie.actor.FakeActor.useOnBlock(this, pos, useFace(pos), used)
-					: com.rishi.cobbie.actor.FakeActor.useInAir(this, used);
+			if (!atBlock) {
+				outcome = com.rishi.cobbie.actor.FakeActor.useInAir(this, used, null);
+			} else {
+				outcome = com.rishi.cobbie.actor.FakeActor.useOnBlock(this, pos, useFace(pos), used);
+				// A player's single right-click is block-use first, then the item's own use. A bucket
+				// is the case that needs the second half: in this version it raycasts for fluid from
+				// the eye rather than using the block it was clicked on.
+				if (!outcome.result().consumesAction()) {
+					ItemStack again = outcome.remaining().isEmpty() ? used : outcome.remaining();
+					com.rishi.cobbie.actor.FakeActor.Outcome second =
+							com.rishi.cobbie.actor.FakeActor.useInAir(this, again, pos);
+					if (second != null && second.result().consumesAction()) outcome = second;
+				}
+			}
 		} catch (RuntimeException e) {
 			return ActionOutcome.fail("use", "using that went wrong (" + e.getClass().getSimpleName() + ")");
 		}
