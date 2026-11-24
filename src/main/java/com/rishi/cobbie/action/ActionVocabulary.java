@@ -41,11 +41,12 @@ public final class ActionVocabulary {
 	public static final String REPAIR = "repair";
 	public static final String DYE = "dye";
 	public static final String ENCHANT = "enchant";
+	public static final String ANVIL = "anvil";
 	public static final String LOOKUP = "lookup";
 	public static final String WAIT = "wait";
 
 	private static final Set<String> ALLOWED = new LinkedHashSet<>(List.of(
-			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE, REPAIR, DYE, ENCHANT, LOOKUP, WAIT));
+			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE, REPAIR, DYE, ENCHANT, ANVIL, LOOKUP, WAIT));
 
 	/** Actions that are meaningless without an explicit target position. */
 	private static final Set<String> NEEDS_POSITION = Set.of(WALK_TO, MINE, PLACE, LIGHT, TAKE, PUT, SMELT);
@@ -60,7 +61,7 @@ public final class ActionVocabulary {
 	/** Actions that change the world and therefore need verification afterwards. */
 	private static final Set<String> WORLD_CHANGING =
 			Set.of(MINE, PLACE, ATTACK, COLLECT, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE,
-					REPAIR, DYE, ENCHANT);
+					REPAIR, DYE, ENCHANT, ANVIL);
 
 	private ActionVocabulary() {}
 
@@ -102,6 +103,7 @@ public final class ActionVocabulary {
 					"activate" -> USE;
 			case "mend", "fix", "repair-item" -> REPAIR;
 			case "enchant-item", "enchanting", "imbue" -> ENCHANT;
+			case "apply-book", "anvil-use", "book-on" -> ANVIL;
 			case "colour", "color", "dye-item", "paint" -> DYE;
 			case "look-up", "search", "wiki", "google" -> LOOKUP;
 			case "say", "speak", "tell" -> CHAT;
@@ -128,6 +130,7 @@ public final class ActionVocabulary {
 			else if (REPAIR.equals(verb)) sb.append(" (target = which of my things to mend)");
 			else if (DYE.equals(verb)) sb.append(" (target = the colour; data = what to dye)");
 			else if (ENCHANT.equals(verb)) sb.append(" (target = what to enchant; data = low|mid|high)");
+			else if (ANVIL.equals(verb)) sb.append(" (target = the item; data = the enchanted book to apply)");
 		}
 		return sb.toString();
 	}
