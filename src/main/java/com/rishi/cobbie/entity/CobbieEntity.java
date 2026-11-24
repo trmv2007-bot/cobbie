@@ -8,6 +8,7 @@ import com.rishi.cobbie.action.ActionVocabulary;
 import com.rishi.cobbie.config.CobbieConfig;
 import com.rishi.cobbie.craft.CraftChain;
 import com.rishi.cobbie.craft.CraftRecipes;
+import com.rishi.cobbie.station.Brewing;
 import com.rishi.cobbie.station.Containers;
 import com.rishi.cobbie.net.CobbiePanelPayload;
 import com.rishi.cobbie.presence.Narrator;
@@ -222,6 +223,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	/** The job in flight when it spans ticks: crafting through a furnace, or smelting on purpose. */
 	private Work work;
 
+	/** The batch in the brewing stand, while it is brewing. */
+	private Brew brew;
+
 	/**
 	 * One resolved chain being worked through, tick by tick.
 	 *
@@ -246,6 +250,29 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			this.wanted = wanted;
 			this.plan = plan;
 			this.bagBefore = bagBefore;
+		}
+	}
+
+	/**
+	 * One batch in a brewing stand.
+	 *
+	 * <p>The bottles go into the stand's own slots and the stand brews them; this only remembers what
+	 * was put in, which slots it went into and what each bottle is expected to turn into, so the
+	 * completion test is "the stand now holds what the recipe says", not "some ticks passed".
+	 */
+	private static final class Brew {
+		final BlockPos stand;
+		final int[] slots;
+		final List<ItemStack> expected;
+		final String reagent;
+		final int startedTick;
+
+		Brew(BlockPos stand, int[] slots, List<ItemStack> expected, String reagent, int startedTick) {
+			this.stand = stand;
+			this.slots = slots;
+			this.expected = expected;
+			this.reagent = reagent;
+			this.startedTick = startedTick;
 		}
 	}
 
@@ -1248,6 +1275,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			case ActionVocabulary.DYE -> dyeFromBag(intent);
 			case ActionVocabulary.ENCHANT -> enchantFromBag(intent);
 			case ActionVocabulary.ANVIL -> anvilFromBag(intent);
+			case ActionVocabulary.BREW -> startBrew(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
@@ -1271,6 +1299,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	public void interrupt() {
 		narrator.clear();
 		active = null;
+		brew = null;
 		activeTarget = null;
 		workTarget = null;
 		navigatingForAction = false;
@@ -1332,6 +1361,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		// Phase 2: multi-tick verbs.
 		if (ActionVocabulary.ATTACK.equals(verb)) return attackTick();
 		if (ActionVocabulary.CRAFT.equals(verb) || ActionVocabulary.SMELT.equals(verb)) return workTick();
+		if (ActionVocabulary.BREW.equals(verb)) return brewTick();
 
 		interrupt();
 		return ActionOutcome.ok(verb, "done");
@@ -2454,6 +2484,218 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				base.offset(-FURNACE_SEARCH, -6, -FURNACE_SEARCH),
 				base.offset(FURNACE_SEARCH, 6, FURNACE_SEARCH))) {
 			if (level().getBlockState(probe).is(Blocks.ENCHANTING_TABLE)) return probe.immutable();
+		}
+		return null;
+	}
+
+	/**
+	 * Brew in a real stand, on the game's own brewing recipes.
+	 *
+	 * <p>A brewing stand is not the anvil's shape. It is a container that ticks itself: the bottles go
+	 * into its own three slots, one reagent into the fourth, fuel into the fifth, and
+	 * {@code serverTick} runs the twenty-second brew and rewrites the bottles. So this is the
+	 * furnace's shape — load it, let it work, take the results out — and the menu would only put a
+	 * {@code Player} between him and a machine that does not need one.
+	 *
+	 * <p>Everything is settled before anything leaves his bag: which bottles the named reagent
+	 * actually acts on, whether the stand has fuel, and how many of his bottles fit. A pair the game
+	 * will not brew is refused with the reason, not attempted.
+	 */
+	private ActionOutcome startBrew(ActionIntent intent) {
+		if (!CobbieConfig.isContainersAllowed()) {
+			return ActionOutcome.fail("brew", "I am not allowed to use a brewing stand — /cobbie permit containers on");
+		}
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("brew", "no server world");
+
+		BlockPos where = new BlockPos(intent.x(), intent.y(), intent.z());
+		net.minecraft.world.level.block.entity.BrewingStandBlockEntity stand = Brewing.at(serverLevel, where);
+		if (stand == null) {
+			where = findBrewingStand();
+			stand = Brewing.at(serverLevel, where);
+		}
+		if (stand == null) return ActionOutcome.fail("brew", "I need a brewing stand and there is none near me");
+
+		String asked = intent.target() == null || intent.target().isBlank() ? null : resolveItemId(intent.target());
+		int reagentSlot = -1;
+		if (asked != null) {
+			for (int i = 0; i < inventory.getContainerSize() && reagentSlot < 0; i++) {
+				if (asked.equals(itemId(inventory.getItem(i)))) reagentSlot = i;
+			}
+			if (reagentSlot < 0) return ActionOutcome.fail("brew", "I have no " + asked);
+			if (!stand.canPlaceItem(Brewing.INGREDIENT_SLOT, inventory.getItem(reagentSlot))) {
+				return ActionOutcome.fail("brew", "a brewing stand will not take " + asked);
+			}
+		} else {
+			for (int i = 0; i < inventory.getContainerSize() && reagentSlot < 0; i++) {
+				ItemStack candidate = inventory.getItem(i);
+				if (candidate.isEmpty() || !stand.canPlaceItem(Brewing.INGREDIENT_SLOT, candidate)) continue;
+				if (brewsSomething(serverLevel, candidate)) reagentSlot = i;
+			}
+		}
+		if (reagentSlot < 0) {
+			return ActionOutcome.fail("brew", hasBottle(serverLevel)
+					? "I have nothing here the stand would brew into a potion"
+					: "I need a potion to brew into first — a water bottle");
+		}
+		ItemStack reagent = inventory.getItem(reagentSlot);
+
+		// Which of his bottles this reagent acts on, in the stand's free slots. A stand already
+		// holding someone's bottle is used for what is free rather than emptied.
+		List<Integer> bagSlots = new ArrayList<>();
+		List<ItemStack> expected = new ArrayList<>();
+		List<Integer> standSlots = new ArrayList<>();
+		for (int slot = 0; slot < Brewing.BOTTLE_SLOTS; slot++) {
+			if (!stand.getItem(slot).isEmpty()) continue;
+			for (int i = 0; i < inventory.getContainerSize(); i++) {
+				if (bagSlots.contains(i)) continue;
+				ItemStack bottle = inventory.getItem(i);
+				if (!Brewing.isBottle(serverLevel, bottle)) continue;
+				var made = Brewing.resultOf(serverLevel, bottle, reagent);
+				if (made.isEmpty()) continue;
+				bagSlots.add(i);
+				expected.add(made.get());
+				standSlots.add(slot);
+				break;
+			}
+			if (bagSlots.size() >= Brewing.BOTTLE_SLOTS) break;
+		}
+		if (bagSlots.isEmpty()) {
+			return ActionOutcome.fail("brew", hasBottle(serverLevel)
+					? "a " + (asked != null ? asked : intent.target()) + " does not act on the potions I have"
+						+ " — that needs a different potion first"
+					: "I need a potion to brew into first — a water bottle");
+		}
+
+		// The stand will not run a batch with no fuel banked. One blaze powder is twenty brews, so a
+		// refill here is not wasted by a single batch.
+		int fuelSlot = -1;
+		if (!Brewing.isFuel(stand.getItem(Brewing.FUEL_SLOT))) {
+			for (int i = 0; i < inventory.getContainerSize() && fuelSlot < 0; i++) {
+				if (i != reagentSlot && Brewing.isFuel(inventory.getItem(i))) fuelSlot = i;
+			}
+			if (fuelSlot < 0) return ActionOutcome.fail("brew", "I need blaze powder to heat the stand");
+			ItemStack fuel = inventory.getItem(fuelSlot).copyWithCount(1);
+			inventory.getItem(fuelSlot).shrink(1);
+			if (inventory.getItem(fuelSlot).isEmpty()) inventory.setItem(fuelSlot, ItemStack.EMPTY);
+			stand.setItem(Brewing.FUEL_SLOT, fuel);
+		}
+
+		// Load the stand. One unit of the reagent is what the stand spends for the whole batch,
+		// however many bottles are in it.
+		for (int b = 0; b < bagSlots.size(); b++) {
+			int bag = bagSlots.get(b);
+			ItemStack one = inventory.getItem(bag).copyWithCount(1);
+			inventory.getItem(bag).shrink(1);
+			if (inventory.getItem(bag).isEmpty()) inventory.setItem(bag, ItemStack.EMPTY);
+			stand.setItem(standSlots.get(b), one);
+		}
+		ItemStack oneReagent = reagent.copyWithCount(1);
+		inventory.getItem(reagentSlot).shrink(1);
+		if (inventory.getItem(reagentSlot).isEmpty()) inventory.setItem(reagentSlot, ItemStack.EMPTY);
+		stand.setItem(Brewing.INGREDIENT_SLOT, oneReagent);
+		stand.setChanged();
+
+		int[] slots = standSlots.stream().mapToInt(Integer::intValue).toArray();
+		this.brew = new Brew(where, slots, expected, itemId(reagent), this.tickCount);
+		active = intent;
+		activeTarget = where;
+		navigatingForAction = false;
+		activeDeadlineTick = this.tickCount + STATION_STEP_TICKS;
+		return null; // the stand works while brewTick watches it
+	}
+
+	/** Does this reagent change any bottle he is carrying? */
+	private boolean brewsSomething(ServerLevel serverLevel, ItemStack reagent) {
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack bottle = inventory.getItem(i);
+			if (Brewing.isBottle(serverLevel, bottle) && Brewing.resultOf(serverLevel, bottle, reagent).isPresent()) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean hasBottle(ServerLevel serverLevel) {
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			if (Brewing.isBottle(serverLevel, inventory.getItem(i))) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * One tick of brewing: done is the stand holding what the recipe said it would, not a count of
+	 * ticks that passed. A stand that swallowed the reagent and produced nothing says so instead of
+	 * waiting out the whole timeout.
+	 */
+	private ActionOutcome brewTick() {
+		Brew job = this.brew;
+		if (job == null) {
+			interrupt();
+			return ActionOutcome.fail("brew", "lost track of the brewing");
+		}
+		if (!(level() instanceof ServerLevel serverLevel)) {
+			this.brew = null;
+			return ActionOutcome.fail("brew", "no server world");
+		}
+		net.minecraft.world.level.block.entity.BrewingStandBlockEntity stand = Brewing.at(serverLevel, job.stand);
+		if (stand == null) {
+			this.brew = null;
+			return ActionOutcome.fail("brew", "the brewing stand is gone, and my bottles were in it");
+		}
+
+		boolean ready = true;
+		for (int i = 0; i < job.slots.length; i++) {
+			ItemStack now = stand.getItem(job.slots[i]);
+			if (now.isEmpty() || !ItemStack.isSameItemSameComponents(now, job.expected.get(i))) {
+				ready = false;
+				break;
+			}
+		}
+		if (ready) return collectBrewed(stand, job);
+
+		int waited = this.tickCount - job.startedTick;
+		if (waited > STATION_STEP_TICKS) {
+			this.brew = null;
+			return ActionOutcome.fail("brew", "the stand never finished the " + job.reagent + " batch");
+		}
+		// The reagent is spent at the moment the batch completes, so this only counts as a refusal
+		// well after the stand would have had it.
+		if (waited > 60 && stand.getItem(Brewing.INGREDIENT_SLOT).isEmpty()) {
+			this.brew = null;
+			return ActionOutcome.fail("brew", "the stand took the " + job.reagent + " and brewed nothing");
+		}
+		return null;
+	}
+
+	private ActionOutcome collectBrewed(net.minecraft.world.level.block.entity.BrewingStandBlockEntity stand,
+			Brew job) {
+		int taken = 0;
+		String potion = null;
+		for (int slot : job.slots) {
+			ItemStack made = stand.getItem(slot);
+			if (made.isEmpty()) continue;
+			potion = Brewing.potionName(made);
+			ItemStack copy = made.copy();
+			stand.setItem(slot, ItemStack.EMPTY);
+			taken += copy.getCount();
+			if (!add(copy, inventory)) {
+				ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), copy);
+				pile.setDefaultPickUpDelay();
+				level().addFreshEntity(pile);
+			}
+		}
+		stand.setChanged();
+		this.brew = null;
+		if (taken == 0) return ActionOutcome.fail("brew", "nothing came out of the stand");
+		return ActionOutcome.ok("brew", "brewed " + taken + " " + (potion == null ? "potions" : potion));
+	}
+
+	private BlockPos findBrewingStand() {
+		BlockPos base = this.blockPosition();
+		for (BlockPos probe : BlockPos.betweenClosed(
+				base.offset(-FURNACE_SEARCH, -6, -FURNACE_SEARCH),
+				base.offset(FURNACE_SEARCH, 6, FURNACE_SEARCH))) {
+			if (level().getBlockState(probe).is(Blocks.BREWING_STAND)) return probe.immutable();
 		}
 		return null;
 	}
