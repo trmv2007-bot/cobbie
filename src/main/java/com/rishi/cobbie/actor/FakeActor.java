@@ -171,6 +171,62 @@ public final class FakeActor {
 		}
 	}
 
+	/** What came of using an anvil: the item that came off it, and where his level ended up. */
+	public record AnvilOutcome(boolean success, String reason, ItemStack remaining, int levelAfter,
+			float progressAfter, int levelsSpent) {}
+
+	/**
+	 * Put an enchanted book onto an item at a real anvil.
+	 *
+	 * <p>The take is what charges: the menu's own result slot is clicked the way a player clicks it
+	 * ({@code clicked(RESULT_SLOT, PICKUP)}), so the level cost, the {@code mayPickup} refusal and the
+	 * enchantment merging are the game's. The actor's level goes in before the click and comes back out
+	 * afterwards, and instabuild is stripped for the call because {@code mayPickup} reads it.
+	 */
+	public static AnvilOutcome applyBook(CobbieEntity body, ServerLevel level, BlockPos anvil, ItemStack item,
+			ItemStack book, int xpLevel, float progress) {
+		FakePlayer actor = place(body, level, ItemStack.EMPTY, null);
+		try {
+			var access = net.minecraft.world.inventory.ContainerLevelAccess.create(level, anvil);
+			var menu = new net.minecraft.world.inventory.AnvilMenu(0, actor.getInventory(), access);
+			menu.getSlot(0).set(item.copyWithCount(1));
+			menu.getSlot(1).set(book.copyWithCount(1));
+			menu.createResult();
+
+			ItemStack offered = menu.getSlot(2).getItem().copy();
+			if (offered.isEmpty()) {
+				return new AnvilOutcome(false, "the anvil will not put that book on that", item, xpLevel,
+						progress, 0);
+			}
+			boolean wasInstabuild = actor.getAbilities().instabuild;
+			actor.getAbilities().instabuild = false;
+			actor.experienceLevel = xpLevel;
+			actor.experienceProgress = progress;
+			menu.clicked(2, 0, net.minecraft.world.inventory.ContainerInput.PICKUP, actor);
+			ItemStack taken = menu.getCarried().copy();
+			int after = actor.experienceLevel;
+			float afterProgress = actor.experienceProgress;
+			menu.setCarried(ItemStack.EMPTY);
+			actor.experienceLevel = 0;
+			actor.experienceProgress = 0.0f;
+			actor.getAbilities().instabuild = wasInstabuild;
+			menu.getSlot(0).set(ItemStack.EMPTY);
+			menu.getSlot(1).set(ItemStack.EMPTY);
+
+			if (taken.isEmpty()) {
+				return new AnvilOutcome(false, "I need more levels for that than I have (" + xpLevel + ")",
+						item, xpLevel, progress, 0);
+			}
+			if (taken.get(net.minecraft.core.component.DataComponents.ENCHANTMENTS) == null) {
+				return new AnvilOutcome(false, "that book put no enchantment on it", item, xpLevel, progress, 0);
+			}
+			return new AnvilOutcome(true, null, taken, after, afterProgress, xpLevel - after);
+		} catch (RuntimeException e) {
+			return new AnvilOutcome(false, "the anvil went wrong (" + e.getClass().getSimpleName() + ")",
+					item, xpLevel, progress, 0);
+		}
+	}
+
 	/**
 	 * Stand the actor where the body is and put the stack in his hand.
 	 *

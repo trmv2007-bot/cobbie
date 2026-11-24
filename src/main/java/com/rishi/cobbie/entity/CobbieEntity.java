@@ -52,6 +52,7 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -2283,7 +2284,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		int itemSlot = -1;
 		for (int i = 0; i < inventory.getContainerSize() && itemSlot < 0; i++) {
 			ItemStack stack = inventory.getItem(i);
-			if (stack.isEmpty() || stack.is(Blocks.ENCHANTED_BOOK.asItem())) continue;
+			if (stack.isEmpty() || stack.is(Items.ENCHANTED_BOOK)) continue;
 			if (wanted == null ? stack.isEnchantable() : wanted.equals(itemId(stack))) itemSlot = i;
 		}
 		if (itemSlot < 0) {
@@ -2295,7 +2296,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		String bookWanted = intent.data() == null || intent.data().isBlank() ? null : resolveItemId(intent.data());
 		for (int i = 0; i < inventory.getContainerSize() && bookSlot < 0; i++) {
 			ItemStack stack = inventory.getItem(i);
-			if (stack.isEmpty() || !stack.is(Blocks.ENCHANTED_BOOK.asItem())) continue;
+			if (stack.isEmpty() || !stack.is(Items.ENCHANTED_BOOK)) continue;
 			if (stack.get(net.minecraft.core.component.DataComponents.STORED_ENCHANTMENTS) == null) continue;
 			if (bookWanted != null && !bookWanted.equals(itemId(stack))) continue;
 			bookSlot = i;
