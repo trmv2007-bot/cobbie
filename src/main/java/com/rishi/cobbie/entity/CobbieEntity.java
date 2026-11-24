@@ -1145,6 +1145,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			case ActionVocabulary.TAKE -> startTake(intent);
 			case ActionVocabulary.PUT -> startPut(intent);
 			case ActionVocabulary.USE -> startUse(intent);
+			case ActionVocabulary.REPAIR -> repairFromBag(intent);
+			case ActionVocabulary.DYE -> dyeFromBag(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
@@ -2028,6 +2030,129 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		}
 		return ActionOutcome.ok("put", "put " + moved + (what.isBlank() ? " item(s)" : " " + what)
 				+ " in the " + Containers.nameOf(serverLevel, pos));
+	}
+
+	/**
+	 * Mend two damaged things of the same kind into one, the way a player does it on a grid.
+	 *
+	 * <p>The grid-reading recipes cannot go through the planner: what a repair produces depends on the
+	 * stacks it consumes, and planning that ahead would mean inventing the result. So this builds a real
+	 * two-item {@link net.minecraft.world.item.crafting.CraftingInput}, lets the game's own
+	 * {@code RepairItemRecipe} decide whether it is a legal repair and what comes out, and only then
+	 * spends anything.
+	 */
+	private ActionOutcome repairFromBag(ActionIntent intent) {
+		if (!CobbieConfig.isCraftingAllowed()) {
+			return ActionOutcome.fail("repair", "making things is switched off — /cobbie permit crafting on");
+		}
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("repair", "no server world");
+		String wanted = intent.target() == null || intent.target().isBlank() ? null : resolveItemId(intent.target());
+
+		int first = -1;
+		int second = -1;
+		for (int i = 0; i < inventory.getContainerSize() && second < 0; i++) {
+			ItemStack a = inventory.getItem(i);
+			if (!isRepairable(a) || (wanted != null && !wanted.equals(itemId(a)))) continue;
+			for (int j = i + 1; j < inventory.getContainerSize(); j++) {
+				ItemStack b = inventory.getItem(j);
+				if (!isRepairable(b) || !ItemStack.isSameItemSameComponents(a.copyWithCount(1), b.copyWithCount(1))) {
+					continue;
+				}
+				first = i;
+				second = j;
+				break;
+			}
+		}
+		if (second < 0) {
+			return ActionOutcome.fail("repair", wanted == null
+					? "I need two of the same damaged thing to mend one"
+					: "I need two damaged " + wanted + " to mend one");
+		}
+
+		ItemStack a = inventory.getItem(first);
+		ItemStack b = inventory.getItem(second);
+		ItemStack result = assembleGrid(serverLevel, List.of(a.copyWithCount(1), b.copyWithCount(1)));
+		if (result.isEmpty()) return ActionOutcome.fail("repair", "that is not something the game will mend");
+
+		inventory.setItem(first, ItemStack.EMPTY);
+		inventory.setItem(second, ItemStack.EMPTY);
+		ItemStack leftover = result.copy();
+		if (!add(leftover, inventory)) {
+			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
+			pile.setDefaultPickUpDelay();
+			level().addFreshEntity(pile);
+		}
+		return ActionOutcome.ok("repair", "mended two " + itemId(a) + " into one");
+	}
+
+	/**
+	 * Dye something he is carrying. The colour names the dye, and {@code data} is what to dye — the game's
+	 * own {@code DyeRecipe} decides whether that pair is legal and what colours come out.
+	 */
+	private ActionOutcome dyeFromBag(ActionIntent intent) {
+		if (!CobbieConfig.isCraftingAllowed()) {
+			return ActionOutcome.fail("dye", "making things is switched off — /cobbie permit crafting on");
+		}
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("dye", "no server world");
+		String colour = intent.target() == null ? "" : intent.target().trim().toLowerCase(Locale.ROOT)
+				.replace(' ', '_');
+		if (colour.isEmpty()) return ActionOutcome.fail("dye", "tell me what colour");
+		String dyeId = resolveItemId(colour.endsWith("_dye") ? colour : colour + "_dye");
+		if (dyeId == null) return ActionOutcome.fail("dye", "there is no " + colour + " dye");
+
+		String whatId = intent.data() == null || intent.data().isBlank() ? null : resolveItemId(intent.data());
+		int dyeSlot = -1;
+		int targetSlot = -1;
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty()) continue;
+			if (dyeSlot < 0 && dyeId.equals(itemId(stack))) dyeSlot = i;
+			else if (targetSlot < 0 && (whatId == null ? matchesItem("", stack) : whatId.equals(itemId(stack)))
+					&& !dyeId.equals(itemId(stack))) {
+				targetSlot = i;
+			}
+		}
+		if (dyeSlot < 0) return ActionOutcome.fail("dye", "I have no " + colour + " dye");
+		if (targetSlot < 0) {
+			return ActionOutcome.fail("dye", whatId == null ? "I have nothing to dye" : "I have no " + whatId);
+		}
+		ItemStack dye = inventory.getItem(dyeSlot);
+		ItemStack target = inventory.getItem(targetSlot);
+		ItemStack result = assembleGrid(serverLevel, List.of(dye.copyWithCount(1), target.copyWithCount(1)));
+		if (result.isEmpty()) return ActionOutcome.fail("dye", "the game will not dye that with " + dyeId);
+
+		inventory.setItem(dyeSlot, ItemStack.EMPTY);
+		inventory.setItem(targetSlot, ItemStack.EMPTY);
+		ItemStack leftover = result.copy();
+		if (!add(leftover, inventory)) {
+			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
+			pile.setDefaultPickUpDelay();
+			level().addFreshEntity(pile);
+		}
+		return ActionOutcome.ok("dye", "dyed " + itemId(target) + " with " + dyeId);
+	}
+
+	/**
+	 * Let the game's own crafting table answer "what does this grid make": the two-item recipes that read
+	 * their inputs (repair, dye) are matched and assembled by the recipe manager, not by us.
+	 */
+	private ItemStack assembleGrid(ServerLevel level, List<ItemStack> items) {
+		if (!(level.recipeAccess() instanceof net.minecraft.world.item.crafting.RecipeManager manager)) {
+			return ItemStack.EMPTY;
+		}
+		List<ItemStack> grid = new ArrayList<>(items);
+		while (grid.size() < 9) grid.add(ItemStack.EMPTY);
+		var input = net.minecraft.world.item.crafting.CraftingInput.of(3, 3, grid);
+		var found = manager.getRecipeFor(net.minecraft.world.item.crafting.RecipeType.CRAFTING, input, level);
+		if (found.isEmpty()) return ItemStack.EMPTY;
+		ItemStack out = found.get().value().assemble(input);
+		return out == null ? ItemStack.EMPTY : out;
+	}
+
+	/** A stack the game would consider mending: damageable, of the same item, and actually damaged. */
+	private static boolean isRepairable(ItemStack stack) {
+		return stack != null && !stack.isEmpty() && stack.isDamageableItem()
+				&& stack.getDamageValue() > 0 && !isBroken(stack);
 	}
 
 	/**

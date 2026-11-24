@@ -109,10 +109,51 @@ public final class CobbieCraftTest implements FabricClientGameTest {
                         + inventory(server) + "; " + lastReport(server), t);
             }
 
+            // 5. The grid-reading specials. Repair: two damaged pickaxes become one, mended.
+            server.computeOnServer(s -> {
+                CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
+                for (int i = 0; i < 2; i++) {
+                    ItemStack pick = new ItemStack(Items.IRON_PICKAXE, 1);
+                    pick.setDamageValue(100);
+                    cobbie.addItem(pick);
+                }
+                return null;
+            });
+            String repairRefusal = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .offerPlan("mend my pickaxes",
+                            List.of(new ActionIntent(ActionVocabulary.REPAIR, "iron_pickaxe", 0, 0, 0, ""))));
+            if (repairRefusal != null) throw new AssertionError("repair refused: " + repairRefusal);
+            try {
+                server.waitFor(s -> bestPickaxeDamage(s) >= 0 && bestPickaxeDamage(s) < 100, 300);
+            } catch (Throwable t) {
+                throw new AssertionError("The pickaxes were not mended; best damage is "
+                        + server.computeOnServer(CobbieCraftTest::bestPickaxeDamage) + ". " + lastReport(server), t);
+            }
+
+            // 6. Dye: red dye plus leather boots, decided by the game's own DyeRecipe.
+            server.computeOnServer(s -> {
+                CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
+                var redDye = net.minecraft.core.registries.BuiltInRegistries.ITEM
+                        .getOptional(net.minecraft.resources.Identifier.parse("minecraft:red_dye"))
+                        .orElseThrow(() -> new AssertionError("no red_dye item in this version"));
+                cobbie.addItem(new ItemStack(redDye, 1));
+                cobbie.addItem(new ItemStack(Items.LEATHER_BOOTS, 1));
+                return null;
+            });
+            String dyeRefusal = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .offerPlan("dye my boots red",
+                            List.of(new ActionIntent(ActionVocabulary.DYE, "red", 0, 0, 0, "leather_boots"))));
+            if (dyeRefusal != null) throw new AssertionError("dye refused: " + dyeRefusal);
+            try {
+                server.waitFor(s -> bootsDyed(s), 300);
+            } catch (Throwable t) {
+                throw new AssertionError("The boots were not dyed. " + lastReport(server), t);
+            }
+
             String made = lastReport(server);
 
             System.out.println("[gametest] craft ok: planks from logs, a pickaxe through the chain, "
-                    + "a stair from one stone at the stonecutter"
+                    + "a stair from one stone at the stonecutter, two pickaxes mended into one, boots dyed"
                     + " (logs " + logsBefore + " -> " + logsAfter + "); " + made);
         }
     }
@@ -128,6 +169,30 @@ public final class CobbieCraftTest implements FabricClientGameTest {
 
     private static int countIn(MinecraftServer server, String id) {
         return CobbieTestSupport.cobbie(server).map(c -> c.countItem(id)).orElse(-1);
+    }
+
+    /** Damage of the least-damaged iron pickaxe in his bag, or -1 when he has none. */
+    private static int bestPickaxeDamage(net.minecraft.server.MinecraftServer server) {
+        var cobbie = CobbieTestSupport.cobbie(server).orElse(null);
+        if (cobbie == null) return -1;
+        int best = -1;
+        for (int i = 0; i < cobbie.getInventoryContainer().getContainerSize(); i++) {
+            ItemStack stack = cobbie.getInventoryContainer().getItem(i);
+            if (stack.isEmpty() || !stack.is(Items.IRON_PICKAXE)) continue;
+            if (best < 0 || stack.getDamageValue() < best) best = stack.getDamageValue();
+        }
+        return best;
+    }
+
+    private static boolean bootsDyed(net.minecraft.server.MinecraftServer server) {
+        var cobbie = CobbieTestSupport.cobbie(server).orElse(null);
+        if (cobbie == null) return false;
+        for (int i = 0; i < cobbie.getInventoryContainer().getContainerSize(); i++) {
+            ItemStack stack = cobbie.getInventoryContainer().getItem(i);
+            if (stack.isEmpty() || !stack.is(Items.LEATHER_BOOTS)) continue;
+            if (stack.get(net.minecraft.core.component.DataComponents.DYED_COLOR) != null) return true;
+        }
+        return false;
     }
 
     private static String lastReport(TestServerContext server) {
