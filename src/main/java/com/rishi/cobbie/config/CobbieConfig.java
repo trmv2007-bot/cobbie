@@ -449,6 +449,8 @@ public final class CobbieConfig {
 			case "explore" -> explorationAllowed && autonomyMode != AutonomyMode.OFF;
 			case "collect" -> collectionAllowed;
 			case "craft", "smelt", "take", "put" -> craftingAllowed || containersAllowed;
+			// Mending and dyeing are crafting: they are a grid of his own things, not a station.
+			case "repair", "dye" -> craftingAllowed;
 			case "follow", "stay", "wave", "chat", "answer", "wait", "walk-to", "give", "drop", "equip", "lookup" -> true;
 			default -> false;
 		};
