@@ -62,6 +62,16 @@ public final class CobbiePortalTest implements FabricClientGameTest {
             });
             context.waitTicks(10);
 
+            // If the owner never actually left, this test proves nothing: fail with the fact, not a hang.
+            String ownerWhere = server.computeOnServer(s -> {
+                var owner = CobbieTestSupport.owner(s);
+                return owner.level().dimension().toString() + " " + owner.blockPosition().toShortString();
+            });
+            System.out.println("[portal] owner is " + ownerWhere + "; cobbie is " + where(server));
+            if (!ownerWhere.contains("the_nether")) {
+                throw new AssertionError("Setup failed: the owner was not moved to the nether (" + ownerWhere + ")");
+            }
+
             // Ours: he finds the portal and stands in it.
             try {
                 server.waitFor(s -> anyCobbie(s)

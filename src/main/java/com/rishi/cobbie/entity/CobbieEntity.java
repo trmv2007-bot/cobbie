@@ -620,6 +620,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		spillOverflow();
 		absorbExperience();
+		if (this.tickCount % 40 == 0) {
+			System.out.println("[probe] tick=" + this.tickCount + " at=" + this.blockPosition()
+					+ " dim=" + level().dimension().location().getPath());
+		}
 		updateNameplate();
 		followOwnerTick();
 		swimTick();
