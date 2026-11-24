@@ -49,6 +49,8 @@ public final class WorldPerception {
 	private static final double ENTITY_RANGE = 12.0;
 	private static final double PLAYER_RANGE = 24.0;
 	private static final int MAX_STACK_LINES = 16;
+	/** How much of a custom item name survives into the prompt line. */
+	private static final int MAX_NAME_CHARS = 24;
 
 	private WorldPerception() {}
 
@@ -226,11 +228,70 @@ public final class WorldPerception {
 			for (int i = 0; i < inv.getContainerSize() && out.size() < MAX_STACK_LINES; i++) {
 				ItemStack stack = inv.getItem(i);
 				if (stack == null || stack.isEmpty()) continue;
-				out.add(BuiltInRegistries.ITEM.getKey(stack.getItem()) + " x" + stack.getCount());
+				out.add(describeStack(stack));
 			}
 		} catch (Throwable t) {
 			// partial inventory is still useful
 		}
 		return out;
+	}
+
+	/**
+	 * An item as a person would name it: what it is, plus whatever about it changes what can be done
+	 * with it.
+	 *
+	 * <p>The id and count alone are not enough to act on. {@code minecraft:potion x1} is a water
+	 * bottle or a swiftness potion and there is no telling which; {@code minecraft:iron_axe x1} is
+	 * enchanted or plain, and grinding one is a different request from grinding the other. That was
+	 * measured, not guessed: asked to take the sharpness off an axe it was carrying, the model
+	 * answered "only my own plain iron axe, which has no Sharpness to strip", which is exactly what
+	 * this method used to tell it.
+	 *
+	 * <p>Short on purpose — three enchantments, a name cut to {@value #MAX_NAME_CHARS} characters,
+	 * wear only once it is damaged. A prompt that lists every component stops being read, and the
+	 * whole line is one of sixteen.
+	 */
+	static String describeStack(ItemStack stack) {
+		StringBuilder line = new StringBuilder(BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
+		line.append(" x").append(stack.getCount());
+
+		List<String> state = new ArrayList<>();
+		net.minecraft.world.item.alchemy.PotionContents potion =
+				stack.get(net.minecraft.core.component.DataComponents.POTION_CONTENTS);
+		if (potion != null) {
+			state.add(potion.potion()
+					.map(holder -> holder.unwrapKey().map(k -> k.identifier().getPath()).orElse("custom"))
+					.orElse("empty"));
+		}
+		// getEnchantmentsForCrafting is the effective set: it is ENCHANTMENTS on gear and
+		// STORED_ENCHANTMENTS on an enchanted book, which is the pair an anvil or a grindstone acts on.
+		net.minecraft.world.item.enchantment.ItemEnchantments enchantments =
+				net.minecraft.world.item.enchantment.EnchantmentHelper.getEnchantmentsForCrafting(stack);
+		if (enchantments != null && !enchantments.isEmpty()) {
+			List<String> named = new ArrayList<>();
+			for (var entry : enchantments.entrySet()) {
+				if (named.size() >= 3) {
+					named.add("…");
+					break;
+				}
+				String key = entry.getKey().unwrapKey()
+						.map(k -> k.identifier().getPath())
+						.orElse("enchantment");
+				named.add(key + " " + entry.getIntValue());
+			}
+			state.add(String.join(", ", named));
+		}
+		net.minecraft.network.chat.Component custom =
+				stack.get(net.minecraft.core.component.DataComponents.CUSTOM_NAME);
+		if (custom != null) {
+			String text = custom.getString();
+			state.add("named \"" + (text.length() <= MAX_NAME_CHARS ? text
+					: text.substring(0, MAX_NAME_CHARS - 1) + "…") + "\"");
+		}
+		if (stack.isDamageableItem() && stack.getDamageValue() > 0) {
+			state.add("worn " + stack.getDamageValue() + "/" + stack.getMaxDamage());
+		}
+		if (!state.isEmpty()) line.append(" (").append(String.join("; ", state)).append(')');
+		return line.toString();
 	}
 }
