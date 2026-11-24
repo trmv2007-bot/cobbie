@@ -102,18 +102,10 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
             });
             UUID ownerId = server.computeOnServer(s -> CobbieTestSupport.owner(s).getUUID());
 
-            // Print what he is actually told. Without this a mismatch cannot be told apart from a
-            // fixture that never gave him the thing, and "the model chose badly" would be a guess.
-            String seen = server.computeOnServer(s -> {
-                CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
-                var snapshot = com.rishi.cobbie.world.WorldPerception.snapshot(cobbie);
-                return "bag=" + snapshot.inventoryIds()
-                        + " | entities=" + snapshot.nearbyEntities().stream()
-                                .map(n -> n.id() + "@" + String.format(java.util.Locale.ROOT, "%.1f", n.distance()))
-                                .toList()
-                        + " | blocks=" + snapshot.nearbyBlocks().stream().map(BlockNote::id).toList();
-            });
-            System.out.println("[gametest] VerbChoice world: " + seen);
+            // Print what he is actually told, for every ask rather than once at the start: a
+            // mismatch cannot be told apart from a fixture that never gave him the thing, and a
+            // world that changed between the setup and the question would hide the difference.
+            System.out.println("[gametest] VerbChoice world: " + seen(server));
 
             List<String> right = new ArrayList<>();
             List<String> wrong = new ArrayList<>();
@@ -139,6 +131,7 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                 String reply = server.computeOnServer(s -> CobbieMemory.history(ownerId, 40).stream()
                         .filter(m -> "assistant".equals(m.role()) && !m.content().isBlank())
                         .reduce((a, b) -> b).map(CobbieMemory.Message::content).orElse(""));
+                System.out.println("[gametest] VerbChoice world: " + seen(server));
                 boolean chose = transcript.contains(ask.verb());
                 String line = "\"" + ask.words() + "\" wanted " + ask.verb() + " — "
                         + (planned ? transcript : "no action planned") + " | he said: \""
@@ -171,6 +164,19 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                     + " plain request(s) got no step planned. A prompt or vocabulary finding, not a"
                     + " flake — the verbs themselves are proved by their own tests.");
         }
+    }
+
+    /** The snapshot the model is given, in the shape it is given it. */
+    private static String seen(TestServerContext server) {
+        return server.computeOnServer(s -> {
+            CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
+            var snapshot = com.rishi.cobbie.world.WorldPerception.snapshot(cobbie);
+            return "bag=" + snapshot.inventoryIds()
+                    + " | entities=" + snapshot.nearbyEntities().stream()
+                            .map(n -> n.id() + "@" + String.format(java.util.Locale.ROOT, "%.1f", n.distance()))
+                            .toList()
+                    + " | blocks=" + snapshot.nearbyBlocks().stream().map(BlockNote::id).toList();
+        });
     }
 
     private static boolean sendAndWait(ClientGameTestContext context, TestServerContext server, Ask ask,
