@@ -205,6 +205,80 @@ public final class FakeActor {
 		}
 	}
 
+	/** What came of a station that turns one item into another. */
+	public record MadeOutcome(boolean success, String reason, ItemStack result) {}
+
+	/**
+	 * Weave a banner at a real loom.
+	 *
+	 * <p>The model names the <b>pattern item</b> — {@code creeper_banner_pattern} is an ordinary item
+	 * with a registry id it can say — and the loom derives the pattern list from it. With one pattern
+	 * item in the slot the list has exactly one entry, so index 0 is the pattern he asked for and this
+	 * code chooses nothing on his behalf. That is the difference between a reachable verb and a menu
+	 * that picks blindly: the choice is made by the name, not by the index.
+	 */
+	public static MadeOutcome weave(CobbieEntity body, ServerLevel level, BlockPos loom, ItemStack banner,
+			ItemStack dye, ItemStack pattern) {
+		FakePlayer actor = place(body, level, ItemStack.EMPTY, null);
+		try {
+			var access = net.minecraft.world.inventory.ContainerLevelAccess.create(level, loom);
+			var menu = new net.minecraft.world.inventory.LoomMenu(0, actor.getInventory(), access);
+			menu.getBannerSlot().set(banner.copyWithCount(1));
+			menu.getDyeSlot().set(dye.copyWithCount(1));
+			menu.getPatternSlot().set(pattern.copyWithCount(1));
+			// The menu is the oracle for what a pattern item is. Nothing here decides that.
+			if (menu.getSelectablePatterns().isEmpty()) {
+				return new MadeOutcome(false, "the loom does not know that pattern", ItemStack.EMPTY);
+			}
+			menu.clickMenuButton(actor, 0);
+			ItemStack made = menu.getResultSlot().getItem().copy();
+			menu.getBannerSlot().set(ItemStack.EMPTY);
+			menu.getDyeSlot().set(ItemStack.EMPTY);
+			menu.getPatternSlot().set(ItemStack.EMPTY);
+			if (made.isEmpty()) {
+				return new MadeOutcome(false, "the loom made nothing out of those", ItemStack.EMPTY);
+			}
+			return new MadeOutcome(true, null, made);
+		} catch (RuntimeException e) {
+			return new MadeOutcome(false, "the loom went wrong (" + e.getClass().getSimpleName() + ")",
+					ItemStack.EMPTY);
+		}
+	}
+
+	/**
+	 * Work a map at a real cartography table: paper zooms it out, an empty map copies it, a glass
+	 * pane locks it. The table decides which of those a pair is; this only loads and takes.
+	 */
+	public static MadeOutcome cartography(CobbieEntity body, ServerLevel level, BlockPos table, ItemStack map,
+			ItemStack addition) {
+		FakePlayer actor = place(body, level, ItemStack.EMPTY, null);
+		try {
+			var access = net.minecraft.world.inventory.ContainerLevelAccess.create(level, table);
+			var menu = new net.minecraft.world.inventory.CartographyTableMenu(0, actor.getInventory(), access);
+			menu.getSlot(net.minecraft.world.inventory.CartographyTableMenu.MAP_SLOT).set(map.copyWithCount(1));
+			menu.getSlot(net.minecraft.world.inventory.CartographyTableMenu.ADDITIONAL_SLOT)
+					.set(addition.copyWithCount(1));
+			ItemStack offered = menu.getSlot(net.minecraft.world.inventory.CartographyTableMenu.RESULT_SLOT)
+					.getItem().copy();
+			if (offered.isEmpty()) {
+				return new MadeOutcome(false, "the table will not do that with those", ItemStack.EMPTY);
+			}
+			menu.clicked(net.minecraft.world.inventory.CartographyTableMenu.RESULT_SLOT, 0,
+					net.minecraft.world.inventory.ContainerInput.PICKUP, actor);
+			ItemStack taken = menu.getCarried().copy();
+			menu.setCarried(ItemStack.EMPTY);
+			menu.getSlot(net.minecraft.world.inventory.CartographyTableMenu.MAP_SLOT).set(ItemStack.EMPTY);
+			menu.getSlot(net.minecraft.world.inventory.CartographyTableMenu.ADDITIONAL_SLOT).set(ItemStack.EMPTY);
+			if (taken.isEmpty()) {
+				return new MadeOutcome(false, "the table gave nothing back", ItemStack.EMPTY);
+			}
+			return new MadeOutcome(true, null, taken);
+		} catch (RuntimeException e) {
+			return new MadeOutcome(false, "the cartography table went wrong ("
+					+ e.getClass().getSimpleName() + ")", ItemStack.EMPTY);
+		}
+	}
+
 	/**
 	 * Right-click an entity: shears on a sheep, a bucket on a cow, a lead on a horse.
 	 *

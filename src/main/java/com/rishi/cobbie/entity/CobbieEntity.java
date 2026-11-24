@@ -1291,6 +1291,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			case ActionVocabulary.BREW -> startBrew(intent);
 			case ActionVocabulary.SMITH -> smithFromBag(intent);
 			case ActionVocabulary.GRIND -> grindFromBag(intent);
+			case ActionVocabulary.WEAVE -> weaveFromBag(intent);
+			case ActionVocabulary.MAP -> mapFromBag(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
@@ -2468,7 +2470,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			pile.setDefaultPickUpDelay();
 			level().addFreshEntity(pile);
 		}
-		if (leftover.isEmpty() || leftover.get(net.minecraft.core.component.DataComponents.ENCHANTMENTS) == null) {
+		if (used.remaining().get(net.minecraft.core.component.DataComponents.ENCHANTMENTS) == null) {
 			return ActionOutcome.fail("anvil", "the anvil returned nothing enchanted");
 		}
 		return ActionOutcome.ok("anvil", "put an enchantment on " + itemId(leftover) + " for "
@@ -2868,6 +2870,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		}
 
 		ItemStack item = inventory.getItem(slot);
+		String itemName = itemId(item);
 		com.rishi.cobbie.actor.FakeActor.Outcome used = com.rishi.cobbie.actor.FakeActor.grind(this, serverLevel,
 				stone, item.copy());
 		if (used == null || !used.result().consumesAction() || used.remaining().isEmpty()) {
@@ -2884,7 +2887,156 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			pile.setDefaultPickUpDelay();
 			level().addFreshEntity(pile);
 		}
-		return ActionOutcome.ok("grind", "took the enchantments off " + itemId(item));
+		return ActionOutcome.ok("grind", "took the enchantments off " + itemName);
+	}
+
+	/**
+	 * Put a banner pattern on a banner at a real loom.
+	 *
+	 * <p>The model names the pattern <b>item</b> and this finds it by that name, so the choice that
+	 * matters is his rather than an index's: the loom derives its pattern list from the item, and with
+	 * one item in the slot the list has one entry. A pattern he cannot name is a pattern he cannot ask
+	 * for, and the refusal says so instead of picking one for him.
+	 */
+	private ActionOutcome weaveFromBag(ActionIntent intent) {
+		if (!CobbieConfig.isCraftingAllowed()) {
+			return ActionOutcome.fail("weave", "making things is switched off — /cobbie permit crafting on");
+		}
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("weave", "no server world");
+		BlockPos loom = findStation(Blocks.LOOM);
+		if (loom == null) return ActionOutcome.fail("weave", "I need a loom and there is none near me");
+
+		int bannerSlot = -1;
+		for (int i = 0; i < inventory.getContainerSize() && bannerSlot < 0; i++) {
+			if (inventory.getItem(i).getItem() instanceof net.minecraft.world.item.BannerItem) bannerSlot = i;
+		}
+		if (bannerSlot < 0) return ActionOutcome.fail("weave", "I have no banner to work on");
+
+		String asked = intent.target() == null || intent.target().isBlank() ? null : resolveItemId(intent.target());
+		int patternSlot = -1;
+		for (int i = 0; i < inventory.getContainerSize() && patternSlot < 0; i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty() || i == bannerSlot) continue;
+			if (asked != null ? !asked.equals(itemId(stack)) : !itemId(stack).contains("banner_pattern")) continue;
+			patternSlot = i;
+		}
+		if (patternSlot < 0) {
+			String held = String.join(", ", carriedByItem().keySet().stream()
+					.filter(id -> id.contains("banner_pattern")).toList());
+			return ActionOutcome.fail("weave", asked != null
+					? "I have no " + asked
+					: held.isEmpty() ? "I have no banner pattern to put on it"
+							: "tell me which pattern — I have " + held);
+		}
+
+		String colour = intent.data() == null ? "" : intent.data().trim().toLowerCase(Locale.ROOT).replace(' ', '_');
+		String dyeId = colour.isEmpty() ? null : resolveItemId(colour.endsWith("_dye") ? colour : colour + "_dye");
+		int dyeSlot = -1;
+		for (int i = 0; i < inventory.getContainerSize() && dyeSlot < 0; i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty() || i == bannerSlot || i == patternSlot) continue;
+			if (dyeId != null ? dyeId.equals(itemId(stack))
+					: stack.getItem() instanceof net.minecraft.world.item.DyeItem) {
+				dyeSlot = i;
+			}
+		}
+		if (dyeSlot < 0) {
+			return ActionOutcome.fail("weave", dyeId != null ? "I have no " + dyeId : "I have no dye to colour it");
+		}
+
+		ItemStack banner = inventory.getItem(bannerSlot);
+		ItemStack dye = inventory.getItem(dyeSlot);
+		ItemStack pattern = inventory.getItem(patternSlot);
+		// Named before anything is spent: the stacks are emptied by the time the report is written,
+		// and "wove minecraft:air onto the banner" is what reading them afterwards produces.
+		String patternName = itemId(pattern) + " onto the banner in " + itemId(dye);
+		com.rishi.cobbie.actor.FakeActor.MadeOutcome made = com.rishi.cobbie.actor.FakeActor.weave(this,
+				serverLevel, loom, banner.copy(), dye.copy(), pattern.copy());
+		if (made == null || !made.success()) {
+			return ActionOutcome.fail("weave", made == null ? "the loom would not take it" : made.reason());
+		}
+
+		// Verify what the loom made, before it goes into the bag. Checking the stack afterwards is
+		// checking a stack that add() has already emptied: the pattern and the dye get consumed, the
+		// banner lands, and the step then reports failure for an action that worked.
+		if (made.result().get(net.minecraft.core.component.DataComponents.BANNER_PATTERNS) == null) {
+			return ActionOutcome.fail("weave", "the banner came back with no pattern on it");
+		}
+		shrinkSlot(bannerSlot, 1);
+		shrinkSlot(dyeSlot, 1);
+		shrinkSlot(patternSlot, 1);
+		ItemStack leftover = made.result().copy();
+		if (!add(leftover, inventory)) {
+			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
+			pile.setDefaultPickUpDelay();
+			level().addFreshEntity(pile);
+		}
+		return ActionOutcome.ok("weave", "wove " + patternName);
+	}
+
+	/**
+	 * Work a map at a real cartography table: paper zooms it out, an empty map copies it, a glass
+	 * pane locks it. The table decides which a pair is; a pair it will not do is refused by it.
+	 */
+	private ActionOutcome mapFromBag(ActionIntent intent) {
+		if (!CobbieConfig.isCraftingAllowed()) {
+			return ActionOutcome.fail("map", "making things is switched off — /cobbie permit crafting on");
+		}
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("map", "no server world");
+		BlockPos table = findStation(Blocks.CARTOGRAPHY_TABLE);
+		if (table == null) {
+			return ActionOutcome.fail("map", "I need a cartography table and there is none near me");
+		}
+
+		int mapSlot = -1;
+		for (int i = 0; i < inventory.getContainerSize() && mapSlot < 0; i++) {
+			if (inventory.getItem(i).is(Items.FILLED_MAP)) mapSlot = i;
+		}
+		if (mapSlot < 0) return ActionOutcome.fail("map", "I have no map to work on");
+
+		String asked = intent.data() == null || intent.data().isBlank() ? null : resolveItemId(intent.data());
+		int additionSlot = -1;
+		// Paper zooms, an empty map copies, a glass pane locks. Without a word from him, zoom first:
+		// it is what "make my map bigger" means and paper is what he is most likely to be carrying.
+		for (String want : asked != null ? List.of(asked)
+				: List.of("minecraft:paper", "minecraft:map", "minecraft:glass_pane")) {
+			for (int i = 0; i < inventory.getContainerSize() && additionSlot < 0; i++) {
+				if (i != mapSlot && want.equals(itemId(inventory.getItem(i)))) additionSlot = i;
+			}
+			if (additionSlot >= 0) break;
+		}
+		if (additionSlot < 0) {
+			return ActionOutcome.fail("map", "I have no " + (asked != null ? asked : "paper to zoom it with"));
+		}
+
+		ItemStack map = inventory.getItem(mapSlot);
+		ItemStack addition = inventory.getItem(additionSlot);
+		com.rishi.cobbie.actor.FakeActor.MadeOutcome made = com.rishi.cobbie.actor.FakeActor.cartography(this,
+				serverLevel, table, map.copy(), addition.copy());
+		if (made == null || !made.success()) {
+			return ActionOutcome.fail("map", made == null ? "the table would not take it" : made.reason());
+		}
+
+		shrinkSlot(mapSlot, 1);
+		shrinkSlot(additionSlot, 1);
+		ItemStack leftover = made.result().copy();
+		if (!add(leftover, inventory)) {
+			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
+			pile.setDefaultPickUpDelay();
+			level().addFreshEntity(pile);
+		}
+		return ActionOutcome.ok("map", "worked the map with " + itemId(addition));
+	}
+
+	/** The nearest block of a kind he already knows how to walk to, or null. */
+	private BlockPos findStation(Block block) {
+		BlockPos base = this.blockPosition();
+		for (BlockPos probe : BlockPos.betweenClosed(
+				base.offset(-FURNACE_SEARCH, -6, -FURNACE_SEARCH),
+				base.offset(FURNACE_SEARCH, 6, FURNACE_SEARCH))) {
+			if (level().getBlockState(probe).is(block)) return probe.immutable();
+		}
+		return null;
 	}
 
 	private BlockPos findGrindstone() {

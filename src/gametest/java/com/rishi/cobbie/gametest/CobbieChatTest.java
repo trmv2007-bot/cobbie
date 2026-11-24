@@ -33,15 +33,21 @@ public final class CobbieChatTest implements FabricClientGameTest {
 
             UUID ownerId = server.computeOnServer(s -> CobbieTestSupport.owner(s).getUUID());
 
-            // Memory persists between runs, so count the replies that already exist: a stale answer
+            // Memory persists between runs, so remember the reply that already exists: a stale answer
             // from an earlier session must never be mistaken for a reply to this message.
-            int before = server.computeOnServer(s -> replyCount(ownerId));
+            //
+            // The predicate is the *last reply differing*, not a count growing. A count is a proxy, and
+            // it broke exactly as proxies do: with a history already holding this same question from an
+            // earlier run, the new reply evicted an old one and the count never moved, so the test
+            // reported "no reply reached memory" while the reply sat in the history it printed. Anything
+            // else writing to the same memory would have done the same.
+            String before = server.computeOnServer(s -> lastReply(ownerId));
 
             // Send the message the way a player does, through the real chat channel.
             context.runOnClient(mc -> mc.getConnection().sendChat(PROMPT));
 
             try {
-                server.waitFor(s -> replyCount(ownerId) > before, 1800);
+                server.waitFor(s -> !lastReply(ownerId).equals(before), 1800);
             } catch (Throwable t) {
                 ConnectionState state = CobbieBrain.lastState();
                 String detail = CobbieBrain.lastStateDetail();
@@ -50,11 +56,7 @@ public final class CobbieChatTest implements FabricClientGameTest {
                         + " detail=" + detail + " history=" + history, t);
             }
 
-            String answer = server.computeOnServer(s -> CobbieMemory.history(ownerId, 40).stream()
-                    .filter(m -> "assistant".equals(m.role()))
-                    .reduce((a, b) -> b)
-                    .map(CobbieMemory.Message::content)
-                    .orElse(""));
+            String answer = server.computeOnServer(s -> lastReply(ownerId));
             if (answer.contains("think>") || answer.contains("We need to respond")) {
                 throw new AssertionError("Reasoning leaked into the reply: " + answer);
             }
@@ -63,9 +65,12 @@ public final class CobbieChatTest implements FabricClientGameTest {
         }
     }
 
-    private static int replyCount(UUID ownerId) {
-        return (int) CobbieMemory.history(ownerId, 40).stream()
+    /** The newest non-blank thing he said, or "" when he has said nothing yet. */
+    private static String lastReply(UUID ownerId) {
+        return CobbieMemory.history(ownerId, 40).stream()
                 .filter(m -> "assistant".equals(m.role()) && !m.content().isBlank())
-                .count();
+                .reduce((a, b) -> b)
+                .map(CobbieMemory.Message::content)
+                .orElse("");
     }
 }
