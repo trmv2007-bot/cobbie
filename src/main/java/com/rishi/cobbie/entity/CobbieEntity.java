@@ -1154,6 +1154,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			case ActionVocabulary.REPAIR -> repairFromBag(intent);
 			case ActionVocabulary.DYE -> dyeFromBag(intent);
 			case ActionVocabulary.ENCHANT -> enchantFromBag(intent);
+			case ActionVocabulary.ANVIL -> anvilFromBag(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
@@ -2261,6 +2262,81 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		String name = used.remaining().isEmpty() ? "it" : itemId(used.remaining());
 		return ActionOutcome.ok("enchant", "enchanted " + name + " for " + used.levelsSpent()
 				+ " level(s) and " + lapisNeeded + " lapis");
+	}
+
+	/**
+	 * Put an enchanted book onto something he is carrying, at a real anvil.
+	 *
+	 * <p>The book and the item go into a real {@code AnvilMenu}, and the take is a real click on its
+	 * result slot — so the level charge, the refusal when he cannot afford it and the merging of
+	 * enchantments are the game's, not mine.
+	 */
+	private ActionOutcome anvilFromBag(ActionIntent intent) {
+		if (!CobbieConfig.permits("anvil")) {
+			return ActionOutcome.fail("anvil", "making things is switched off — /cobbie permit crafting on");
+		}
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("anvil", "no server world");
+		BlockPos anvil = findAnvil();
+		if (anvil == null) return ActionOutcome.fail("anvil", "I need an anvil and there is none near me");
+
+		String wanted = intent.target() == null || intent.target().isBlank() ? null : resolveItemId(intent.target());
+		int itemSlot = -1;
+		for (int i = 0; i < inventory.getContainerSize() && itemSlot < 0; i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty() || stack.is(Blocks.ENCHANTED_BOOK.asItem())) continue;
+			if (wanted == null ? stack.isEnchantable() : wanted.equals(itemId(stack))) itemSlot = i;
+		}
+		if (itemSlot < 0) {
+			return ActionOutcome.fail("anvil", wanted == null
+					? "I have nothing here that a book would improve"
+					: "I have no " + wanted + " to work on");
+		}
+		int bookSlot = -1;
+		String bookWanted = intent.data() == null || intent.data().isBlank() ? null : resolveItemId(intent.data());
+		for (int i = 0; i < inventory.getContainerSize() && bookSlot < 0; i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty() || !stack.is(Blocks.ENCHANTED_BOOK.asItem())) continue;
+			if (stack.get(net.minecraft.core.component.DataComponents.STORED_ENCHANTMENTS) == null) continue;
+			if (bookWanted != null && !bookWanted.equals(itemId(stack))) continue;
+			bookSlot = i;
+		}
+		if (bookSlot < 0) {
+			return ActionOutcome.fail("anvil", "I have no enchanted book" + (bookWanted == null ? "" : " like that"));
+		}
+
+		ItemStack item = inventory.getItem(itemSlot);
+		ItemStack book = inventory.getItem(bookSlot);
+		com.rishi.cobbie.actor.FakeActor.AnvilOutcome used = com.rishi.cobbie.actor.FakeActor.applyBook(this,
+				serverLevel, anvil, item.copy(), book.copyWithCount(1), experienceLevel, experienceProgress);
+		if (used == null || !used.success()) {
+			return ActionOutcome.fail("anvil", used == null ? "the anvil would not take it" : used.reason());
+		}
+
+		this.experienceLevel = used.levelAfter();
+		this.experienceProgress = used.progressAfter();
+		inventory.setItem(itemSlot, ItemStack.EMPTY);
+		inventory.setItem(bookSlot, ItemStack.EMPTY);
+		ItemStack leftover = used.remaining();
+		if (!add(leftover, inventory)) {
+			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
+			pile.setDefaultPickUpDelay();
+			level().addFreshEntity(pile);
+		}
+		if (leftover.isEmpty() || leftover.get(net.minecraft.core.component.DataComponents.ENCHANTMENTS) == null) {
+			return ActionOutcome.fail("anvil", "the anvil returned nothing enchanted");
+		}
+		return ActionOutcome.ok("anvil", "put an enchantment on " + itemId(leftover) + " for "
+				+ used.levelsSpent() + " level(s)");
+	}
+
+	private BlockPos findAnvil() {
+		BlockPos base = this.blockPosition();
+		for (BlockPos probe : BlockPos.betweenClosed(
+				base.offset(-FURNACE_SEARCH, -6, -FURNACE_SEARCH),
+				base.offset(FURNACE_SEARCH, 6, FURNACE_SEARCH))) {
+			if (level().getBlockState(probe).is(Blocks.ANVIL)) return probe.immutable();
+		}
+		return null;
 	}
 
 	/** "low", "mid", "high" (or blank for the cheapest on offer) to a menu button index. */
