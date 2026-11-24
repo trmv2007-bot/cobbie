@@ -167,6 +167,27 @@ final class CobbieTestSupport {
         });
     }
 
+    /**
+     * Wait until the plan in flight has finished.
+     *
+     * <p>Plan-shaped assertions go wrong in one way above all others: reading a value before the plan
+     * that changes it has run. A test that queues a second job while the first is still retrying then
+     * asserts against a job that has not started, and the failure reads like a product bug — it looked
+     * exactly like that twice. Waiting on the plan itself, rather than on a side effect that may arrive
+     * later, is the fix, and it belongs here so no new test has to rediscover it.
+     */
+    static void awaitPlanSettled(TestServerContext server, int ticks) {
+        try {
+            server.waitFor(s -> cobbie(s).map(c -> c.lastPlan() == null || c.lastPlan().isFinished())
+                    .orElse(false), ticks);
+        } catch (Throwable t) {
+            throw new AssertionError("The plan never settled; it is "
+                    + server.computeOnServer(s -> cobbie(s)
+                    .map(c -> c.lastPlan() == null ? "none" : c.lastPlan().status().toString())
+                    .orElse("no companion")), t);
+        }
+    }
+
     /** Teleport the owner properly: a server-side snap is undone by the client's next position packet. */
     static void teleportOwner(TestServerContext server, double dx, double dy, double dz) {
         server.computeOnServer(s -> {
