@@ -8,6 +8,7 @@ import net.fabricmc.fabric.api.client.gametest.v1.context.ClientGameTestContext;
 import net.fabricmc.fabric.api.client.gametest.v1.context.TestServerContext;
 import net.fabricmc.fabric.api.client.gametest.v1.context.TestSingleplayerContext;
 import net.minecraft.client.gui.screens.worldselection.WorldCreationUiState;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -89,9 +90,29 @@ public final class CobbieCraftTest implements FabricClientGameTest {
                 throw new AssertionError("The pickaxe did not come from his logs: logs " + logsBefore
                         + " -> " + logsAfter);
             }
+            // 4. The stonecutter: one stone is one stair, where the crafting table would want six, so a
+            // pass here can only come from the stonecutting recipe.
+            BlockPos saw = server.computeOnServer(s ->
+                    CobbieTestSupport.owner(s).blockPosition().offset(2, -1, 2));
+            server.computeOnServer(s -> {
+                CobbieTestSupport.command(s, "setblock " + saw.getX() + " " + saw.getY() + " " + saw.getZ()
+                        + " minecraft:stonecutter");
+                CobbieTestSupport.cobbie(s).orElseThrow().addItem(new ItemStack(Items.STONE, 1));
+                return null;
+            });
+            String stairRefusal = offer(server, "cut me a stair", "stone_stairs", "1");
+            if (stairRefusal != null) throw new AssertionError("stonecutter plan refused: " + stairRefusal);
+            try {
+                server.waitFor(s -> countIn(s, "minecraft:stone_stairs") >= 1, 400);
+            } catch (Throwable t) {
+                throw new AssertionError("No stair was cut from a single stone. He carries "
+                        + inventory(server) + "; " + lastReport(server), t);
+            }
+
             String made = lastReport(server);
 
-            System.out.println("[gametest] craft ok: planks from logs, then pickaxe through the chain"
+            System.out.println("[gametest] craft ok: planks from logs, a pickaxe through the chain, "
+                    + "a stair from one stone at the stonecutter"
                     + " (logs " + logsBefore + " -> " + logsAfter + "); " + made);
         }
     }

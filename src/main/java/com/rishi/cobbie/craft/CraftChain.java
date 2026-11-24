@@ -30,9 +30,10 @@ public final class CraftChain {
 	/** Deeper than this and "make X" means the recipe graph is looping, not that he is clever. */
 	public static final int DEFAULT_MAX_DEPTH = 6;
 
-	/** Where a recipe is worked: in his hands, or in a furnace he has to stand at. */
+	/** Where a recipe is worked: in his hands, or at a station he has to stand at. */
 	public static final String HAND = "hand";
 	public static final String FURNACE = "furnace";
+	public static final String STONECUTTER = "stonecutter";
 
 	/**
 	 * One recipe as the planner needs it.
@@ -41,7 +42,7 @@ public final class CraftChain {
 	 * @param result      registry id of the item it makes
 	 * @param resultCount how many of that item one run produces
 	 * @param slots       one entry per consuming slot; each entry lists the item ids that slot accepts
-	 * @param station     {@link #HAND} or {@link #FURNACE}
+	 * @param station     {@link #HAND}, {@link #FURNACE} or {@link #STONECUTTER}
 	 */
 	public record Recipe(String id, String result, int resultCount, List<List<String>> slots, String station) {
 		public Recipe {
@@ -56,6 +57,15 @@ public final class CraftChain {
 
 		public boolean needsFurnace() {
 			return FURNACE.equals(station);
+		}
+
+		/** A station that has to be found, but does not make him wait. */
+		public boolean needsStonecutter() {
+			return STONECUTTER.equals(station);
+		}
+
+		public boolean needsStation() {
+			return needsFurnace() || needsStonecutter();
 		}
 	}
 
@@ -85,6 +95,10 @@ public final class CraftChain {
 
 		public boolean needsFurnace() {
 			return FURNACE.equals(station);
+		}
+
+		public boolean needsStonecutter() {
+			return STONECUTTER.equals(station);
 		}
 
 		/** How many of {@link #result} this step adds to the bag. */
