@@ -130,7 +130,10 @@ public final class ActionVocabulary {
 			else if (SMELT.equals(verb)) sb.append(" (needs x,y,z of a furnace and target = the thing to cook)");
 			else if (TAKE.equals(verb)) sb.append(" (needs x,y,z of a container and target = what to take)");
 			else if (PUT.equals(verb)) sb.append(" (needs x,y,z of a container and target = what to put in)");
-			else if (USE.equals(verb)) sb.append(" (x,y,z of the block to use, or 0,0,0 to use in the air)");
+			else if (USE.equals(verb)) {
+				sb.append(" (x,y,z of the block to use, or 0,0,0 to use in the air,");
+				sb.append(" or 0,0,0 with data = a mob to use it on, e.g. data=sheep with shears)");
+			}
 			else if (REPAIR.equals(verb)) sb.append(" (target = which of my things to mend)");
 			else if (DYE.equals(verb)) sb.append(" (target = the colour; data = what to dye)");
 			else if (ENCHANT.equals(verb)) sb.append(" (target = what to enchant; data = low|mid|high)");

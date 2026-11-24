@@ -145,6 +145,18 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private static final int STATION_STALL_TICKS = 400;
 	/** How far he will look for a furnace before giving up on making iron. */
 	private static final int FURNACE_SEARCH = 12;
+	/** How far he will reach for a mob with an item. A player's reach is three blocks; he is taller. */
+	private static final double ENTITY_USE_REACH = 6.0;
+	/**
+	 * Why a fishing rod is refused rather than cast.
+	 *
+	 * <p>The bobber belongs to a player, and {@code FishingHook.tick} discards itself when
+	 * {@code getPlayerOwner()} finds nobody. A probe measured it: one bobber on the cast, none forty
+	 * ticks later, because the fake actor is not in the world's player list. A cast that silently
+	 * evaporates reports success and delivers nothing, so it is not offered.
+	 */
+	private static final String NO_FISHING =
+			"I cannot fish — a fishing line belongs to a player and I am not one";
 	/**
 	 * Marks a walk he planned for himself rather than one he was asked for. The request limit
 	 * ({@code navigation_range}) exists so a model cannot send him across the map; his own wander
@@ -2854,13 +2866,110 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 					? "I am not holding anything to use"
 					: "I have no " + intent.target() + " to use");
 		}
+		if (held.is(Items.FISHING_ROD)) return ActionOutcome.fail("use", NO_FISHING);
 		if (atBlock && this.blockPosition().distSqr(pos) > reachSquared()) {
 			BlockPos stand = standingSpotNear(pos);
 			if (stand == null) return ActionOutcome.fail("use", "nowhere to stand at " + describe(pos));
 			beginWalking(intent, stand, pos);
 			return null;
 		}
+
+		// A player's other right-click: not a block, but a mob. `data` names what to use it on, so
+		// shears, a bucket, a lead and everything else that acts on an animal reach the same verb.
+		if (!atBlock && intent.data() != null && !intent.data().isBlank()) {
+			LivingEntity other = namedEntity(intent.data());
+			if (other == null) {
+				return ActionOutcome.fail("use", "I cannot see a " + intent.data().trim() + " close enough to use this on");
+			}
+			return useOnEntity(other, held);
+		}
 		return useAt(pos, atBlock, intent);
+	}
+
+	/** The nearest living thing of a named type that it is sane to point an item at. */
+	private LivingEntity namedEntity(String raw) {
+		Identifier id = entityId(raw);
+		if (id == null) return null;
+		EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.getOptional(id).orElse(null);
+		if (type == null) return null;
+		LivingEntity best = null;
+		double bestDistance = Double.MAX_VALUE;
+		for (LivingEntity other : level().getEntitiesOfClass(LivingEntity.class,
+				this.getBoundingBox().inflate(ENTITY_USE_REACH))) {
+			// Never himself, never the owner, and never another player: there is no item in the game
+			// whose use-on-entity behaviour belongs on a person.
+			if (other == this || other instanceof Player || !other.isAlive() || other.getType() != type) continue;
+			double distance = other.distanceToSqr(this);
+			if (distance < bestDistance) {
+				bestDistance = distance;
+				best = other;
+			}
+		}
+		return best;
+	}
+
+	/** "cow", "minecraft:cow" and "cows" all have to land on the same type. */
+	private static Identifier entityId(String raw) {
+		if (raw == null || raw.isBlank()) return null;
+		String name = raw.trim().toLowerCase(Locale.ROOT).replace(' ', '_');
+		for (String candidate : List.of(name, name.endsWith("s") ? name.substring(0, name.length() - 1) : name)) {
+			try {
+				Identifier id = Identifier.parse(candidate.contains(":") ? candidate : "minecraft:" + candidate);
+				if (BuiltInRegistries.ENTITY_TYPE.getOptional(id).isPresent()) return id;
+			} catch (Exception ignored) {
+				// not an id at all
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Use what he is holding on another living thing, the way a player right-clicks it.
+	 *
+	 * <p>A lead does not go through the actor, and the reason came out of a probe:
+	 *
+	 * <ul>
+	 *   <li><b>A lead.</b> Handing one to the actor leashes the animal to a player who is never in
+	 *       the world — the probe found the cow held by {@code FakePlayer [Cobbie]}, a ghost standing
+	 *       still. Leashed to Cobbie himself the animal walks with him, which is what a lead is for.</li>
+	 * </ul>
+	 */
+	private ActionOutcome useOnEntity(LivingEntity other, ItemStack held) {
+		if (held.isEmpty()) return ActionOutcome.fail("use", "I am not holding anything to use on it");
+		String what = BuiltInRegistries.ENTITY_TYPE.getKey(other.getType()).getPath().replace('_', ' ');
+
+		if (held.is(Items.LEAD)) return leashToSelf(other, what);
+
+		com.rishi.cobbie.actor.FakeActor.Outcome outcome;
+		try {
+			outcome = com.rishi.cobbie.actor.FakeActor.useOnEntity(this, other, held.copy());
+		} catch (RuntimeException e) {
+			return ActionOutcome.fail("use", "using that on the " + what + " went wrong ("
+					+ e.getClass().getSimpleName() + ")");
+		}
+		if (outcome == null) return ActionOutcome.fail("use", "no server world");
+		ItemStack after = outcome.remaining();
+		this.setItemInHand(InteractionHand.MAIN_HAND, after.isEmpty() ? ItemStack.EMPTY : after);
+		if (!outcome.result().consumesAction()) {
+			return ActionOutcome.fail("use", "nothing happened when I used " + itemId(held) + " on the " + what);
+		}
+		// Shearing drops wool at the animal's feet rather than into his hand; anything that landed
+		// within reach is his, so a shear is not "I sheared it and left the wool".
+		collectWithinReach();
+		return ActionOutcome.ok("use", "used " + itemId(held) + " on the " + what);
+	}
+
+	/** Tie an animal to himself, with vanilla leash physics, instead of to a player who is not there. */
+	private ActionOutcome leashToSelf(LivingEntity other, String what) {
+		if (!(other instanceof Mob mob)) {
+			return ActionOutcome.fail("use", "a lead will not go on a " + what);
+		}
+		if (!mob.canBeLeashed()) return ActionOutcome.fail("use", "the " + what + " will not take a lead");
+		if (mob.isLeashed()) return ActionOutcome.fail("use", "the " + what + " is already on a lead");
+		mob.setLeashedTo(this, true);
+		if (!mob.isLeashed()) return ActionOutcome.fail("use", "the lead would not hold the " + what);
+		consumeItem("minecraft:lead", 1);
+		return ActionOutcome.ok("use", "put a lead on the " + what + " so it follows me");
 	}
 
 	/**
