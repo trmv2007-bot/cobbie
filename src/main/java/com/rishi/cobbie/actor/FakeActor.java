@@ -175,6 +175,37 @@ public final class FakeActor {
 	public record AnvilOutcome(boolean success, String reason, ItemStack remaining, int levelAfter,
 			float progressAfter, int levelsSpent) {}
 	/**
+	 * Take the enchantments off an item at a real grindstone.
+	 *
+	 * <p>Nothing is charged here: in 26.3 {@code GrindstoneMenu} holds no XP anywhere — its
+	 * {@code removed} only clears the input slots — so the menu is a pure item transformation and the
+	 * take is a real click on its result slot. {@code computeResult} decides what is legal: a single
+	 * enchanted item comes back with its non-curse enchantments stripped, and an item with none comes
+	 * back as nothing at all, which is how a refusal here stays the game's.
+	 */
+	public static Outcome grind(CobbieEntity body, ServerLevel level, BlockPos stone, ItemStack first) {
+		FakePlayer actor = place(body, level, ItemStack.EMPTY, null);
+		try {
+			var access = net.minecraft.world.inventory.ContainerLevelAccess.create(level, stone);
+			var menu = new net.minecraft.world.inventory.GrindstoneMenu(0, actor.getInventory(), access);
+			menu.getSlot(0).set(first.copyWithCount(1));
+			menu.getSlot(1).set(ItemStack.EMPTY);
+			ItemStack offered = menu.getSlot(2).getItem().copy();
+			if (offered.isEmpty()) {
+				return new Outcome(InteractionResult.FAIL, first);
+			}
+			menu.clicked(2, 0, net.minecraft.world.inventory.ContainerInput.PICKUP, actor);
+			ItemStack taken = menu.getCarried().copy();
+			menu.setCarried(ItemStack.EMPTY);
+			menu.getSlot(0).set(ItemStack.EMPTY);
+			menu.getSlot(1).set(ItemStack.EMPTY);
+			return new Outcome(taken.isEmpty() ? InteractionResult.FAIL : InteractionResult.SUCCESS, taken);
+		} catch (RuntimeException e) {
+			return new Outcome(InteractionResult.FAIL, first);
+		}
+	}
+
+	/**
 	 * Right-click an entity: shears on a sheep, a bucket on a cow, a lead on a horse.
 	 *
 	 * <p>{@code Player.interactOn} is the vanilla entry point and it is public, so this is the same
