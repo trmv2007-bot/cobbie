@@ -174,6 +174,29 @@ public final class FakeActor {
 	/** What came of using an anvil: the item that came off it, and where his level ended up. */
 	public record AnvilOutcome(boolean success, String reason, ItemStack remaining, int levelAfter,
 			float progressAfter, int levelsSpent) {}
+	/**
+	 * Right-click an entity: shears on a sheep, a bucket on a cow, a lead on a horse.
+	 *
+	 * <p>{@code Player.interactOn} is the vanilla entry point and it is public, so this is the same
+	 * gesture a player makes — not a reimplementation of shearing. The actor is aimed at the entity's
+	 * own centre, because the item's behaviour can depend on where it was clicked.
+	 *
+	 * <p>What still leaks: {@code Mob.interact} fires {@code GameEvent.ENTITY_INTERACT} with him as
+	 * the source, and a lead handed to him would leash the animal to a player who is never in the
+	 * world. Anything the caller does not want leashed to the actor has to be handled before this.
+	 */
+	public static Outcome useOnEntity(CobbieEntity body, net.minecraft.world.entity.LivingEntity target,
+			ItemStack held) {
+		if (!(body.level() instanceof ServerLevel level)) return null;
+		FakePlayer actor = place(body, level, held, target.blockPosition());
+		try {
+			Vec3 at = target.position().add(0.0, target.getBbHeight() * 0.5, 0.0);
+			InteractionResult result = actor.interactOn(target, InteractionHand.MAIN_HAND, at);
+			return new Outcome(result, actor.getItemInHand(InteractionHand.MAIN_HAND).copy());
+		} finally {
+			clearHand(actor);
+		}
+	}
 
 	/**
 	 * Put an enchanted book onto an item at a real anvil.
