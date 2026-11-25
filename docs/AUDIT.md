@@ -10,7 +10,10 @@ noisy — a template is not a bug — so its false positives are listed here wit
 ## One shape behind three of this week's defects
 
 Three fixes this week opened a hole beside them, and the shape was the same every time: **a condition written
-for one caller, applied to all of them.** The mining gate learned that a log drops to a bare hand and then
+for one caller, applied to all of them.** A fourth instance, written by the person who made it: the item
+resolver in 0.55.0 was first built as a description path *beside* the existing id scan, so the words "diamond
+sword" spelled an id and the first of two swords was taken silently. The fix was one resolver for both verbs,
+not a second path. The mining gate learned that a log drops to a bare hand and then
 refused stone for a tunnel the owner asked for; the initiative negatives waited out a cooldown and became
 vacuous rather than slow; the empty-hand path added so an item could come back out of a frame refused every
 bare-handed block use, and a lever answered *"I am not holding anything to use"*. None of the three was

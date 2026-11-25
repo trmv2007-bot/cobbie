@@ -65,7 +65,12 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
             new Ask("cobbie till this dirt and plant some wheat", "use", null),
             new Ask("cobbie breed the cows", "breed", null),
             new Ask("cobbie buy some pumpkin pie from the villager", "trade", null),
-            new Ask("cobbie flip that lever", "use", null));
+            new Ask("cobbie flip that lever", "use", null),
+            // Described rather than named: the ask refers to something by what it is, not by its id, so the
+            // resolver in ItemQuery is the only thing that can turn these words into the right stack.
+            new Ask("cobbie put the sharpness book on my best sword", "anvil", null),
+            new Ask("cobbie use my worst pickaxe", "use", null),
+            new Ask("cobbie equip my best pickaxe", "equip", null));
 
     @Override
     public void runTest(ClientGameTestContext context) {
@@ -101,6 +106,12 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                 cobbie.addItem(new ItemStack(Items.GLISTERING_MELON_SLICE, 2));
                 cobbie.addItem(new ItemStack(Items.BLAZE_POWDER, 1));
                 cobbie.addItem(new ItemStack(Items.IRON_SWORD, 1));
+                // Two pickaxes that differ only by wear, so "worst" and "best" have to mean something.
+                ItemStack freshPick = new ItemStack(Items.IRON_PICKAXE, 1);
+                ItemStack wornPick = new ItemStack(Items.IRON_PICKAXE, 1);
+                wornPick.setDamageValue(wornPick.getMaxDamage() - 4);
+                cobbie.addItem(freshPick);
+                cobbie.addItem(wornPick);
                 cobbie.addItem(book(s));
                 cobbie.addItem(enchantedAxe(s));
                 cobbie.addItem(new ItemStack(Items.SHEARS, 1));
