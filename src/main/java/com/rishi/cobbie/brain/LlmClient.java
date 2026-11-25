@@ -284,7 +284,17 @@ public final class LlmClient {
 		return e.contains("400") && e.contains("max_tokens") && e.contains("max_completion_tokens");
 	}
 
+	/** Model round trips started since the process began: the cost a learned skill is meant to save. */
+	private static final java.util.concurrent.atomic.AtomicInteger requestsSent =
+			new java.util.concurrent.atomic.AtomicInteger();
+
+	/** How many requests have gone out, so a replay can be measured against a first attempt. */
+	public static int requestsSent() {
+		return requestsSent.get();
+	}
+
 	private CompletableFuture<Result> sendOnce(String body) {
+		requestsSent.incrementAndGet();
 		HttpRequest.Builder req = HttpRequest.newBuilder()
 				.uri(endpoint)
 				// Plain HTTP with the default HTTP/2 setting makes Java attempt a cleartext upgrade.

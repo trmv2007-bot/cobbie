@@ -673,6 +673,21 @@ public final class CobbieBrain {
 		BlockPos origin = cobbie.planOrigin();
 		if (origin == null || plan.request().startsWith(SkillExecutor.REQUEST_PREFIX)) return;
 
+		// Where a replay should stand the plan up again. Standing still is the wrong anchor for work on
+		// blocks: the next pile is somewhere else, and offsets from his feet would point at air. When the
+		// first step works on a block, the block is the anchor, and the skill records which block to look
+		// for — so "gather oak logs" replays against whatever oak log is nearest next time.
+		BlockPos anchor = origin;
+		String anchorToken = "rel";
+		TaskStep first = plan.steps().isEmpty() ? null : plan.steps().get(0);
+		if (first != null && ActionVocabulary.isWorldChanging(first.intent().action())) {
+			ActionIntent head = first.intent();
+			anchor = new BlockPos(head.x(), head.y(), head.z());
+			if (head.target() != null && !head.target().isBlank()) {
+				anchorToken = "rel anchor=" + head.target().trim().toLowerCase(java.util.Locale.ROOT);
+			}
+		}
+
 		List<ActionStep> steps = new ArrayList<>();
 		int worldSteps = 0;
 		for (TaskStep step : plan.steps()) {
@@ -681,8 +696,8 @@ public final class CobbieBrain {
 			if (!ActionVocabulary.isAllowed(intent.action())) return;
 			if (ActionVocabulary.isWorldChanging(intent.action())) worldSteps++;
 			steps.add(new ActionStep(intent.action(), intent.target(),
-					intent.x() - origin.getX(), intent.y() - origin.getY(), intent.z() - origin.getZ(),
-					"rel"));
+					intent.x() - anchor.getX(), intent.y() - anchor.getY(), intent.z() - anchor.getZ(),
+					anchorToken));
 		}
 		if (worldSteps < 2 || steps.size() < 2) return;
 
