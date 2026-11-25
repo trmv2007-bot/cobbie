@@ -11,6 +11,8 @@ import net.minecraft.client.gui.screens.worldselection.WorldCreationUiState;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.DoorBlock;
+import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.List;
 
@@ -28,6 +30,15 @@ import java.util.List;
  * from a distance, and so is a death: a companion who suffocated on the way, or arrived dead, passes
  * nothing. Every stage prints his health, so a reader can see whether the body survived the route
  * rather than only that the coordinates match.
+ *
+ * <p>Stage 1 also proves <em>how</em> he got there. Arrival alone cannot: in an open yard he can walk
+ * round every obstacle and still end at the goal. So the lane is closed by a wall across the door's
+ * plane, wider than anything he can plan around, with the closed door as its only gap, and his
+ * {@code blockPosition} is sampled every two ticks while he walks. A green means at least one sample
+ * stood in the door's own block column, and the door was seen open at some point during the walk — he
+ * went through the doorway, not round it. The door is built closed, so opening it is part of the claim;
+ * vanilla shuts it again the moment he is past, which is why the state at the crossing sample is
+ * recorded but not required to be open.
  *
  * <p>Nothing in this class may be built over his own column. The first version of the course filled the
  * lane from one block behind him, which put stone at his feet and his head and killed him before the
@@ -51,6 +62,19 @@ public final class CobbieTerrainTest implements FabricClientGameTest {
     private static final int WATER_AT = 17;
     private static final int GOAL_AT = 23;
 
+    /**
+     * Half-width of the wall on the door's plane. Wide enough that going round it costs 32 blocks more
+     * than the straight line, past his {@code navigation_range} of 24 — the same 33-wide wall
+     * {@code CobbieDoorTest} uses, because a route round the end has to be impossible, not merely long.
+     */
+    private static final int WALL_HALF_WIDTH = 16;
+
+    /** Tall enough to be hopeless: he climbs one block, this is nine above the walkway surface. */
+    private static final int WALL_TOP = 8;
+
+    /** Sample every this many ticks while he walks: ~0.4 blocks of travel, well inside one doorway. */
+    private static final int SAMPLE_TICKS = 2;
+
     /** Close enough to call it arrived: two blocks, because a target is a place and not a pixel. */
     private static final double ARRIVED = 4.0;
 
@@ -65,7 +89,8 @@ public final class CobbieTerrainTest implements FabricClientGameTest {
 
             // --- 1. The course. ---
             BlockPos start = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow().blockPosition());
-            BlockPos goal = buildCourse(server, start);
+            Course course = buildCourse(server, start);
+            BlockPos goal = course.goal();
             requireAlive(server, goal, "stage 1, before the walk");
 
             String refusal = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
@@ -73,19 +98,36 @@ public final class CobbieTerrainTest implements FabricClientGameTest {
                             ActionVocabulary.WALK_TO, "", goal.getX(), goal.getY(), goal.getZ(), ""))));
             if (refusal != null) throw new AssertionError("walk-to refused: " + refusal);
 
-            boolean arrived = awaitArrival(server, goal, 1400);
+            Walk walk = walkTheCourse(context, server, goal, course.doorLower(), 1400);
             Reading endOfCourse = requireAlive(server, goal, "stage 1, at the far end");
             String where = endOfCourse.where();
-            if (!arrived) {
+            if (!walk.arrived()) {
                 // Allowed only if he stopped and said why — never while still trying, never claiming it.
                 String stoppedWith = stoppedWith(server);
                 throw new AssertionError("He never reached the end of the course. He is " + where
-                        + " alive at " + endOfCourse.healthText() + "; he said " + stoppedWith + ". A run that "
-                        + "stops must name what stopped it, and a run that is still walking is neither of the "
-                        + "two allowed outcomes.");
+                        + " alive at " + endOfCourse.healthText() + "; he said " + stoppedWith + ". Crossing: "
+                        + walk.crossingText() + ". A run that stops must name what stopped it, and a run that is "
+                        + "still walking is neither of the two allowed outcomes.");
             }
-            System.out.println("[gametest] terrain ok: walked the yard past the door, ledge, gate and water to "
-                    + where + " alive at " + endOfCourse.healthText() + ", saying " + stoppedWith(server));
+            if (walk.crossing() == null) {
+                throw new AssertionError("He arrived at the far end (" + where + " alive at "
+                        + endOfCourse.healthText() + ") but was never seen inside the door's block column in "
+                        + walk.samples() + " samples taken every " + SAMPLE_TICKS + " ticks. The lane is walled "
+                        + "at the door's plane with the door as its only gap, so an arrival that never occupied "
+                        + "that column means this run did not use the doorway and stage 1's claim is not proven.");
+            }
+            if (walk.doorOpenAtSample() == 0) {
+                throw new AssertionError("He arrived at the far end (" + where + " alive at "
+                        + endOfCourse.healthText() + ") and was seen inside the door's block column, but the door "
+                        + "at " + course.doorLower().toShortString() + " was never seen open in " + walk.samples()
+                        + " samples taken every " + SAMPLE_TICKS + " ticks. It was built closed, so a crossing "
+                        + "with it never open would mean he went through a shut door — the thing the door was "
+                        + "supposed to stop.");
+            }
+            System.out.println("[gametest] terrain: doorway crossed at " + walk.crossingText());
+            System.out.println("[gametest] terrain ok: walked the yard through the open doorway, past the ledge, gate "
+                    + "and water to " + where + " alive at " + endOfCourse.healthText() + ", saying "
+                    + stoppedWith(server));
 
             // --- 2. The door becomes wall while he walks. ---
             BlockPos sealedStart = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow().blockPosition());
@@ -346,15 +388,20 @@ public final class CobbieTerrainTest implements FabricClientGameTest {
     }
 
     /**
-     * A yard in front of him: a wall with a closed door he has to open, a step down off the ledge it
-     * stands on, a fence with a closed gate, a water channel, and the far end.
+     * A yard in front of him: a wall across the lane with a closed door he has to open, a step down off
+     * the ledge it stands on, a fence with a closed gate, a water channel, and the far end.
      *
      * <p>The lane starts one block <em>in front</em> of him. Building it from one block behind put solid
      * stone in the two blocks his body occupied and suffocated him — the test was the obstacle — so the
      * geometry now keeps his own column clear, and the goal is a place he can stand: on the ground at the
      * far end, not two blocks above it.
+     *
+     * <p>The wall at the door's plane is the width of the yard, not of the walkway: 33 blocks, because
+     * anything narrower leaves a route round the end that legitimately arrives without using the door.
+     * With it walled, the doorway is the only way to the far end and stage 1's arrival <em>is</em> a
+     * crossing — which the walk then checks directly rather than inferring.
      */
-    private static BlockPos buildCourse(TestServerContext server, BlockPos start) {
+    private static Course buildCourse(TestServerContext server, BlockPos start) {
         return server.computeOnServer(s -> {
             int x = start.getX();
             int y = start.getY();
@@ -364,9 +411,10 @@ public final class CobbieTerrainTest implements FabricClientGameTest {
             // front of him, so nothing lands where he is standing.
             CobbieTestSupport.command(s, "fill " + (x - 3) + " " + (y - 1) + " " + (z + 1) + " " + (x + 3) + " "
                     + y + " " + (z + LEDGE_END) + " minecraft:stone");
-            // Wall with a closed door, standing on the walkway so the door is exactly at his body.
-            CobbieTestSupport.command(s, "fill " + (x - 3) + " " + (y + 1) + " " + (z + DOOR_AT) + " "
-                    + (x + 3) + " " + (y + 4) + " " + (z + DOOR_AT) + " minecraft:stone");
+            // The yard wall, on the door's plane: full width, from the ground to well above his reach.
+            CobbieTestSupport.command(s, "fill " + (x - WALL_HALF_WIDTH) + " " + (y - 1) + " " + (z + DOOR_AT) + " "
+                    + (x + WALL_HALF_WIDTH) + " " + (y + WALL_TOP) + " " + (z + DOOR_AT) + " minecraft:stone");
+            // The doorway: the wall's only gap, closed, at his body.
             CobbieTestSupport.command(s, "setblock " + x + " " + (y + 1) + " " + (z + DOOR_AT)
                     + " minecraft:oak_door[half=lower,facing=north,open=false]");
             CobbieTestSupport.command(s, "setblock " + x + " " + (y + 2) + " " + (z + DOOR_AT)
@@ -384,8 +432,88 @@ public final class CobbieTerrainTest implements FabricClientGameTest {
             // the swim assist finds no bank beside him because the block above its top is stone too.
             CobbieTestSupport.command(s, "fill " + (x - 3) + " " + (y - 1) + " " + (z + WATER_AT + 3) + " "
                     + (x + 3) + " " + y + " " + (z + WATER_AT + 3) + " minecraft:stone");
-            return new BlockPos(x, y, z + GOAL_AT);
+            return new Course(new BlockPos(x, y, z + GOAL_AT),
+                    new BlockPos(x, y + 1, z + DOOR_AT));
         });
+    }
+
+    /** Where the course leads, and the lower half of its doorway — the column a crossing has to touch. */
+    private record Course(BlockPos goal, BlockPos doorLower) {
+    }
+
+    /** The walk itself: whether he arrived, what was seen at the doorway, and how much was sampled. */
+    private record Walk(boolean arrived, int samples, BlockPos crossing, int crossingSample,
+            boolean doorOpenAtCrossing, int doorOpenAtSample) {
+        String crossingText() {
+            if (crossing == null) {
+                return "never inside the door column in " + samples + " samples";
+            }
+            return crossing.toShortString() + " on sample " + crossingSample + " of " + samples
+                    + ", door OPEN=" + doorOpenAtCrossing + " at that sample, first seen OPEN on sample "
+                    + doorOpenAtSample;
+        }
+    }
+
+    /**
+     * Walk the course while watching the body, not only the destination: every {@link #SAMPLE_TICKS}
+     * ticks his {@code blockPosition} is read, and the first sample standing in the door's own block
+     * column (same x and z, y equal to the lower or upper half) is kept together with the door's
+     * {@code OPEN} state at that instant. Arrival alone cannot tell a doorway he used from a wall he
+     * walked round; this can.
+     *
+     * <p>The door's state is read on <em>every</em> sample, not only inside the column, because vanilla
+     * {@code OpenDoorGoal} shuts the door the moment he is past it: the crossing sample is often the
+     * instant after it closed, so "he was ever seen with it open" is the evidence that he opened a door
+     * built closed, and the state at the crossing is recorded rather than required.
+     *
+     * <p>A death is raised here, in the stage it happened in, rather than surfacing as a timeout.
+     */
+    private static Walk walkTheCourse(ClientGameTestContext context, TestServerContext server, BlockPos goal,
+            BlockPos doorLower, int ticks) {
+        int samples = 0;
+        BlockPos crossing = null;
+        int crossingSample = 0;
+        boolean crossingOpen = false;
+        int openAtSample = 0;
+        boolean arrived = false;
+        for (int spent = 0; spent < ticks; spent += SAMPLE_TICKS) {
+            context.waitTicks(SAMPLE_TICKS);
+            Sample now = server.computeOnServer(s -> CobbieTestSupport.cobbie(s, 96)
+                    .map(c -> {
+                        BlockPos feet = c.blockPosition();
+                        BlockState doorState = s.overworld().getBlockState(doorLower);
+                        boolean open = doorState.getBlock() instanceof DoorBlock && doorState.getValue(DoorBlock.OPEN);
+                        boolean inDoorway = feet.getX() == doorLower.getX() && feet.getZ() == doorLower.getZ()
+                                && (feet.getY() == doorLower.getY() || feet.getY() == doorLower.getY() + 1);
+                        return new Sample(feet, c.getHealth(), inDoorway, open,
+                                feet.distSqr(goal) <= ARRIVED && c.onGround());
+                    })
+                    .orElse(null));
+            if (now == null || now.health() <= 0.0f) {
+                requireAlive(server, goal, "stage 1, walking the yard"); // always throws here
+            }
+            samples++;
+            if (now.doorOpen() && openAtSample == 0) openAtSample = samples;
+            if (crossing == null && now.inDoorway()) {
+                crossing = now.feet();
+                crossingSample = samples;
+                crossingOpen = now.doorOpen();
+            }
+            if (now.atGoal()) {
+                arrived = true;
+                break;
+            }
+        }
+        System.out.println("[gametest] terrain: walked " + samples + " samples, "
+                + (arrived ? "arrived" : "did not arrive") + ", doorway "
+                + (crossing == null ? "never crossed" : "crossed at sample " + crossingSample
+                        + " (door " + (crossingOpen ? "open" : "closed") + " then, first seen open at sample "
+                        + openAtSample + ")"));
+        return new Walk(arrived, samples, crossing, crossingSample, crossingOpen, openAtSample);
+    }
+
+    /** One read of the body while he walks. {@code inDoorway} means he occupies the door's block column. */
+    private record Sample(BlockPos feet, float health, boolean inDoorway, boolean doorOpen, boolean atGoal) {
     }
 
     /**
