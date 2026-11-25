@@ -453,7 +453,7 @@ public final class CobbieConfig {
 			case "mine" -> miningAllowed;
 			// Block use - planting, bone meal, levers, buttons - sits under building rather than
 			// inventing a switch per verb: it is all "change the world with your hands".
-			case "place", "light", "use" -> buildingAllowed;
+			case "place", "light", "use", "write" -> buildingAllowed;
 			// Farming is block work with his hands, so it sits under the same switch as planting.
 			case "farm", "breed" -> buildingAllowed;
 			// Trading spends what he carries, so it sits under the switch that governs his own things
