@@ -201,8 +201,37 @@ class LlmClientTest {
 		assertFalse(r.success());
 		assertEquals(16, r.reasoningTokens());
 		assertTrue(r.error().contains("reasoning tokens"), "the empty reply must be diagnosable: " + r.error());
-		assertFalse(r.retryable(),
-				"a budget-starved reply must be named, not retried into the same wall: " + r.error());
+		// The policy changed with 0.41.0: repeating the same request at the same size would spend the
+		// budget the same way, but the same request with more headroom is a fair second try. So the
+		// result is retryable and marked budget-exhausted, and the loop raises the ceiling once.
+		assertTrue(r.retryable(), "a budget-starved reply is retryable with more headroom: " + r.error());
+		assertTrue(r.budgetExhausted(), "the retry loop needs to know why: " + r.error());
+	}
+
+	@Test
+	void aBudgetStarvedReplyIsRetriedWithARaisedCeiling() throws Exception {
+		// The whole ceiling went into thinking, then the same ask at double the budget answers. The
+		// second request's own body is the evidence that the ceiling actually moved.
+		String starved = "{\"choices\":[{\"message\":{\"content\":\"\"}}],"
+				+ "\"usage\":{\"completion_tokens_details\":{\"reasoning_tokens\":800}}}";
+		reset(200, starved);
+		// The script queue is polled before the default body, so the starved reply has to be first or
+		// the good one answers the opening call and no retry is ever exercised.
+		script.add(new String[]{"200", starved});
+		script.add(new String[]{"200", "{\"choices\":[{\"message\":{\"content\":"
+				+ "\"{\\\"answer\\\":\\\"On it\\\",\\\"doing\\\":false,\\\"actions\\\":[]}\"}}]}"});
+		LlmClient.Result r = await(openai("k", 1).completeOnce("s", "u"));
+
+		assertTrue(r.success(), "the retry with more headroom should have answered: " + r.error());
+		assertEquals(2, bodies.size(), "exactly one retry: " + bodies);
+		int first = maxTokensOf(bodies.get(0));
+		int second = maxTokensOf(bodies.get(1));
+		assertTrue(second > first, "the retry must raise the ceiling: " + first + " -> " + second);
+		assertTrue(second <= 2400, "and never past the cap: " + second);
+	}
+
+	private static int maxTokensOf(String body) {
+		return com.google.gson.JsonParser.parseString(body).getAsJsonObject().get("max_tokens").getAsInt();
 	}
 
 	// ---- the key never travels ----

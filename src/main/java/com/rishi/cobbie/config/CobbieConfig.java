@@ -92,7 +92,7 @@ public final class CobbieConfig {
 	private static double temperature = 0.7;
 	// Hosted reasoners spend 100-250 tokens thinking before they answer. A 300-token budget was
 	// cutting the answer off and coming back empty; 800 leaves room for the thinking and the reply.
-	private static int maxTokens = 800;
+	private static int maxTokens = 1200;
 	private static int connectTimeoutSeconds = 5;
 	// Fail fast enough that the never-silent fallback lands while the player is still looking: a
 	// hosted call that hangs for two minutes reads as a crashed companion. Slow local setups can
@@ -446,7 +446,7 @@ public final class CobbieConfig {
 			// inventing a switch per verb: it is all "change the world with your hands".
 			case "place", "light", "use" -> buildingAllowed;
 			// Farming is block work with his hands, so it sits under the same switch as planting.
-			case "farm" -> buildingAllowed;
+			case "farm", "breed" -> buildingAllowed;
 			case "attack" -> combatAllowed;
 			case "explore" -> explorationAllowed && autonomyMode != AutonomyMode.OFF;
 			case "collect" -> collectionAllowed;

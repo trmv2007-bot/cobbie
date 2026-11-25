@@ -77,9 +77,14 @@ public final class LlmClient {
 	 * whether asking again could plausibly help; {@code reasoningTokens} is what the provider
 	 * billed for hidden thinking before the visible answer ({@code 0} when it reports none).
 	 */
-	public record Result(String content, boolean success, String error, boolean retryable, int reasoningTokens) {
+	public record Result(String content, boolean success, String error, boolean retryable, int reasoningTokens,
+			boolean budgetExhausted) {
 		public Result(String content, boolean success, String error, boolean retryable) {
-			this(content, success, error, retryable, 0);
+			this(content, success, error, retryable, 0, false);
+		}
+
+		public Result(String content, boolean success, String error, boolean retryable, int reasoningTokens) {
+			this(content, success, error, retryable, reasoningTokens, false);
 		}
 
 		public static Result success(String content) {
@@ -131,6 +136,9 @@ public final class LlmClient {
 	private final String apiKey;
 	private final String provider;
 	private final double temperature;
+	/** The most a retry is ever allowed to raise the completion budget to. */
+	private static final int MAX_BUDGET_CEILING = 2400;
+
 	private final int maxTokens;
 	private final int maxRetries;
 	private final Duration readTimeout;
@@ -237,6 +245,20 @@ public final class LlmClient {
 					Cobbie.LOGGER.info("Cobbie: this model wants max_completion_tokens, retrying with it");
 					return attempt(payload, attemptNo);
 				}
+				// A budget eaten by reasoning gets one retry with more headroom rather than the same
+				// wall twice. Capped, so a model that thinks in circles cannot escalate the bill.
+				if (res.budgetExhausted() && attemptNo < maxRetries) {
+					String key = payload.has("max_tokens") ? "max_tokens"
+							: payload.has("max_completion_tokens") ? "max_completion_tokens" : null;
+					int current = key == null ? 0 : payload.get(key).getAsInt();
+					int bigger = Math.min(Math.max(current * 2, current + 400), MAX_BUDGET_CEILING);
+					if (key != null && bigger > current) {
+						payload.addProperty(key, bigger);
+						Cobbie.LOGGER.info("Cobbie: retrying with a raised budget ({} -> {}) after the whole"
+								+ " ceiling went to reasoning", current, bigger);
+						return attempt(payload, attemptNo + 1);
+					}
+				}
 				if (!res.retryable() || attemptNo >= maxRetries) {
 					return CompletableFuture.completedFuture(res);
 				}
@@ -296,13 +318,17 @@ public final class LlmClient {
 						int reasoning = reasoningTokens(resp.body());
 						if (content == null || content.isBlank()) {
 							if (reasoning > 0) {
-								// The budget went into hidden thinking and the visible answer never
-								// arrived. Retrying would spend another budget the same way, so this
-								// is reported with its cause instead of being papered over.
+								// The whole ceiling went into hidden thinking and the visible answer never
+								// arrived. Repeating the same request at the same size would spend it the
+								// same way, but the same request with more headroom is a fair second try —
+								// so this is marked budget-exhausted and the retry loop doubles the ceiling
+								// once. If that also comes back empty, the refusal stands and names the
+								// number.
 								Cobbie.LOGGER.warn("Cobbie: no text back after {} reasoning tokens on a "
-										+ "{} token budget — raise max_tokens", reasoning, maxTokens);
+										+ "{} token budget — raising the budget for one retry", reasoning, maxTokens);
 								return new Result(null, false, "model returned no text after "
-										+ reasoning + " reasoning tokens (raise max_tokens)", false, reasoning);
+										+ reasoning + " reasoning tokens on a " + maxTokens + " token budget",
+										true, reasoning, true);
 							}
 							// No reasoning reported: an ordinary empty sample, worth one retry.
 							return Result.failure("model returned no text", true);
