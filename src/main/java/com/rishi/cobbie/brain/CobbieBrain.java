@@ -415,10 +415,37 @@ public final class CobbieBrain {
 				});
 	}
 
-	/** Runs on the server thread: speak, offer the plan, store the turn. */
+	/**
+ * The live companion for a reply that was composed for one particular instance.
+ *
+ * <p>A crossing replaces the entity — {@code TeleportTransition} returns a new instance and removes
+ * the old one — while keeping its UUID. So "is the body still there" is the wrong question for a
+ * reply in flight: it cannot tell <b>died</b> from <b>replaced</b>, and answering "gone" for a
+ * replacement drops the answer with no line and no log. This asks the server for the companion with
+ * that UUID instead, which gives the same answer as before for a death (nothing) and the right one
+ * for a replacement.
+ *
+ * <p>Nothing is returned when he has genuinely gone: he must not speak after dying.
+ */
+	public static CobbieEntity reattach(CobbieEntity body, ServerPlayer player) {
+		if (body == null) return null;
+		if (!body.isRemoved()) return body;
+		var server = player.level().getServer();
+		if (server == null) return null;
+		UUID id = body.getUUID();
+		for (ServerLevel level : server.getAllLevels()) {
+			net.minecraft.world.entity.Entity found = level.getEntity(id);
+			if (found instanceof CobbieEntity cobbie && !cobbie.isRemoved() && cobbie.isAlive()) return cobbie;
+		}
+		return null;
+	}
+
+/** Runs on the server thread: speak, offer the plan, store the turn. */
 	private static void deliver(ServerPlayer player, CobbieEntity body, UUID speakerId, String speakerName,
 			String said, ActionParser.ActionPlan plan) {
-		if (body.isRemoved() || player.isRemoved()) return;
+		if (player.isRemoved()) return;
+		CobbieEntity said_by = reattach(body, player);
+		if (said_by == null) return;
 
 		// Act, then speak. When there is work in this reply he says ONE short line about the first
 		// thing he is doing and starts it; the step-by-step narration and the closing line come from
@@ -427,16 +454,16 @@ public final class CobbieBrain {
 		boolean acting = plan.hasWorldAction();
 		String spoken = acting ? Narrator.firstSentence(plan.answer()) : plan.answer();
 		if (spoken == null || spoken.isBlank()) spoken = plan.answer();
-		player.sendSystemMessage(cobbieSays(body, spoken));
-		UUID ownerId = body.getOwner();
+		player.sendSystemMessage(cobbieSays(said_by, spoken));
+		UUID ownerId = said_by.getOwner();
 		if (ownerId != null && !ownerId.equals(speakerId)) {
-			ServerPlayer owner = body.owner();
+			ServerPlayer owner = said_by.owner();
 			if (owner != null) {
-				owner.sendSystemMessage(cobbieSays(body, "(to " + speakerName + ") " + spoken));
+				owner.sendSystemMessage(cobbieSays(said_by, "(to " + speakerName + ") " + spoken));
 			}
 		}
 		if (acting) {
-			body.noteSpokenNow();
+			said_by.noteSpokenNow();
 		} else {
 			ActionTiming.resultSpoken(System.currentTimeMillis());
 		}
@@ -456,7 +483,7 @@ public final class CobbieBrain {
 					MinecraftServer server = player.level().getServer();
 					if (server != null) {
 						server.execute(() -> {
-							player.sendSystemMessage(cobbieSays(body, answer));
+							player.sendSystemMessage(cobbieSays(said_by, answer));
 							if (CobbieConfig.isMemoryEnabled()) {
 								CobbieMemory.addTurn(speakerId, "look up " + intent.target(), answer);
 							}
@@ -481,7 +508,7 @@ public final class CobbieBrain {
 			}
 		}
 		if (!blocked.isEmpty()) {
-			player.sendSystemMessage(cobbieSays(body, "I cannot do: " + String.join(", ", blocked)));
+			player.sendSystemMessage(cobbieSays(said_by, "I cannot do: " + String.join(", ", blocked)));
 		}
 		if (allowed.isEmpty()) return;
 
@@ -491,7 +518,7 @@ public final class CobbieBrain {
 				? body.offerAddition(said, allowed)
 				: body.offerPlan(said, allowed);
 		if (refusal != null) {
-			player.sendSystemMessage(cobbieSays(body, refusal));
+			player.sendSystemMessage(cobbieSays(said_by, refusal));
 		} else if (CobbieConfig.isMemoryEnabled() && ownerId != null) {
 			CobbieMemory.setCurrentObjective(ownerId, refusal == null ? said : "");
 		}
