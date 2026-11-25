@@ -1537,6 +1537,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			case ActionVocabulary.TRADE -> tradeWithVillager(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
+			case ActionVocabulary.WRITE -> startWrite(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
 			case ActionVocabulary.ATTACK -> startAttack(intent);
 			default -> ActionOutcome.fail(verb, "unhandled verb");
@@ -3709,8 +3710,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		if (atBlock && !level().isLoaded(pos)) return ActionOutcome.fail("use", "that area is not loaded");
 		ItemStack held = useItemFor(intent.target());
-		if (held.isEmpty() && !atBlock) {
-			return ActionOutcome.fail("use", intent.target() == null || intent.target().isBlank()
+		boolean emptyTarget = intent.target() == null || intent.target().isBlank();
+		// An empty hand is a legitimate request on a hanging thing — it is how an item comes back out of
+		// an item frame — so the "nothing to use" refusal waits until the entity branches have passed.
+		boolean aimedAtSomething = !atBlock && intent.data() != null && !intent.data().isBlank();
+		if (held.isEmpty() && !atBlock && !aimedAtSomething) {
+			return ActionOutcome.fail("use", emptyTarget
 					? "I am not holding anything to use"
 					: "I have no " + intent.target() + " to use");
 		}
@@ -3727,9 +3732,18 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (!atBlock && intent.data() != null && !intent.data().isBlank()) {
 			LivingEntity other = namedEntity(intent.data());
 			if (other == null) {
+				// Not living, but still something a hand works on: an item frame takes an item and
+				// gives it back through exactly the same gesture.
+				net.minecraft.world.entity.Entity hanging = namedHanging(intent.data());
+				if (hanging != null) return useOnHanging(hanging, held);
 				return ActionOutcome.fail("use", "I cannot see a " + intent.data().trim() + " close enough to use this on");
 			}
 			return useOnEntity(other, held);
+		}
+		if (held.isEmpty()) {
+			return ActionOutcome.fail("use", emptyTarget
+					? "I am not holding anything to use"
+					: "I have no " + intent.target() + " to use");
 		}
 		return useAt(pos, atBlock, intent);
 	}
@@ -3782,6 +3796,74 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 *       still. Leashed to Cobbie himself the animal walks with him, which is what a lead is for.</li>
 	 * </ul>
 	 */
+	/** The nearest hanging thing of a named type: an item frame now, a painting or armour stand later. */
+	private net.minecraft.world.entity.Entity namedHanging(String raw) {
+		Identifier id = entityId(raw);
+		if (id == null) return null;
+		EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.getOptional(id).orElse(null);
+		if (type == null) return null;
+		net.minecraft.world.entity.Entity best = null;
+		double bestDistance = Double.MAX_VALUE;
+		for (net.minecraft.world.entity.Entity other : level().getEntitiesOfClass(
+				net.minecraft.world.entity.Entity.class, this.getBoundingBox().inflate(ENTITY_USE_REACH))) {
+			if (!(other instanceof net.minecraft.world.entity.decoration.HangingEntity)) continue;
+			if (other.getType() != type) continue;
+			double distance = other.distanceToSqr(this);
+			if (distance < bestDistance) {
+				bestDistance = distance;
+				best = other;
+			}
+		}
+		return best;
+	}
+
+	/**
+	 * A hand on something that is not alive. An empty hand takes the item back out of a frame; anything
+	 * carried goes in. The frame's own state is the receipt, so success is read from it rather than from
+	 * the interaction result.
+	 */
+	private ActionOutcome useOnHanging(net.minecraft.world.entity.Entity target, ItemStack held) {
+		String what = BuiltInRegistries.ENTITY_TYPE.getKey(target.getType()).getPath().replace('_', ' ');
+		boolean frame = target instanceof net.minecraft.world.entity.decoration.ItemFrame;
+		ItemStack before = frame ? ((net.minecraft.world.entity.decoration.ItemFrame) target).getItem().copy()
+				: ItemStack.EMPTY;
+		// The probe answered this: an empty right-click does NOT empty an item frame in this version, and
+		// the gesture that does is a punch. So an empty hand on a loaded frame takes the item out through
+		// the frame's own drop, which is the same result the punch produces.
+		if (frame && held.isEmpty() && !before.isEmpty()) {
+			net.minecraft.world.entity.decoration.ItemFrame hanging =
+					(net.minecraft.world.entity.decoration.ItemFrame) target;
+			hanging.dropItem((net.minecraft.server.level.ServerLevel) level(), this);
+			if (!hanging.getItem().isEmpty()) {
+				return ActionOutcome.fail("use", "the " + what + " would not give up the " + itemId(before));
+			}
+			collectWithinReach();
+			return ActionOutcome.ok("use", "took " + itemId(before) + " out of the " + what);
+		}
+		com.rishi.cobbie.actor.FakeActor.Outcome outcome;
+		try {
+			outcome = com.rishi.cobbie.actor.FakeActor.useOnHanging(this, target, held.copy());
+		} catch (RuntimeException e) {
+			return ActionOutcome.fail("use", "using that on the " + what + " went wrong ("
+					+ e.getClass().getSimpleName() + ")");
+		}
+		if (outcome == null) return ActionOutcome.fail("use", "no server world");
+		if (outcome.remaining() != null) {
+			this.setItemInHand(InteractionHand.MAIN_HAND,
+					outcome.remaining().isEmpty() ? ItemStack.EMPTY : outcome.remaining());
+		}
+		ItemStack after = frame ? ((net.minecraft.world.entity.decoration.ItemFrame) target).getItem().copy()
+				: ItemStack.EMPTY;
+		if (ItemStack.isSameItemSameComponents(before, after)) {
+			return ActionOutcome.fail("use", "the " + what + " did not change when I used "
+					+ (held.isEmpty() ? "an empty hand" : itemId(held)) + " on it");
+		}
+		collectWithinReach();
+		return ActionOutcome.ok("use", after.isEmpty()
+				? "took " + (before.isEmpty() ? "nothing" : itemId(before)) + " out of the " + what
+				: "put " + itemId(after) + " in the " + what);
+	}
+
 	private ActionOutcome useOnEntity(LivingEntity other, ItemStack held) {
 		if (held.isEmpty()) return ActionOutcome.fail("use", "I am not holding anything to use on it");
 		String what = BuiltInRegistries.ENTITY_TYPE.getKey(other.getType()).getPath().replace('_', ' ');
@@ -3954,6 +4036,92 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		ItemStack hand = this.getMainHandItem();
 		if (!hand.isEmpty()) counts.merge(itemId(hand), hand.getCount(), Integer::sum);
 		return counts;
+	}
+
+	/**
+	 * Put words on a sign. This is the one piece of the decorative tail that needs code rather than a
+	 * hand: vanilla's interaction opens an editing screen for a player, which the actor cannot use, so a
+	 * sign can be placed through {@code use} and never written through it.
+	 */
+	private ActionOutcome startWrite(ActionIntent intent) {
+		BlockPos pos = new BlockPos(intent.x(), intent.y(), intent.z());
+		if (!level().isLoaded(pos)) return ActionOutcome.fail("write", "that area is not loaded");
+		if (!(level().getBlockEntity(pos) instanceof net.minecraft.world.level.block.entity.SignBlockEntity sign)) {
+			return ActionOutcome.fail("write", "there is no sign at " + describe(pos));
+		}
+		if (this.blockPosition().distSqr(pos) > reachSquared()) {
+			BlockPos stand = standingSpotNear(pos);
+			if (stand == null) return ActionOutcome.fail("write", "nowhere to stand by " + describe(pos));
+			beginWalking(intent, stand, pos);
+			return null;
+		}
+		return writeSign(sign, intent.target(), pos);
+	}
+
+	/** Vanilla's limit per line, and the number of lines a sign has. */
+	private static final int SIGN_LINE_WIDTH = 15;
+	private static final int SIGN_LINES = 4;
+
+	private ActionOutcome writeSign(net.minecraft.world.level.block.entity.SignBlockEntity sign,
+			String text, BlockPos pos) {
+		String clean = text == null ? "" : text.replace('§', ' ').replaceAll("\s+", " ").trim();
+		if (clean.isEmpty()) return ActionOutcome.fail("write", "there is nothing to write");
+
+		List<String> wrapped = wrapForSign(clean);
+		if (wrapped.size() > SIGN_LINES) {
+			return ActionOutcome.fail("write", "that text is too long for a sign: it holds "
+					+ SIGN_LINES + " lines of " + SIGN_LINE_WIDTH + " and this needs " + wrapped.size());
+		}
+
+		var slot = net.minecraft.world.level.block.entity.SignTextSlot.FRONT;
+		net.minecraft.world.level.block.entity.SignText current = sign.getText(slot);
+		java.util.List<net.minecraft.network.chat.Component> before = current.getMessages(false);
+		java.util.List<net.minecraft.network.chat.Component> messages = new ArrayList<>(SIGN_LINES);
+		int wrote = 0;
+		for (int i = 0; i < SIGN_LINES; i++) {
+			net.minecraft.network.chat.Component existing = i < before.size() ? before.get(i) : null;
+			boolean empty = existing == null || existing.getString().isBlank();
+			if (wrote < wrapped.size() && empty) {
+				messages.add(net.minecraft.network.chat.Component.literal(wrapped.get(wrote++)));
+			} else {
+				messages.add(existing == null ? net.minecraft.network.chat.Component.empty() : existing);
+			}
+		}
+		if (wrote < wrapped.size()) {
+			return ActionOutcome.fail("write", "that sign is full — " + (wrapped.size() - wrote)
+					+ " line(s) did not fit and I will not overwrite what is there");
+		}
+
+		sign.setText(new net.minecraft.world.level.block.entity.SignText(messages, java.util.List.of(),
+				current.getColor(), current.hasGlowingText()), slot);
+		java.util.List<net.minecraft.network.chat.Component> after = sign.getText(slot).getMessages(false);
+		String landing = after.isEmpty() ? "" : after.get(0).getString();
+		if (landing.isBlank()) return ActionOutcome.fail("write", "the sign did not keep the text");
+		return ActionOutcome.ok("write", "wrote \"" + clean + "\" on the sign at " + describe(pos));
+	}
+
+	/** Word wrap at vanilla's line width, breaking a long word rather than losing it. */
+	static List<String> wrapForSign(String text) {
+		List<String> lines = new ArrayList<>();
+		StringBuilder line = new StringBuilder();
+		for (String word : text.split(" ")) {
+			while (word.length() > SIGN_LINE_WIDTH) {
+				if (line.length() > 0) { lines.add(line.toString()); line.setLength(0); }
+				lines.add(word.substring(0, SIGN_LINE_WIDTH));
+				word = word.substring(SIGN_LINE_WIDTH);
+			}
+			if (line.length() == 0) {
+				line.append(word);
+			} else if (line.length() + 1 + word.length() <= SIGN_LINE_WIDTH) {
+				line.append(' ').append(word);
+			} else {
+				lines.add(line.toString());
+				line.setLength(0);
+				line.append(word);
+			}
+		}
+		if (line.length() > 0) lines.add(line.toString());
+		return lines;
 	}
 
 	private ActionOutcome startPlace(ActionIntent intent) {

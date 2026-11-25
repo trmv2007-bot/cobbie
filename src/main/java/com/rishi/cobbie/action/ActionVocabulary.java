@@ -26,6 +26,8 @@ public final class ActionVocabulary {
 	public static final String WALK_TO = "walk-to";
 	public static final String MINE = "mine";
 	public static final String PLACE = "place";
+	/** Put words on a sign. The block is the target; the text rides in {@code target}. */
+	public static final String WRITE = "write";
 	public static final String ATTACK = "attack";
 	public static final String COLLECT = "collect";
 	public static final String EXPLORE = "explore";
@@ -55,10 +57,10 @@ public final class ActionVocabulary {
 	public static final String WAIT = "wait";
 
 	private static final Set<String> ALLOWED = new LinkedHashSet<>(List.of(
-			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE, REPAIR, DYE, ENCHANT, ANVIL, BOARD, BREW, SMITH, GRIND, WEAVE, MAP, FARM, BREED, TRADE, LOOKUP, WAIT));
+			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, WRITE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE, REPAIR, DYE, ENCHANT, ANVIL, BOARD, BREW, SMITH, GRIND, WEAVE, MAP, FARM, BREED, TRADE, LOOKUP, WAIT));
 
 	/** Actions that are meaningless without an explicit target position. */
-	private static final Set<String> NEEDS_POSITION = Set.of(WALK_TO, MINE, PLACE, LIGHT, TAKE, PUT, SMELT);
+	private static final Set<String> NEEDS_POSITION = Set.of(WALK_TO, MINE, PLACE, WRITE, LIGHT, TAKE, PUT, SMELT);
 
 	/** Verbs the brain answers itself (it owns the network and the chat line, not the entity). */
 	private static final Set<String> BRAIN_SIDE = Set.of(LOOKUP);
@@ -69,7 +71,7 @@ public final class ActionVocabulary {
 
 	/** Actions that change the world and therefore need verification afterwards. */
 	private static final Set<String> WORLD_CHANGING =
-			Set.of(MINE, PLACE, ATTACK, COLLECT, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE,
+			Set.of(MINE, PLACE, WRITE, ATTACK, COLLECT, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE,
 					REPAIR, DYE, ENCHANT, ANVIL, BREW, SMITH, GRIND, WEAVE, MAP, FARM, BREED, TRADE);
 
 	private ActionVocabulary() {}
@@ -98,6 +100,7 @@ public final class ActionVocabulary {
 			case "walk", "move", "move-to", "goto", "go-to", "path-to" -> WALK_TO;
 			case "break", "dig", "harvest", "mine-block" -> MINE;
 			case "build", "set-block", "place-block" -> PLACE;
+			case "sign", "write-on-sign", "label" -> WRITE;
 			case "hit", "fight", "kill", "attack-mob" -> ATTACK;
 			case "pick-up", "pickup", "grab", "gather" -> COLLECT;
 			case "torch", "light-up", "illuminate", "place-torch" -> LIGHT;

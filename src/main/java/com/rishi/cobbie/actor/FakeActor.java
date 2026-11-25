@@ -300,6 +300,23 @@ public final class FakeActor {
 	 * the source, and a lead handed to him would leash the animal to a player who is never in the
 	 * world. Anything the caller does not want leashed to the actor has to be handled before this.
 	 */
+	/**
+	 * The same interaction for anything that is not living: an item frame, a painting, an armour stand.
+	 * {@code interactOn} takes an {@code Entity}, and a frame only accepts a player's hand.
+	 */
+	public static Outcome useOnHanging(CobbieEntity body, net.minecraft.world.entity.Entity target,
+			ItemStack held) {
+		if (!(body.level() instanceof ServerLevel level)) return null;
+		FakePlayer actor = place(body, level, held, target.blockPosition());
+		try {
+			net.minecraft.world.phys.Vec3 at = target.position();
+			InteractionResult result = actor.interactOn(target, InteractionHand.MAIN_HAND, at);
+			return new Outcome(result, actor.getItemInHand(InteractionHand.MAIN_HAND).copy());
+		} finally {
+			clearHand(actor);
+		}
+	}
+
 	public static Outcome useOnEntity(CobbieEntity body, net.minecraft.world.entity.LivingEntity target,
 			ItemStack held) {
 		if (!(body.level() instanceof ServerLevel level)) return null;
