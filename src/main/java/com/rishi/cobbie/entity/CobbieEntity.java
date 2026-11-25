@@ -1893,20 +1893,59 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 * other item to the hand; whatever was there before goes back in the bag rather than vanishing,
 	 * and the result is verified by reading the slot back.
 	 */
+	/** One row of his bag as a description can see it, with the slot it came from. */
+	private record BagEntry(com.rishi.cobbie.action.ItemQuery.Candidate candidate, int slot) {}
+
+	/**
+	 * Resolve an item the owner described rather than named — "my sharpest book", "the worst pickaxe" — against
+	 * his own bag. Ambiguity is a refusal that lists the candidates, never a silent pick.
+	 */
+	private com.rishi.cobbie.action.ItemQuery.Result resolveDescribed(String description) {
+		List<com.rishi.cobbie.action.ItemQuery.Candidate> candidates = new ArrayList<>();
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty()) continue;
+			List<String> enchantments = new ArrayList<>();
+			var held = stack.get(net.minecraft.core.component.DataComponents.ENCHANTMENTS);
+			if (held != null) {
+				held.entrySet().forEach(entry -> enchantments.add(
+						entry.getKey().getRegisteredName().replace("minecraft:", "") + " " + entry.getIntValue()));
+			}
+			String customName = stack.get(net.minecraft.core.component.DataComponents.CUSTOM_NAME) == null
+					? "" : stack.get(net.minecraft.core.component.DataComponents.CUSTOM_NAME).getString();
+			candidates.add(new com.rishi.cobbie.action.ItemQuery.Candidate(itemId(stack), customName,
+					stack.getCount(), enchantments, stack.getDamageValue(), stack.getMaxDamage()));
+		}
+		return com.rishi.cobbie.action.ItemQuery.resolve(description, candidates);
+	}
+
+	/** The slot holding the item a description resolved to, or -1 when the bag moved under us. */
+	private int slotOf(com.rishi.cobbie.action.ItemQuery.Candidate chosen) {
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty()) continue;
+			if (itemId(stack).equals(chosen.id()) && stack.getCount() == chosen.count()
+					&& stack.getDamageValue() == chosen.damage()) {
+				return i;
+			}
+		}
+		return -1;
+	}
+
 	private ActionOutcome equipFromBag(ActionIntent intent) {
 		String wanted = intent.target() == null ? "" : intent.target().trim();
 
+		// One route for an id and for a description: "iron_axe" and "my worst pickaxe" answer to the same
+		// rules, so two different stacks that both match are a question either way. Picking the first of
+		// two swords because the words happened to spell an id is exactly the silent guess to avoid.
 		ItemStack chosen = ItemStack.EMPTY;
-		for (int i = 0; i < inventory.getContainerSize() && chosen.isEmpty(); i++) {
-			ItemStack stack = inventory.getItem(i);
-			if (stack.isEmpty()) continue;
-			if (matchesItem(wanted, stack)) {
-				chosen = stack;
-			}
+		var resolved = resolveDescribed(wanted);
+		if (!resolved.ok()) {
+			return ActionOutcome.fail("equip", wanted.isEmpty() ? "I have nothing to put on" : resolved.refusal());
 		}
-		if (chosen.isEmpty()) {
-			return ActionOutcome.fail("equip", wanted.isEmpty() ? "I have nothing to put on" : "I have no " + wanted);
-		}
+		int chosenSlot = slotOf(resolved.chosen());
+		if (chosenSlot < 0) return ActionOutcome.fail("equip", "I lost track of the " + wanted);
+		chosen = inventory.getItem(chosenSlot);
 
 		EquipmentSlot slot = EquipmentSlot.MAINHAND;
 		var equippable = chosen.get(net.minecraft.core.component.DataComponents.EQUIPPABLE);
@@ -3723,8 +3762,27 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		BlockPos pos = new BlockPos(intent.x(), intent.y(), intent.z());
 
 		if (atBlock && !level().isLoaded(pos)) return ActionOutcome.fail("use", "that area is not loaded");
-		ItemStack held = useItemFor(intent.target());
 		boolean emptyTarget = intent.target() == null || intent.target().isBlank();
+		ItemStack held;
+		if (emptyTarget) {
+			held = this.getMainHandItem();
+		} else {
+			// "use my sharpest book on the anvil": an id and a description resolve through the same rules, and
+			// an ambiguous one comes back as a question rather than a guess.
+			var resolved = resolveDescribed(intent.target().trim());
+			if (!resolved.ok()) {
+				return ActionOutcome.fail("use", resolved.refusal());
+			}
+			int slot = slotOf(resolved.chosen());
+			if (slot < 0) return ActionOutcome.fail("use", "I lost track of the " + intent.target().trim());
+			held = inventory.getItem(slot);
+			if (held != this.getMainHandItem()) {
+				ItemStack hand = this.getMainHandItem();
+				if (!hand.isEmpty()) add(hand.copy(), inventory);
+				inventory.setItem(slot, ItemStack.EMPTY);
+				this.setItemInHand(InteractionHand.MAIN_HAND, held);
+			}
+		}
 		// An empty hand is a legitimate request on a hanging thing — it is how an item comes back out of
 		// an item frame — so the "nothing to use" refusal waits until the entity branches have passed.
 		boolean aimedAtSomething = !atBlock && intent.data() != null && !intent.data().isBlank();
