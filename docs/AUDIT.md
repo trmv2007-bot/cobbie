@@ -76,6 +76,28 @@ measuring the constant. A genuine environment failure says something the environ
 timeout, a classpath error. Naming a class "brain-gated" is a claim that needs that question answered, not a label to
 put on a red.
 
+### The same name meaning two things: `isCreative()`
+
+The fourth instance of the pattern, and the clearest one, because nothing looks wrong at the call site:
+
+```java
+boolean slowByHand = hardness > 1.5f && !CobbieConfig.isCreative();
+```
+
+`isCreative()` returns `autonomyMode == CREATIVE` — a companion setting. The question the line is asking is whether the
+**world** lets a bare hand break a block, which is the *owner's game mode*. So in a creative world with **ASSISTIVE**
+autonomy, he refused to break an oak log by hand: *"I need a proper tool for minecraft:oak_log and have none"*. Two
+different questions, one method name, and the compiler delighted with both.
+
+The fix is two predicates with honest names — `breakRefusal` asks `worldIsCreative()` (the owner's mode), and
+`dropRefusal` asks only the drop question, `requiresCorrectToolForDrops()`, because "too slow by hand" was never about
+the drop.
+
+**The lesson to carry: a predicate's name is a claim about what it answers.** When one name serves two subsystems, at
+least one of them is asking the wrong question, and the only way to notice is to read what the method returns rather
+than what it is called. This one survived four slices of tests because every world those tests used had creative
+*autonomy* — the tests were built in the mode that made the wrong answer right.
+
 ## Summary
 
 | Family | Hits | Real defects | Verdict |
