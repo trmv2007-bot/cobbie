@@ -17,6 +17,7 @@ import com.rishi.cobbie.presence.Sight;
 import com.rishi.cobbie.task.TaskPlan;
 import com.rishi.cobbie.task.TaskRunner;
 import com.rishi.cobbie.task.TaskStep;
+import com.rishi.cobbie.world.BodySpace;
 import com.rishi.cobbie.world.WorldPerception;
 import com.rishi.cobbie.world.WorldSnapshot;
 import net.minecraft.core.BlockPos;
@@ -115,6 +116,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private static final int MAX_WALK_REPATHS = 3;         // then repair a dropped path, a few times
 	private static final int FOLLOW_REPATH_INTERVAL = 12; // the pathfinder is not free
 	private static final int PICKUP_INTERVAL = 20;
+	/** Ticks inside a solid block before he gives up on what he was doing and gets himself out. */
+	private static final int WALL_RESCUE_TICKS = 10;
+	/** How far the rescue looks for two free blocks with ground under them. */
+	private static final int WALL_RESCUE_RADIUS = 4;
 	/** How often he remarks on what he can see while he has nothing else to do (60s). */
 	private static final int OBSERVE_INTERVAL_TICKS = 1200;
 
@@ -217,6 +222,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private int pickedUpSinceReport;
 	private final Set<String> pickedUpIds = new HashSet<>();
 	private ActionOutcome pendingOutcome;
+	/** Consecutive ticks with his body inside a solid block, and whether he has said so yet. */
+	private int wallTicks;
+	private boolean wallRescued;
 
 	// ---- bookkeeping ----
 	private int waveTicksLeft;
@@ -773,6 +781,53 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		say(WORLD_CHANGED);
 	}
 
+	/**
+	 * A body inside a solid block is the one state nothing else recovers from.
+	 *
+	 * <p>Suffocation damage starts on the first tick, and an encased companion has no plan that can help
+	 * him: the pathfinder has nothing to plan from, so every step times out while he loses health. A walk
+	 * aimed into a wall is refused before it starts, but that is only one cause — a piston, a teleport, a
+	 * crash, or a world built over his head will do it too — so the check lives on the body and not on the
+	 * thing that pushed him in.
+	 *
+	 * <p>Ten ticks is well before the damage is fatal, and long enough not to fight the game's own push-out
+	 * when he is only a hair inside a corner. The work he was on is cancelled rather than resumed: a plan
+	 * built on coordinates he could not occupy is the plan that put him there.
+	 */
+	private void wallRescueTick() {
+		if (!this.isInWall()) {
+			wallTicks = 0;
+			wallRescued = false;
+			return;
+		}
+		if (++wallTicks <= WALL_RESCUE_TICKS) return;
+		wallTicks = 0;
+
+		BlockPos stuck = this.blockPosition().immutable();
+		int[] free = BodySpace.nearestFree(this::solidAt, stuck.getX(), stuck.getY(), stuck.getZ(),
+				WALL_RESCUE_RADIUS);
+		cancelTask("i was inside a block");
+		getNavigation().stop();
+		if (free != null) {
+			this.teleportTo(free[0] + 0.5, free[1], free[2] + 0.5);
+		}
+		Cobbie.LOGGER.warn("Cobbie was inside a block at {}; moved to {}", describe(stuck),
+				free == null ? "nowhere free nearby" : free[0] + " " + free[1] + " " + free[2]);
+		if (!wallRescued) {
+			wallRescued = true;
+			say(free == null
+					? "i am stuck inside a block and cannot get out"
+					: "i was inside a block, got myself out");
+		}
+	}
+
+	/** Does the block at these coordinates stop a body? Unloaded ground counts as solid, so nothing aims at it. */
+	private boolean solidAt(int x, int y, int z) {
+		BlockPos pos = new BlockPos(x, y, z);
+		if (!level().isLoaded(pos)) return true;
+		return !level().getBlockState(pos).getCollisionShape(level(), pos).isEmpty();
+	}
+
 	public WorldSnapshot perceive() {
 		String result = lastActionResult;
 		if (pickedUpSinceReport > 0) {
@@ -805,6 +860,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		// Keeps him findable by the server tick if his chunk ever stops ticking.
 		CrossDimensionFollow.remember(this);
 		watchWorldChange();
+		wallRescueTick();
 		updateNameplate();
 		followOwnerTick();
 		swimTick();
@@ -1672,8 +1728,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 					walkRepaths = 0;
 					return null;
 				}
+				// Read the target before interrupt(): interrupt() clears it, and the failure line then
+				// said "could not get close enough to ?" — a sentence that names nothing.
+				String unreachable = describe(activeTarget) + " from " + describe(this.blockPosition());
 				interrupt();
-				return ActionOutcome.fail(verb, "could not get close enough to " + describe(activeTarget));
+				return ActionOutcome.fail(verb, "could not get close enough to " + unreachable);
 			}
 			return null; // still walking
 		}
@@ -1841,6 +1900,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private ActionOutcome startWalk(ActionIntent intent) {
 		BlockPos target = new BlockPos(intent.x(), intent.y(), intent.z());
 		if (!level().isLoaded(target)) return ActionOutcome.fail("walk-to", "that area is not loaded");
+		// Somewhere his body does not fit is not a place to walk to, whatever the caller thought it was:
+		// the pathfinder plans to blocks, the body arrives with a height, and the difference is a step
+		// that drives him into stone. Refused here so every caller is covered, not just one test path.
+		if (!BodySpace.fits(this::solidAt, target.getX(), target.getY(), target.getZ())) {
+			return ActionOutcome.fail("walk-to", "i cannot stand there");
+		}
 		double navLimit = Math.max(8, CobbieConfig.getNavigationRange());
 		if (EXPLORE_WALK.equals(intent.data())) {
 			navLimit = Math.max(navLimit, CobbieConfig.getExplorationRadius());

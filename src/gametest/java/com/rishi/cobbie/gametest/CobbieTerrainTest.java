@@ -24,8 +24,14 @@ import java.util.List;
  * and nobody has tested it under adversity.
  *
  * <p>The assertion is **where he ends up**, never that a path was found. Two outcomes are allowed: he
- * arrives, or he stops and says what stopped him. Looping is a failure, and so is a claim of arrival
- * made from a distance.
+ * arrives, or he stops and says what stopped him. Looping is a failure, so is a claim of arrival made
+ * from a distance, and so is a death: a companion who suffocated on the way, or arrived dead, passes
+ * nothing. Every stage prints his health, so a reader can see whether the body survived the route
+ * rather than only that the coordinates match.
+ *
+ * <p>Nothing in this class may be built over his own column. The first version of the course filled the
+ * lane from one block behind him, which put stone at his feet and his head and killed him before the
+ * walk began — the test was the obstacle.
  *
  * <p>Three stages, in one world:
  * <ol>
@@ -60,6 +66,7 @@ public final class CobbieTerrainTest implements FabricClientGameTest {
             // --- 1. The course. ---
             BlockPos start = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow().blockPosition());
             BlockPos goal = buildCourse(server, start);
+            requireAlive(server, goal, "stage 1, before the walk");
 
             String refusal = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
                     .offerPlan("walk to the far end of the yard", List.of(new ActionIntent(
@@ -67,16 +74,18 @@ public final class CobbieTerrainTest implements FabricClientGameTest {
             if (refusal != null) throw new AssertionError("walk-to refused: " + refusal);
 
             boolean arrived = awaitArrival(server, goal, 1400);
-            String where = where(server);
+            Reading endOfCourse = requireAlive(server, goal, "stage 1, at the far end");
+            String where = endOfCourse.where();
             if (!arrived) {
                 // Allowed only if he stopped and said why — never while still trying, never claiming it.
                 String stoppedWith = stoppedWith(server);
                 throw new AssertionError("He never reached the end of the course. He is " + where
-                        + "; he said " + stoppedWith + ". A run that stops must name what stopped it, and "
-                        + "a run that is still walking is neither of the two allowed outcomes.");
+                        + " alive at " + endOfCourse.healthText() + "; he said " + stoppedWith + ". A run that "
+                        + "stops must name what stopped it, and a run that is still walking is neither of the "
+                        + "two allowed outcomes.");
             }
-            System.out.println("[gametest] terrain ok: walked the door, ledge, gate and water to "
-                    + where + ", saying " + stoppedWith(server));
+            System.out.println("[gametest] terrain ok: walked the yard past the door, ledge, gate and water to "
+                    + where + " alive at " + endOfCourse.healthText() + ", saying " + stoppedWith(server));
 
             // --- 2. The door becomes wall while he walks. ---
             BlockPos sealedStart = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow().blockPosition());
@@ -84,11 +93,11 @@ public final class CobbieTerrainTest implements FabricClientGameTest {
                 CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
                 BlockPos base = cobbie.blockPosition();
                 int z = base.getZ() + 14;
-                CobbieTestSupport.command(s, "fill " + (base.getX() - 16) + " " + base.getY() + " " + z + " "
-                        + (base.getX() + 16) + " " + (base.getY() + 3) + " " + z + " minecraft:stone");
-                // One doorway, then sealed with stone a moment later: there is no route at all.
-                CobbieTestSupport.command(s, "setblock " + base.getX() + " " + base.getY() + " " + z
-                        + " minecraft:stone");
+                // Wider than he can plan around: his follow range is 48, so a wall this long with no gap
+                // has no route at all rather than a long one — otherwise walking round the end would be
+                // a legitimate arrival and this stage would fail for the wrong reason.
+                CobbieTestSupport.command(s, "fill " + (base.getX() - 40) + " " + base.getY() + " " + z + " "
+                        + (base.getX() + 40) + " " + (base.getY() + 3) + " " + z + " minecraft:stone");
                 return new BlockPos(base.getX(), base.getY(), z + 4);
             });
             String sealedRefusal = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
@@ -105,8 +114,8 @@ public final class CobbieTerrainTest implements FabricClientGameTest {
                 CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
                 BlockPos base = cobbie.blockPosition();
                 int z = base.getZ() + 14;
-                CobbieTestSupport.command(s, "fill " + (base.getX() - 16) + " " + base.getY() + " " + z + " "
-                        + (base.getX() + 16) + " " + (base.getY() + 3) + " " + z + " minecraft:stone");
+                CobbieTestSupport.command(s, "fill " + (base.getX() - 40) + " " + base.getY() + " " + z + " "
+                        + (base.getX() + 40) + " " + (base.getY() + 3) + " " + z + " minecraft:stone");
                 // A three-wide hole, filled with animals that do not move aside.
                 CobbieTestSupport.command(s, "fill " + (base.getX() - 1) + " " + base.getY() + " " + z + " "
                         + (base.getX() + 1) + " " + (base.getY() + 2) + " " + z + " minecraft:air");
@@ -123,7 +132,65 @@ public final class CobbieTerrainTest implements FabricClientGameTest {
 
             assertStopsRatherThanLoops(context, server, mobGoal, "three animals filling the only gap",
                     mobStart.distSqr(mobGoal));
+
+            // --- 4. A destination inside stone is refused, not walked into. ---
+            // The wall from stage 3 is still there. Asked to stand in one of its blocks, he has to say he
+            // cannot rather than plan a route to a place his body does not fit and drive himself into it.
+            assertRefusesWallDestination(context, server);
         }
+    }
+
+    /**
+     * Walk-to a block that is stone: the step must fail with a plain refusal before anything moves. This is
+     * the destination half of the fatality — the suffocation guard catches the body that is already inside
+     * a block, and this stops the one thing that can deliberately put him there.
+     */
+    private static void assertRefusesWallDestination(ClientGameTestContext context, TestServerContext server) {
+        // The nearest solid block in front of him is a block of the wall he just stopped against. Found by
+        // probing rather than by arithmetic: he stops wherever the pathfinder gives up, and a hard-coded
+        // offset from his own feet is how this stage aimed at empty air the first time.
+        BlockPos[] setup = server.computeOnServer(s -> {
+            CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
+            BlockPos feet = cobbie.blockPosition();
+            for (int dz = 1; dz <= 16; dz++) {
+                for (int dx = 0; dx <= 6; dx++) {
+                    for (int sx : new int[] {feet.getX() + dx, feet.getX() - dx}) {
+                        BlockPos probe = new BlockPos(sx, feet.getY(), feet.getZ() + dz);
+                        if (!cobbie.level().getBlockState(probe).isAir()) {
+                            return new BlockPos[] {feet, probe};
+                        }
+                    }
+                }
+            }
+            return null;
+        });
+        if (setup == null) {
+            throw new AssertionError("No solid block within 16 in front of him to aim at, so the walk-to "
+                    + "refusal was not tested");
+        }
+        BlockPos wall = setup[1];
+
+        String refusal = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                .offerPlan("walk into the wall", List.of(new ActionIntent(ActionVocabulary.WALK_TO, "",
+                        wall.getX(), wall.getY(), wall.getZ(), ""))));
+        if (refusal != null) throw new AssertionError("walk-to into stone refused the whole plan: " + refusal);
+
+        String said = "";
+        for (int tick = 0; tick < 100 && !said.contains("cannot stand there"); tick++) {
+            context.waitTicks(5);
+            said = stoppedWith(server);
+        }
+        Reading after = requireAlive(server, wall, "after being asked to stand in stone");
+        if (!said.contains("cannot stand there")) {
+            throw new AssertionError("Asked to walk into stone at " + wall.toShortString() + " he did not say he "
+                    + "cannot stand there; he said \"" + said + "\" and ended at " + after.where());
+        }
+        if (!after.where().startsWith(setup[0].toShortString())) {
+            throw new AssertionError("He refused the destination at " + wall.toShortString() + " but moved to "
+                    + after.where() + " anyway — a refusal that still walks is not a refusal");
+        }
+        System.out.println("[gametest] terrain ok: a destination inside stone is refused — \"" + said
+                + "\", still at " + after.where() + " (" + after.healthText() + ")");
     }
 
     /**
@@ -281,22 +348,28 @@ public final class CobbieTerrainTest implements FabricClientGameTest {
     /**
      * A yard in front of him: a wall with a closed door he has to open, a step down off the ledge it
      * stands on, a fence with a closed gate, a water channel, and the far end.
+     *
+     * <p>The lane starts one block <em>in front</em> of him. Building it from one block behind put solid
+     * stone in the two blocks his body occupied and suffocated him — the test was the obstacle — so the
+     * geometry now keeps his own column clear, and the goal is a place he can stand: on the ground at the
+     * far end, not two blocks above it.
      */
     private static BlockPos buildCourse(TestServerContext server, BlockPos start) {
         return server.computeOnServer(s -> {
             int x = start.getX();
             int y = start.getY();
             int z = start.getZ();
-            // A raised walkway, because a two-block drop has to start from higher ground: he can always
-            // go down, and never up more than one.
-            CobbieTestSupport.command(s, "fill " + (x - 3) + " " + y + " " + (z - 1) + " " + (x + 3) + " "
-                    + (y + 1) + " " + (z + LEDGE_END) + " minecraft:stone");
-            // Wall with a closed door, on the walkway.
-            CobbieTestSupport.command(s, "fill " + (x - 3) + " " + (y + 2) + " " + (z + DOOR_AT) + " "
-                    + (x + 3) + " " + (y + 5) + " " + (z + DOOR_AT) + " minecraft:stone");
-            CobbieTestSupport.command(s, "setblock " + x + " " + (y + 2) + " " + (z + DOOR_AT)
+            // A raised walkway one block up: he can always step up one, and the ledge at its end is a
+            // step down to the ground. Filled from the block below the walkway's surface, starting in
+            // front of him, so nothing lands where he is standing.
+            CobbieTestSupport.command(s, "fill " + (x - 3) + " " + (y - 1) + " " + (z + 1) + " " + (x + 3) + " "
+                    + y + " " + (z + LEDGE_END) + " minecraft:stone");
+            // Wall with a closed door, standing on the walkway so the door is exactly at his body.
+            CobbieTestSupport.command(s, "fill " + (x - 3) + " " + (y + 1) + " " + (z + DOOR_AT) + " "
+                    + (x + 3) + " " + (y + 4) + " " + (z + DOOR_AT) + " minecraft:stone");
+            CobbieTestSupport.command(s, "setblock " + x + " " + (y + 1) + " " + (z + DOOR_AT)
                     + " minecraft:oak_door[half=lower,facing=north,open=false]");
-            CobbieTestSupport.command(s, "setblock " + x + " " + (y + 3) + " " + (z + DOOR_AT)
+            CobbieTestSupport.command(s, "setblock " + x + " " + (y + 2) + " " + (z + DOOR_AT)
                     + " minecraft:oak_door[half=upper,facing=north,open=false]");
             // A fence with a closed gate, at ground level.
             CobbieTestSupport.command(s, "fill " + (x - 3) + " " + y + " " + (z + GATE_AT) + " " + (x + 3) + " "
@@ -306,37 +379,44 @@ public final class CobbieTerrainTest implements FabricClientGameTest {
             // A water channel three wide, two deep: he has to swim it, not step over it.
             CobbieTestSupport.command(s, "fill " + (x - 3) + " " + (y - 2) + " " + (z + WATER_AT) + " "
                     + (x + 3) + " " + (y + 1) + " " + (z + WATER_AT + 2) + " minecraft:water");
-            // A lip on the far side so leaving the water means climbing one block, not two.
-            CobbieTestSupport.command(s, "fill " + (x - 3) + " " + y + " " + (z + WATER_AT + 3) + " " + (x + 3)
-                    + " " + (y + 1) + " " + (z + WATER_AT + 3) + " minecraft:stone");
-            return new BlockPos(x, y + 2, z + GOAL_AT);
+            // A lip on the far side, one block above the ground, so leaving the water means climbing one
+            // block rather than two: a two-block bank is a wall he can neither walk up nor swim over, and
+            // the swim assist finds no bank beside him because the block above its top is stone too.
+            CobbieTestSupport.command(s, "fill " + (x - 3) + " " + (y - 1) + " " + (z + WATER_AT + 3) + " "
+                    + (x + 3) + " " + y + " " + (z + WATER_AT + 3) + " minecraft:stone");
+            return new BlockPos(x, y, z + GOAL_AT);
         });
     }
 
     /**
      * The adversarial rule: he stops. Not looping, not reporting an arrival he did not make. A stop with
-     * no reason is the other half of the same defect, so the line he said is part of the assertion.
+     * no reason is the other half of the same defect, so the line he said is part of the assertion, and so
+     * is the body: a companion who died against the wall has stopped, and stopping is not passing.
      */
     private static void assertStopsRatherThanLoops(ClientGameTestContext context, TestServerContext server,
             BlockPos goal, String obstacle, double distanceAtStart) {
+        requireAlive(server, goal, "the walk into " + obstacle);
         // Long enough that a real attempt has clearly failed, short enough that a loop is caught.
         boolean stopped = false;
         for (int tick = 0; tick < 360 && !stopped; tick++) {
             context.waitTicks(5);
-            stopped = server.computeOnServer(s -> CobbieTestSupport.cobbie(s)
-                    .map(c -> !c.isBusy()).orElse(false));
+            Reading now = reading(server, goal);
+            if (now == null || now.dead()) {
+                // Wording the death belongs to requireAlive: "he never stopped" would be the wrong story.
+                requireAlive(server, goal, "standing against " + obstacle);
+            }
+            stopped = !now.busy();
         }
 
-        String where = where(server);
+        Reading end = requireAlive(server, goal, "after facing " + obstacle);
+        String where = end.where();
         String said = stoppedWith(server);
-        boolean atGoal = server.computeOnServer(s -> CobbieTestSupport.cobbie(s)
-                .map(c -> c.blockPosition().distSqr(goal) <= ARRIVED).orElse(false));
 
         if (!stopped) {
             throw new AssertionError("He was still walking after 90 s at " + where + " with " + obstacle
                     + " in the way — that is the loop this test exists to catch");
         }
-        if (atGoal) {
+        if (end.atGoal()) {
             throw new AssertionError("He reported being at the goal with " + obstacle + " in the way (" + where
                     + ") — arrival from a distance is the claim this test refuses");
         }
@@ -344,19 +424,68 @@ public final class CobbieTerrainTest implements FabricClientGameTest {
             throw new AssertionError("He stopped with " + obstacle + " in the way but said nothing about it ("
                     + where + ")");
         }
-        System.out.println("[gametest] terrain adversarial ok: " + obstacle + " — stopped at " + where
-                + " saying \"" + said + "\" (started " + Math.round(Math.sqrt(distanceAtStart)) + " blocks away)");
+        System.out.println("[gametest] terrain adversarial ok: " + obstacle + " — stopped alive at " + where
+                + " (" + end.healthText() + ") saying \"" + said + "\" (started "
+                + Math.round(Math.sqrt(distanceAtStart)) + " blocks away)");
     }
 
+    /**
+     * Walk until he is standing at the goal, without letting a death pass as a timeout: a companion who
+     * suffocated on the way is found dead here, in the stage he died in, instead of as "he never arrived"
+     * seventy seconds later.
+     */
     private static boolean awaitArrival(TestServerContext server, BlockPos goal, int ticks) {
-        try {
-            server.waitFor(s -> CobbieTestSupport.cobbie(s)
-                    .map(c -> c.blockPosition().distSqr(goal) <= ARRIVED && c.onGround())
-                    .orElse(false), ticks);
-            return true;
-        } catch (Throwable t) {
-            return false;
+        for (int spent = 0; spent < ticks; spent += 20) {
+            Reading now = reading(server, goal);
+            if (now == null || now.dead()) {
+                requireAlive(server, goal, "walking to the end of the course"); // always throws here
+                return false;
+            }
+            if (now.atGoal()) return true;
+            CobbieTestSupport.elapsed(server, 20);
         }
+        return false;
+    }
+
+    /** One reading of the body. Null means he cannot be found at all. */
+    private record Reading(String where, String healthText, float health, boolean atGoal, boolean busy) {
+        boolean dead() {
+            return health <= 0.0f;
+        }
+    }
+
+    /**
+     * Where he is and how he is, read in one go on the server thread. A box of 96 blocks around the owner
+     * rather than the everyday 48: the course is longer than that, and a companion standing at the far end
+     * of it is not "nowhere findable".
+     */
+    private static Reading reading(TestServerContext server, BlockPos goal) {
+        return server.computeOnServer(s -> CobbieTestSupport.cobbie(s, 96)
+                .map(c -> new Reading(
+                        c.blockPosition().toShortString() + " onGround=" + c.onGround(),
+                        c.getHealth() + "/" + c.getMaxHealth(),
+                        c.getHealth(),
+                        c.blockPosition().distSqr(goal) <= ARRIVED && c.onGround(),
+                        c.isBusy()))
+                .orElse(null));
+    }
+
+    /**
+     * A stage only passes on a body that is still there and still alive. Printed every time it is called,
+     * so the run's log shows his health stage by stage rather than only at the end.
+     */
+    private static Reading requireAlive(TestServerContext server, BlockPos goal, String stage) {
+        Reading now = reading(server, goal);
+        if (now == null) {
+            throw new AssertionError("He is missing at " + stage + " — dead, removed, or more than 96 blocks "
+                    + "from you. A companion who is not there has not passed anything, whatever the goal says.");
+        }
+        if (now.dead()) {
+            throw new AssertionError("He died at " + stage + " (" + now.where() + ", last words \""
+                    + stoppedWith(server) + "\"). A dead companion standing at the goal is not an arrival.");
+        }
+        System.out.println("[gametest] " + stage + ": alive, health " + now.healthText() + " at " + now.where());
+        return now;
     }
 
     private static String where(TestServerContext server) {

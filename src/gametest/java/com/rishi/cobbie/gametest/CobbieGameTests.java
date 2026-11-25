@@ -27,6 +27,7 @@ public final class CobbieGameTests implements FabricClientGameTest {
     private static final List<FabricClientGameTest> ALL = List.of(
             new CobbieWorldChangeTest(),
             new CobbieTerrainTest(),
+            new CobbieWallRescueTest(),
             new CobbieReattachTest(),
             new CobbieRideTest(),
             new CobbieCapabilityTest(),
