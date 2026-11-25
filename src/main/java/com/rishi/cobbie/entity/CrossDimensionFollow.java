@@ -52,6 +52,18 @@ public final class CrossDimensionFollow {
 
 	private CrossDimensionFollow() {}
 
+	/**
+	 * Remember where a companion was when it loaded, so the server tick can find him after his chunk
+	 * stops ticking. This cannot live only in his own tick: once he is inert nothing in his tick runs,
+	 * which is exactly the state that has to be escaped.
+	 */
+	public static synchronized void seen(Entity entity) {
+		if (!(entity instanceof CobbieEntity cobbie)) return;
+		if (cobbie.getOwner() == null) return;
+		WATCHES.put(cobbie.getUUID(), new Watch(cobbie.getOwner(), cobbie.level().dimension(),
+				cobbie.blockPosition().immutable(), -1, false));
+	}
+
 	/** Called from his own tick, whenever he is ticking: this is what makes him findable later. */
 	public static synchronized void remember(CobbieEntity cobbie) {
 		if (cobbie.getOwner() == null || !cobbie.isFollowing()) {
@@ -65,6 +77,15 @@ public final class CrossDimensionFollow {
 
 	/** Called once per server tick, from outside any entity tick. */
 	public static synchronized void tick(MinecraftServer server) {
+		// Every second, note every companion that is loaded right now. This has to happen from the
+		// server thread and not from his own tick: the whole problem is that his tick can stop.
+		if (server.getTickCount() % 20 == 0) {
+			for (ServerLevel level : server.getAllLevels()) {
+				for (Entity entity : level.getAllEntities()) {
+					if (entity instanceof CobbieEntity cobbie) seen(cobbie);
+				}
+			}
+		}
 		if (WATCHES.isEmpty()) return;
 		Iterator<Map.Entry<UUID, Watch>> it = WATCHES.entrySet().iterator();
 		while (it.hasNext()) {
