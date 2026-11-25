@@ -305,6 +305,25 @@ public final class CobbieBrain {
 			lastState = ConnectionState.MODEL_AVAILABLE;
 			lastStateDetail = "answered " + name + " at " + now;
 			final ActionParser.ActionPlan plan = ActionParser.parse(result.content());
+
+			// A reply that promises an action and queues none is the one failure this project exists
+			// to prevent, and it is not rare: measured on six plain asks, "zoom my map out" lost the
+			// action three times in four and "this enchanted book" twice in four, with the sentence
+			// "On it — zooming your map out" sent and nothing behind it. Prompt rules do not hold
+			// against that (rule 10 says exactly this and it still happens), so the invariant is
+			// enforced here instead: one repair call, and only on the failing path.
+			// -Dcobbie.repair=off turns it off, so the before and after can be measured under the
+			// same build flags instead of comparing today's run with yesterday's.
+			// The declaration is the trigger now; the phrase list only covers a reply that did not
+			// declare. The second model's objection to this feature was that a regex can turn a missing
+			// action into an unintended one — so the promise is something the model states about its own
+			// reply, and the regex is a fallback for older replies rather than the mechanism.
+			Boolean declared = plan.declaredAction();
+			boolean promised = declared != null ? declared : promisesAnAction(plan.answer());
+			if (REPAIR_ENABLED && !plan.hasWorldAction() && promised) {
+				repair(sender, body, speakerId, name, text, plan, system, turns, user, server);
+				return;
+			}
 			server.execute(() -> deliver(sender, body, speakerId, name, text, plan));
 		}).exceptionally(ex -> {
 			inFlight.decrementAndGet();
@@ -318,6 +337,70 @@ public final class CobbieBrain {
 			}
 			return null;
 		});
+	}
+
+	/** Whether the narration repair runs at all. Off only for A/B measurement. */
+	private static final boolean REPAIR_ENABLED =
+			!"off".equalsIgnoreCase(System.getProperty("cobbie.repair", "on"));
+
+	/** Words that claim he is doing something. Kept short on purpose: the repair below costs a call. */
+	private static final java.util.regex.Pattern PROMISE = java.util.regex.Pattern.compile(
+			"\\b(i'?ll|i will|i'm going|on it|heading|going to|let me|zooming|weaving|brewing|grinding|"
+					+ "stripping|adding|taking|working on|walking over)\\b",
+			java.util.regex.Pattern.CASE_INSENSITIVE);
+
+	/**
+	 * Whether a reply claims he is doing something. Public so the narration gate can judge a transcript
+	 * by the same rule the repair uses: one definition of "a promise", or the test and the fix drift.
+	 */
+	public static boolean promisesAnAction(String answer) {
+		return answer != null && !answer.isBlank() && PROMISE.matcher(answer).find();
+	}
+
+	/**
+	 * Ask once for the actions behind the sentence he already sent.
+	 *
+	 * <p>The second reply is parsed the same way as the first. If it carries actions, that plan is
+	 * delivered with the sentence he originally said — the player has already read it, so the repair
+	 * must not change it. If it carries none, the original conversational reply stands, which is the
+	 * honest outcome: he was talking, not acting.
+	 */
+	private static void repair(ServerPlayer sender, CobbieEntity body, UUID speakerId, String name,
+			String said, ActionParser.ActionPlan original, String system, List<LlmClient.Msg> turns,
+			String user, MinecraftServer server) {
+		inFlight.incrementAndGet();
+		List<LlmClient.Msg> withTurn = new ArrayList<>(turns);
+		withTurn.add(new LlmClient.Msg("user", user));
+		withTurn.add(new LlmClient.Msg("assistant", original.answer()));
+		String ask = "You just replied: \"" + original.answer() + "\". If that promised an action, reply with ONLY"
+				+ " the JSON object containing \"actions\" and no other prose. If you were only talking,"
+				+ " reply with exactly {\"answer\":\"\"} and nothing else.";
+		client.complete(system + "\n\nREPAIR: your previous reply promised something and queued no action.",
+				withTurn, ask).thenAccept(second -> {
+					inFlight.decrementAndGet();
+					if (server == null) return;
+					final ActionParser.ActionPlan parsed = second != null && second.success()
+							? ActionParser.parse(second.content())
+							: null;
+					final ActionParser.ActionPlan repaired =
+							parsed != null && parsed.hasWorldAction() ? parsed : null;
+					server.execute(() -> {
+						if (repaired != null) {
+							Cobbie.LOGGER.info("Cobbie repaired a narrated action for {} ({} step(s))",
+									name, repaired.actions().size());
+							deliver(sender, body, speakerId, name, said,
+									new ActionParser.ActionPlan(original.answer(), repaired.actions(), List.of()));
+						} else {
+							deliver(sender, body, speakerId, name, said, original);
+						}
+					});
+				}).exceptionally(ex -> {
+					inFlight.decrementAndGet();
+					if (server != null) {
+						server.execute(() -> deliver(sender, body, speakerId, name, said, original));
+					}
+					return null;
+				});
 	}
 
 	/** Runs on the server thread: speak, offer the plan, store the turn. */

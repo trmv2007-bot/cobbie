@@ -117,6 +117,16 @@ tasks.matching { it.name == "runClientGameTest" }.configureEach { t ->
 	if (only) {
 		t.jvmArgs "-Dcobbie.gametests=${only}"
 	}
+	// A -D on the gradle command line reaches the daemon, not the client JVM this task launches, so
+	// the history-seeding regime is forwarded the same way the class filter is.
+	def seed = findProperty("cobbieSeed")
+	if (seed) {
+		t.jvmArgs "-Dcobbie.seedExchanges=${seed}"
+	}
+	def repair = findProperty("cobbieRepair")
+	if (repair) {
+		t.jvmArgs "-Dcobbie.repair=${repair}"
+	}
 	// 0.17.0: the suite talks to a real model. Let the surrounding environment supply one without any
 	// key reaching a file: the same COBBIE_* variables the mod reads at runtime.
 	if (t instanceof JavaExec) {
