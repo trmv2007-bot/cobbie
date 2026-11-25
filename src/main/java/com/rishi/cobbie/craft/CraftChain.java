@@ -175,27 +175,38 @@ public final class CraftChain {
 
 			// Several recipes can make the same thing and only some will work from this bag, so each
 			// one is tried against a snapshot and the simulation is rolled back when it fails.
-			String firstReason = null;
+			//
+			// When every option fails, the reason reported is the one from the recipe that fitted his bag
+			// best — the recipe that uses the most of what he is carrying. A bed has two: three wool and
+			// three planks, and dyeing another bed, whose chain runs through white dye to bone meal to
+			// bone. Reporting the first tried would tell the owner he is short of bone when what he is
+			// short of is planks.
+			Attempt best = null;
 			for (Recipe recipe : options) {
 				Map<String, Integer> stockBefore = new LinkedHashMap<>(have);
 				int stepsBefore = steps.size();
-				String reason = tryRecipe(recipe, item, need, depth, path);
-				if (reason == null) {
+				Attempt attempt = tryRecipe(recipe, item, need, depth, path);
+				if (attempt.failure() == null) {
 					path.remove(item);
 					return null;
 				}
-				if (firstReason == null) firstReason = reason;
+				if (best == null || attempt.fitted() > best.fitted()) best = attempt;
 				have.clear();
 				have.putAll(stockBefore);
 				while (steps.size() > stepsBefore) steps.remove(steps.size() - 1);
 			}
 			path.remove(item);
-			return firstReason;
+			return best == null ? "I have no recipe for " + item + " and none in my bag" : best.failure();
 		}
 
-		/** @return null when this recipe settles {@code need} of {@code item}, otherwise why not. */
-		private String tryRecipe(Recipe recipe, String item, int need, int depth, Set<String> path) {
-			if (recipe.resultCount() <= 0) return "the recipe for " + item + " produces nothing";
+		/** A failed option, with how much of it his bag already covered — the tiebreak for which reason to report. */
+		private record Attempt(String failure, int fitted) {}
+
+		/**
+		 * @return an {@link Attempt} whose failure is null when this recipe settles {@code need} of {@code item}
+		 */
+		private Attempt tryRecipe(Recipe recipe, String item, int need, int depth, Set<String> path) {
+			if (recipe.resultCount() <= 0) return new Attempt("the recipe for " + item + " produces nothing", 0);
 
 			int runs = (need + recipe.resultCount() - 1) / recipe.resultCount();
 			// Which item each slot spends, decided once so identical slots pool their demand: a
@@ -205,10 +216,16 @@ public final class CraftChain {
 				String pick = choose(slot);
 				if (pick != null) demand.merge(pick, runs, Integer::sum);
 			}
+			// How many of those chosen items he is actually carrying: a recipe he is half-ready for is the
+			// one whose missing item he will recognise.
+			int fitted = 0;
+			for (String pick : demand.keySet()) {
+				if (have.getOrDefault(pick, 0) > 0) fitted++;
+			}
 			List<String> consumes = new ArrayList<>();
 			for (Map.Entry<String, Integer> wanted : demand.entrySet()) {
 				String reason = ensure(wanted.getKey(), wanted.getValue(), depth + 1, path);
-				if (reason != null) return reason;
+				if (reason != null) return new Attempt(reason, fitted);
 				for (int used = 0; used < wanted.getValue(); used++) consumes.add(wanted.getKey());
 			}
 
@@ -216,7 +233,7 @@ public final class CraftChain {
 			// Keep what this run leaves over, minus what the caller asked for — otherwise the same
 			// produced item would be handed out twice.
 			have.put(item, have.getOrDefault(item, 0) + runs * recipe.resultCount() - need);
-			return null;
+			return new Attempt(null, fitted);
 		}
 
 		/**

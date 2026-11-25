@@ -112,29 +112,49 @@ public final class CobbiePersistenceTest implements FabricClientGameTest {
                     + ", and a reload with nothing in flight was silent");
 
             // The positive: hand him work that cannot finish inside the save window, check the marker
-            // really carries that request, and save while it runs.
-            String refused = server.computeOnServer(s -> {
-                CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
-                BlockPos rise = cobbie.blockPosition().offset(8, 0, 0);
-                return cobbie.offerPlan(WALK_REQUEST, List.of(new ActionIntent(ActionVocabulary.WALK_TO, "",
-                        rise.getX(), rise.getY(), rise.getZ(), "")));
-            });
-            if (refused != null) {
-                throw new AssertionError("The test's own plan was refused: " + refused);
+            // really carries that request, and save while it runs. Twenty blocks, not eight: a short walk
+            // can finish while a full run's save is being written, and then the save legitimately carries
+            // nothing — a save-timing race the fixture had, not a defect in him.
+            interruptedSave = null;
+            for (int attempt = 1; attempt <= 2 && interruptedSave == null; attempt++) {
+                // Three short legs rather than one long one: each has to be reachable in a normal world or the
+                // plan dies before the write, and together they take long enough that a save cannot outrun them.
+                String refused = server.computeOnServer(s -> {
+                    CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
+                    BlockPos from = cobbie.blockPosition();
+                    return cobbie.offerPlan(WALK_REQUEST, List.of(
+                            new ActionIntent(ActionVocabulary.WALK_TO, "", from.getX() + 8, from.getY(), from.getZ(), ""),
+                            new ActionIntent(ActionVocabulary.WALK_TO, "", from.getX() + 8, from.getY(), from.getZ() + 8, ""),
+                            new ActionIntent(ActionVocabulary.WALK_TO, "", from.getX(), from.getY(), from.getZ() + 8, "")));
+                });
+                if (refused != null) {
+                    throw new AssertionError("The test's own plan was refused: " + refused);
+                }
+                String inFlight = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                        .interruptedPlanRequest());
+                if (!WALK_REQUEST.equals(inFlight)) {
+                    throw new AssertionError("A started project was not marked in flight: the marker reads \""
+                            + inFlight + "\"");
+                }
+                boolean stillWalking = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                        .isBusy());
+                if (!stillWalking) {
+                    throw new AssertionError("The project settled before the save, so nothing was in flight"
+                            + " to interrupt");
+                }
+                interruptedSave = reopened.getWorldSave();
+                boolean survivedTheSave = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                        .isBusy());
+                if (!survivedTheSave) {
+                    // It finished in the pause after the save request; that save cannot be used.
+                    interruptedSave = null;
+                    CobbieTestSupport.elapsed(server, 40);
+                }
             }
-            String inFlight = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
-                    .interruptedPlanRequest());
-            if (!WALK_REQUEST.equals(inFlight)) {
-                throw new AssertionError("A started project was not marked in flight: the marker reads \""
-                        + inFlight + "\"");
+            if (interruptedSave == null) {
+                throw new AssertionError("Two attempts and the project always finished inside the save window,"
+                        + " so a save with work in flight could not be produced");
             }
-            boolean stillWalking = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
-                    .isBusy());
-            if (!stillWalking) {
-                throw new AssertionError("The project settled before the save, so nothing was in flight"
-                        + " to interrupt");
-            }
-            interruptedSave = reopened.getWorldSave();
         }
 
         try (TestSingleplayerContext woken = interruptedSave.open()) {
@@ -152,9 +172,13 @@ public final class CobbiePersistenceTest implements FabricClientGameTest {
                         .map(c -> CobbieEntity.WAKE_LINE.equals(c.lastSpokenLine())).orElse(false), 400);
                 said = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow().lastSpokenLine());
             } catch (Throwable t) {
-                throw new AssertionError("He woke into a save with a project in flight and said nothing;"
-                        + " the last line was \"" + server.computeOnServer(s -> CobbieTestSupport.cobbie(s)
-                        .map(CobbieEntity::lastSpokenLine).orElse("nothing")) + "\"", t);
+                // Which half failed: a save carrying nothing is the fixture's race, a save carrying the marker
+                // and saying nothing is the mechanism. The message says which, so the next reader does not guess.
+                String state = server.computeOnServer(s -> CobbieTestSupport.cobbie(s)
+                        .map(c -> "marker=\"" + c.interruptedPlanRequest() + "\" pending=" + c.wakeLinePending()
+                                + " last=\"" + c.lastSpokenLine() + "\"")
+                        .orElse("no companion"));
+                throw new AssertionError("He woke into a save with a project in flight and said nothing; " + state, t);
             }
             if (!CobbieEntity.WAKE_LINE.equals(said)) {
                 throw new AssertionError("The wake-up line was not the one the brief asks for: \"" + said + "\"");
