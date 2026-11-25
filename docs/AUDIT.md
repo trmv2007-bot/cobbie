@@ -7,6 +7,17 @@ file as the record of judgment.
 Method: run the scanner, read every hit, decide, and fix only real defects. The scanner is deliberately
 noisy — a template is not a bug — so its false positives are listed here with the reason.
 
+## One shape behind three of this week's defects
+
+Three fixes this week opened a hole beside them, and the shape was the same every time: **a condition written
+for one caller, applied to all of them.** The mining gate learned that a log drops to a bare hand and then
+refused stone for a tunnel the owner asked for; the initiative negatives waited out a cooldown and became
+vacuous rather than slow; the empty-hand path added so an item could come back out of a frame refused every
+bare-handed block use, and a lever answered *"I am not holding anything to use"*. None of the three was
+subtle once seen, and all three were found by a test or a probe rather than by reading. A reader who
+recognises the shape — *who else calls this?* asked at the moment the condition is narrowed — saves the day
+each of them cost.
+
 ## Summary
 
 | Family | Hits | Real defects | Verdict |
