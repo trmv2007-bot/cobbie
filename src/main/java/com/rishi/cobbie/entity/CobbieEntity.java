@@ -145,6 +145,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private static final int STATION_STALL_TICKS = 400;
 	/** How far he will look for a furnace before giving up on making iron. */
 	private static final int FURNACE_SEARCH = 12;
+	/** How far round himself he will look for two animals of a kind. */
+	private static final int BREED_RADIUS = 8;
 	/** How far round himself he will tend a farm. A plot is small; a field he walks. */
 	private static final int FARM_RADIUS = 4;
 	/** How far he will reach for a mob with an item. A player's reach is three blocks; he is taller. */
@@ -1372,6 +1374,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			case ActionVocabulary.WEAVE -> weaveFromBag(intent);
 			case ActionVocabulary.MAP -> mapFromBag(intent);
 			case ActionVocabulary.FARM -> farmAround(intent);
+			case ActionVocabulary.BREED -> breedNearby(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
@@ -3105,6 +3108,116 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			level().addFreshEntity(pile);
 		}
 		return ActionOutcome.ok("map", "worked the map with " + itemId(addition));
+	}
+
+	/**
+	 * Feed two adults of the same kind and let the game make the calf.
+	 *
+	 * <p>A probe settled the mechanism before this was written: feeding through the actor does put both
+	 * animals in love, and {@code canMate} then says yes — but no calf appeared in twelve seconds, because
+	 * the pairing is normally completed by the animal's own breeding goal and that goal never runs for
+	 * them here. What does run is the game's own code for the calf itself:
+	 * {@code Animal.spawnChildFromBreeding} is public, and it creates the offspring, sets both parents'
+	 * cooldowns and plays the sounds. So this feeds, checks the preconditions, and then asks the game to
+	 * do the part it owns.
+	 *
+	 * <p>Every refusal names the condition that failed — no food, one adult, a baby, a cooldown — because
+	 * "it did not work" teaches neither the model nor the owner anything.
+	 */
+	private ActionOutcome breedNearby(ActionIntent intent) {
+		if (!CobbieConfig.permits("breed")) {
+			return ActionOutcome.fail("breed", "I am not allowed to handle animals — /cobbie permit building on");
+		}
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("breed", "no server world");
+
+		String wanted = intent.target() == null || intent.target().isBlank() ? null : intent.target()
+				.trim().toLowerCase(Locale.ROOT).replace(' ', '_');
+		Identifier typeId = entityId(wanted == null ? "" : wanted);
+
+		// The adults worth pairing, and the food he has for them. isFood is the animal's own answer.
+		ItemStack food = ItemStack.EMPTY;
+		String kind = null;
+		List<net.minecraft.world.entity.animal.Animal> adults = new ArrayList<>();
+		List<net.minecraft.world.entity.animal.Animal> babies = new ArrayList<>();
+		boolean coolingDown = false;
+		for (net.minecraft.world.entity.Entity e : level().getEntitiesOfClass(
+				net.minecraft.world.entity.animal.Animal.class, this.getBoundingBox().inflate(BREED_RADIUS))) {
+			if (typeId != null && !BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).equals(typeId)) continue;
+			net.minecraft.world.entity.animal.Animal animal = (net.minecraft.world.entity.animal.Animal) e;
+			if (animal.isBaby()) {
+				babies.add(animal);
+				continue;
+			}
+			if (!animal.canFallInLove()) {
+				coolingDown = true;
+				continue;
+			}
+			if (food.isEmpty()) food = foodFor(animal);
+			if (!food.isEmpty() && animal.isFood(food)) {
+				kind = String.valueOf(BuiltInRegistries.ENTITY_TYPE.getKey(animal.getType()))
+						.replace("minecraft:", "");
+				adults.add(animal);
+			}
+		}
+
+		if (adults.size() < 2) {
+			if (food.isEmpty()) {
+				return ActionOutcome.fail("breed", "I have nothing here that a "
+						+ (kind == null ? "animal" : kind) + " would eat");
+			}
+			if (babies.size() + adults.size() >= 2 && coolingDown) {
+				return ActionOutcome.fail("breed", "the " + (kind == null ? "animal" : kind)
+						+ " is on a breeding cooldown — it will not be ready for a while");
+			}
+			return ActionOutcome.fail("breed", "I need two grown " + (kind == null ? "animals" : kind)
+					+ " close together and I can see " + (adults.size() + babies.size()));
+		}
+
+		// Feed both through the actor: that is the step that sets them in love, and it is the game's own
+		// mobInteract rather than a flag set behind its back.
+		net.minecraft.world.entity.animal.Animal first = adults.get(0);
+		net.minecraft.world.entity.animal.Animal second = adults.get(1);
+		String foodId = itemId(food);
+		for (net.minecraft.world.entity.animal.Animal animal : List.of(first, second)) {
+			com.rishi.cobbie.actor.FakeActor.useOnEntity(this, animal, food.copyWithCount(1));
+		}
+		if (!first.isInLove() || !second.isInLove() || !first.canMate(second)) {
+			// Report what is actually observed, not a guess at the cause. A cow that has just calved
+			// still answers canFallInLove() true in this version and simply declines the wheat, so
+			// claiming "cooldown" would be a diagnosis the run does not support.
+			boolean inLove = first.isInLove() || second.isInLove();
+			return ActionOutcome.fail("breed", inLove
+					? "one of the " + kind + " is already in love with another animal"
+					: "the " + kind + " would not take the " + foodId
+							+ " — it may still be recovering from the last young");
+		}
+
+		int calvesBefore = level().getEntitiesOfClass(net.minecraft.world.entity.animal.Animal.class,
+				this.getBoundingBox().inflate(BREED_RADIUS),
+				net.minecraft.world.entity.animal.Animal::isBaby).size();
+		// The calf, the parents' cooldowns and the sounds are the game's; this only asks for it.
+		first.spawnChildFromBreeding(serverLevel, second);
+		int calvesAfter = level().getEntitiesOfClass(net.minecraft.world.entity.animal.Animal.class,
+				this.getBoundingBox().inflate(BREED_RADIUS),
+				net.minecraft.world.entity.animal.Animal::isBaby).size();
+		if (calvesAfter <= calvesBefore) {
+			return ActionOutcome.fail("breed", "nothing came of the pairing — the " + kind + " are ready but"
+					+ " no young appeared");
+		}
+		consumeItem(foodId, 2);
+		return ActionOutcome.ok("breed", "fed a pair of " + kind + " and a young one was born");
+	}
+
+	/** The first food in his bag that this animal would eat, or empty. */
+	private ItemStack foodFor(net.minecraft.world.entity.animal.Animal animal) {
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty()) continue;
+			if (animal.isFood(stack)) return stack;
+		}
+		ItemStack hand = this.getMainHandItem();
+		if (!hand.isEmpty() && animal.isFood(hand)) return hand;
+		return ItemStack.EMPTY;
 	}
 
 	/**

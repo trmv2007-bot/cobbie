@@ -62,7 +62,8 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
             new Ask("cobbie put a creeper pattern on my banner", "weave", null),
             new Ask("cobbie zoom my map out with paper", "map", null),
             new Ask("cobbie harvest the wheat and replant it", "farm", null),
-            new Ask("cobbie till this dirt and plant some wheat", "use", null));
+            new Ask("cobbie till this dirt and plant some wheat", "use", null),
+            new Ask("cobbie breed the cows", "breed", null));
 
     @Override
     public void runTest(ClientGameTestContext context) {
@@ -116,6 +117,19 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                             + " minecraft:farmland[moisture=7]");
                     CobbieTestSupport.command(s, "setblock " + farm.getX() + " " + (farm.getY() + 1) + " "
                             + farm.getZ() + " minecraft:wheat[age=7]");
+                }
+                // Two cows for the breeding ask; the wheat above is what they eat.
+                for (double dx : new double[] {-1.5, -2.5}) {
+                    net.minecraft.world.entity.animal.cow.Cow cow =
+                            new net.minecraft.world.entity.animal.cow.Cow(
+                                    net.minecraft.world.entity.EntityTypes.COW, s.overworld());
+                    cow.setPos(at.getX() + dx, at.getY(), at.getZ() + 1.0);
+                    // Pinned for the same reason the sheep is: a prop that wanders leaves the
+                    // perception range and the ask stops being measurable, which reads as a model
+                    // failure when it is the fixture's.
+                    cow.setNoAi(true);
+                    cow.setPersistenceRequired();
+                    s.overworld().addFreshEntity(cow);
                 }
                 BlockPos bare = new BlockPos(at.getX() + 1, at.getY() - 1, at.getZ() - 1);
                 CobbieTestSupport.command(s, "setblock " + bare.getX() + " " + bare.getY() + " " + bare.getZ()
