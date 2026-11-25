@@ -75,11 +75,21 @@ parsed exactly like a first reply.
 The gate now also treats an honest blocker as honest: no plan is only a failure when the reply
 claimed an action, judged by the same predicate the repair uses, so the two cannot drift.
 
-**Not verified: that the repair has ever fired in a real run.** With the fixture complete it did not
-need to, so its effect is unobserved — it is a guard whose trigger is measured but whose firing is
-not. The earlier run that did fire it (`Cobbie repaired a narrated action for TestPlayer (1 step(s))`,
-followed by `map filled_map [done]`) came from a run taken before the build-cache rule, so it is
-evidence of the mechanism rather than a measured claim.
+**The repair firing is now observed, not inferred.** In the cache-free regression run at this head it
+fired on its own:
+
+```
+[12:44:59] (cobbie) Cobbie repaired a narrated action for TestPlayer (2 step(s))
+           "On it — back to the grindstone to strip the sharpness off your iron axe."
+```
+
+The model answered with a promise and no actions, the repair recovered two steps, and they ran
+(`walk-to [done] → use [failed]` — the second step is the unrelated `use`-on-a-block problem, not a
+narration one). Six brain-path classes in that run: `Status`, `Panel`, `Smoke`, `Chat`,
+`VerbChoice`, `Narration` — **6 passed, 0 failed of 6**.
+
+**Still not verified:** how often it fires in ordinary play. One observed firing proves the path
+works; it does not give a rate, and with the fixture complete the gate needed it only once in six.
 
 **A standing correction:** every in-game number I reported before the `--no-build-cache --rerun-tasks`
 rule came from runs without it. Logs show the compiler executed after each source edit and behaviour
