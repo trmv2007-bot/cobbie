@@ -27,6 +27,12 @@ each of them cost.
 found and fixed in 0.46.0, and then reintroduced in 0.60.0 — in the probe *about measuring things*, where every
 phase reported the same number and the measurement was worthless.
 
+It was fixed once in 0.46.0, reintroduced in 0.60.0's probe, and reintroduced again in 0.61.0's own harness — three
+slices, two of them written *after* the fix, and each time the guard available at the time could not see it. **That
+is the part worth keeping: a pattern survives its own fix when the shape stays easy to type.** A check that runs by
+default is what eventually catches it, and making the shape unwritable is what stops it; neither replaces the other,
+because the check has to exist before the unwritable version does.
+
 The lesson is not that the helper was wrong. It is that **the wrong helper is still the obvious thing to type**:
 `waitFor(predicate, timeout)` reads like "wait a while", compiles, and looks correct. `CobbieTestSupport.elapsed`
 exists for exactly this and has to be remembered. Until the shape is unwritable — one way to wait, or a check that
