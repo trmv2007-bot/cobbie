@@ -105,6 +105,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private static final EntityDataAccessor<Boolean> DATA_WAVING =
 			SynchedEntityData.defineId(CobbieEntity.class, EntityDataSerializers.BOOLEAN);
 
+	/** Said once, plainly, when a world change ends a plan that was running. */
+	static final String WORLD_CHANGED = "we changed worlds, so I stopped what I was doing";
+
 	private static final int WAVE_TICKS = 40;
 	private static final int STEP_DEADLINE_TICKS = 1200;  // 60s per step, then it is abandoned
 	private static final double ARRIVE_RADIUS = 1.5;      // "I have walked there", not "I can touch it"
@@ -221,6 +224,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private int lastPickupTick;
 	private int attackCooldownUntil;
 	private String lastActionResult = "nothing yet";
+	/** The last thing he said out loud, so a test can check the words and not just the effect. */
+	private String lastSpokenLine = "";
 	/** His voice: one short line per step, at most one every chat cooldown. */
 	private final Narrator narrator = new Narrator();
 	private int lastObservationTick;
@@ -719,10 +724,17 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return lastActionResult;
 	}
 
+	public String lastSpokenLine() {
+		return lastSpokenLine;
+	}
+
 	/** One-shot "here is what actually happened" text when a plan settles. */
 	public String takeTaskReport() {
 		return tasks.takeReport();
 	}
+
+	/** The world he was in last tick, so a portal is noticed on the very next one. */
+	private net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> lastWorld;
 
 	public boolean isBusy() {
 		return tasks.hasActiveTask() || active != null;
@@ -730,6 +742,35 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 	public boolean cancelTask(String reason) {
 		return tasks.cancel(reason);
+	}
+
+	/**
+	 * A plan is a list of coordinates in one world. When a portal or a teleport changes the world
+	 * under him, those coordinates are a place he can no longer reach, and the step fails with "that
+	 * area is not loaded" — which a player reads as him being thick rather than as the plan being
+	 * stale. The world change is where the plan ends: one plain line, nothing left running.
+	 */
+	private void watchWorldChange() {
+		net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> world = level().dimension();
+		if (lastWorld == null) {
+			lastWorld = world;
+			return;
+		}
+		if (lastWorld.equals(world)) return;
+		lastWorld = world;
+		onWorldChanged();
+	}
+
+	/**
+	 * End a live plan because the world under it changed. Public because the trigger is a comparison
+	 * this class cannot always make: on a portal crossing the game can replace the companion with a
+	 * new instance, and then the remembered world starts empty. Any caller that knows the world
+	 * changed — this tick, or a hook holding state that outlives the instance — ends the plan here.
+	 */
+	public void onWorldChanged() {
+		if (!tasks.hasActiveTask()) return;
+		cancelTask(WORLD_CHANGED);
+		say(WORLD_CHANGED);
 	}
 
 	public WorldSnapshot perceive() {
@@ -763,6 +804,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		absorbExperience();
 		// Keeps him findable by the server tick if his chunk ever stops ticking.
 		CrossDimensionFollow.remember(this);
+		watchWorldChange();
 		updateNameplate();
 		followOwnerTick();
 		swimTick();
@@ -1743,6 +1785,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private void speakNearby(String line) {
 		if (line == null || line.isBlank() || level() == null) return;
 		String text = line.length() > 200 ? line.substring(0, 200) : line;
+		lastSpokenLine = text;
 		for (Player p : level().getEntitiesOfClass(Player.class,
 				new AABB(this.blockPosition()).inflate(32.0))) {
 			p.sendSystemMessage(Component.literal("§e[Cobbie] §f" + text));
