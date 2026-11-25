@@ -59,6 +59,23 @@ refusal with a reason, or a check that fails, never silence.
 The refusal test is as load-bearing as the positive ones: *"I have no hoe"* is a report, not a claim, and must not
 trigger a repair. A fix that turns every sentence into a model call would be a worse defect than the one it fixed.
 
+## A test that fails for an environmental reason can hide a real defect underneath
+
+`CobbieStatusTest` and `CobbiePanelTest` were counted as "brain-gated" for a week: they failed with *"the nameplate
+never said idle; it reads `Cobbie (LLM offline)`"*, and that reads like a missing model. It was not. The nameplate was
+a **frozen constant** — nothing rebuilt it — so it read `Cobbie (LLM offline)` whether or not a brain existed. The
+test was right to refuse to call that idle, and the reason had nothing to do with the environment.
+
+The naming slice made the plate rebuild from the companion's name and status every ten ticks, and both classes went
+green **with no brain at all** on the next full run. Part of a failure count reported as "environment, not us" was
+wrong, and it was wrong in the direction that flatters the author.
+
+**The test that tells them apart: would the failure message change if the environment were fixed?** If the message is
+a constant — `offline`, a fixed nameplate, a hard-coded state — the test is not measuring the environment, it is
+measuring the constant. A genuine environment failure says something the environment produced: a connection state, a
+timeout, a classpath error. Naming a class "brain-gated" is a claim that needs that question answered, not a label to
+put on a red.
+
 ## Summary
 
 | Family | Hits | Real defects | Verdict |
