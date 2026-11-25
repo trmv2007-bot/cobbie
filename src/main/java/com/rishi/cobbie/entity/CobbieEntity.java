@@ -2076,6 +2076,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return null;
 	}
 
+	/** Whether the owner is playing in creative — the world's rule, not the companion's autonomy setting. */
+	private boolean worldIsCreative() {
+		return owner() != null && owner().isCreative();
+	}
+
 	/** The slot holding this exact stack, or -1. */
 	private int slotOfStack(ItemStack stack) {
 		for (int i = 0; i < inventory.getContainerSize(); i++) {
@@ -4900,8 +4905,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 * and nothing in the bag, so it is not worth announcing.
 	 */
 	private String dropRefusal(BlockState state, String id, float hardness) {
-		boolean slowByHand = hardness > 1.5f && !CobbieConfig.isCreative();
-		return bestToolFor(id).isEmpty() && (state.requiresCorrectToolForDrops() || slowByHand)
+		// The drop question and nothing else: a log gives itself up to bare hands, stone does not.
+		return bestToolFor(id).isEmpty() && state.requiresCorrectToolForDrops()
 				? "I need a proper tool for " + id + " and have none"
 				: null;
 	}
@@ -4914,7 +4919,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 * that stone" for want of a pickaxe nobody needed. Hands still do not take obsidian to pieces.
 	 */
 	private String breakRefusal(String id, float hardness) {
-		boolean slowByHand = hardness > 1.5f && !CobbieConfig.isCreative();
+		// "Can my hands do it at all", which depends on the WORLD's game mode — not on the autonomy setting.
+		// CobbieConfig.isCreative() is the autonomy mode, and using it here meant a creative world with ASSISTIVE
+		// autonomy refused to break an oak log bare-handed: a predicate answering a different question, again.
+		boolean slowByHand = hardness > 1.5f && !worldIsCreative();
 		return slowByHand && bestToolFor(id).isEmpty()
 				? "I need a proper tool for " + id + " and have none"
 				: null;
