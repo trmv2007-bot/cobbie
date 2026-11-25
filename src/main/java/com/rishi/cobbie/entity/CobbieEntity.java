@@ -1749,7 +1749,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		// What he needs a tool for is the drop, not the break: a log comes off with bare hands in
 		// survival and anything comes off in creative, while stone yields nothing without a pickaxe.
-		String refusal = toolRefusal(state, id, hardness);
+		String refusal = breakRefusal(id, hardness);
 		if (refusal != null) return ActionOutcome.fail("mine", refusal);
 		ItemStack tool = equipBestToolFor(id);
 
@@ -4336,10 +4336,28 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return best;
 	}
 
-	/** What stops his hands taking this block at all, or null when they can: the drop, not the break. */
-	private String toolRefusal(BlockState state, String id, float hardness) {
+	/**
+	 * What stops him <b>getting anything</b> out of this block, or null when the drop is his. This is
+	 * the gate a project must pass, because a project promises to gather: stone bare-handed leaves a hole
+	 * and nothing in the bag, so it is not worth announcing.
+	 */
+	private String dropRefusal(BlockState state, String id, float hardness) {
 		boolean slowByHand = hardness > 1.5f && !CobbieConfig.isCreative();
 		return bestToolFor(id).isEmpty() && (state.requiresCorrectToolForDrops() || slowByHand)
+				? "I need a proper tool for " + id + " and have none"
+				: null;
+	}
+
+	/**
+	 * What stops him <b>breaking</b> this block, or null when a swing will do it. This is the gate an
+	 * owner's instruction must pass, and it is a weaker question on purpose: if the owner wants the block
+	 * gone — a tunnel through stone, a wall opened — an empty-handed break that yields nothing is the
+	 * thing he asked for, and the report says nothing dropped. Conflating the two refused "dig through
+	 * that stone" for want of a pickaxe nobody needed. Hands still do not take obsidian to pieces.
+	 */
+	private String breakRefusal(String id, float hardness) {
+		boolean slowByHand = hardness > 1.5f && !CobbieConfig.isCreative();
+		return slowByHand && bestToolFor(id).isEmpty()
 				? "I need a proper tool for " + id + " and have none"
 				: null;
 	}
@@ -4356,7 +4374,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		float hardness = state.getDestroySpeed(serverLevel, pos);
 		if (hardness < 0) return false;
 		String id = blockId(state);
-		if (toolRefusal(state, id, hardness) != null) return false;
+		if (dropRefusal(state, id, hardness) != null) return false;
 		if (standingSpotNear(pos) == null) return false;
 		return fitsInInventory(Block.getDrops(state, serverLevel, pos, null, this, bestToolFor(id)));
 	}
