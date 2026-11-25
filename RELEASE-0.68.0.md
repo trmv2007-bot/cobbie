@@ -1,6 +1,6 @@
-# Cobbie 0.66.0 — the answer that was lost crossing a portal
+# Cobbie 0.68.0 — the answer that was lost crossing a portal
 
-Artifact: `cobbie-0.66.0.jar`.
+Artifact: `cobbie-0.68.0.jar`.
 
 You ask him something, then step through a portal. He thinks for a few seconds, then says nothing at
 all — no answer, no error, no line. That was a real hole, and it was one word wide.
