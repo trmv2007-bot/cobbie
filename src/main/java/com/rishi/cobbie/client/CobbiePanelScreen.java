@@ -1,5 +1,7 @@
 package com.rishi.cobbie.client;
 
+import net.minecraft.client.Minecraft;
+
 import com.rishi.cobbie.net.CobbiePanelPayload;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -59,6 +61,11 @@ public class CobbiePanelScreen extends Screen {
 	private int jobY;
 	private int gridX;
 	private int gridY;
+	/** Bag rows actually drawn, and slots the window had no room for. */
+	private int shownRows = 1;
+	private int hiddenSlots = 0;
+	private int nameBudget = 120;
+	private int levelOffset = 90;
 
 	public CobbiePanelScreen(CobbiePanelPayload data) {
 		super(Component.literal(data == null ? "Cobbie" : data.name()));
@@ -73,12 +80,21 @@ public class CobbiePanelScreen extends Screen {
 
 	@Override
 	protected void init() {
-		int rows = Math.max(1, (data.items().size() + COLS - 1) / COLS);
 		int steps = data.steps().size();
 		int jobH = 24 + Math.max(1, steps) * 11;
 		int bodyH = Math.max(avatarHeight(), jobH);
 
-		panelH = 34 + bodyH + 10 + 14 + rows * SLOT + 40;
+		// Rows are capped by the window, not by the bag: the panel is the only way to close it besides Esc,
+		// and a panel taller than the screen puts its own Done button out of reach. The rules live in
+		// PanelLayout so the unit tier can check every window size without a client.
+		String levelLine = levelLine();
+		PanelLayout layout = PanelLayout.compute(data.items().size(), steps, height, font.width(data.name()),
+				font.width(levelLine), PANEL_W - 28 - pillWidth() - 12);
+		shownRows = layout.shownRows;
+		hiddenSlots = layout.hiddenSlots;
+		nameBudget = layout.nameBudget;
+		levelOffset = layout.levelOffset;
+		panelH = layout.panelH;
 		panelX = (width - PANEL_W) / 2;
 		panelY = Math.max(12, (height - panelH) / 2);
 
@@ -110,11 +126,16 @@ public class CobbiePanelScreen extends Screen {
 		graphics.outline(panelX, panelY, PANEL_W, panelH, BORDER);
 		graphics.fill(panelX, panelY + 28, panelX + PANEL_W, panelY + 29, ACCENT);
 
-		graphics.text(font, Component.literal(data.name()), panelX + 14, panelY + 9, ACCENT);
-		statusPill(graphics, panelX + PANEL_W - 14 - pillWidth(), panelY + 8);
+		// The name is whatever the owner chose — up to twenty-four characters — so everything after it is
+		// placed from its measured width rather than a constant. A fixed x put the level line under a long
+		// name, which is the kind of overlap nobody sees in a screenshot of a short one.
+		String levelLine = levelLine();
+		int pillLeft = panelX + PANEL_W - 14 - pillWidth();
+		String drawnName = font.plainSubstrByWidth(data.name(), nameBudget);
+		graphics.text(font, Component.literal(drawnName), panelX + 14, panelY + 9, ACCENT);
+		statusPill(graphics, pillLeft, panelY + 8);
 		// His own level, on the header line: the one thing a person would otherwise have to ask about.
-		graphics.text(font, Component.literal("LV " + data.xpLevel() + " · " + data.xpProgress()
-				+ "/" + data.xpNeeded()), panelX + 90, panelY + 10, MUTED);
+		graphics.text(font, Component.literal(levelLine), panelX + levelOffset, panelY + 10, MUTED);
 
 		avatar(graphics, mouseX, mouseY);
 		job(graphics);
@@ -127,6 +148,10 @@ public class CobbiePanelScreen extends Screen {
 
 	private int pillWidth() {
 		return font.width(data.status()) + 16;
+	}
+
+	private String levelLine() {
+		return "LV " + data.xpLevel() + " · " + data.xpProgress() + "/" + data.xpNeeded();
 	}
 
 	private void statusPill(GuiGraphicsExtractor graphics, int x, int y) {
@@ -219,7 +244,8 @@ public class CobbiePanelScreen extends Screen {
 				gridX, gridY - 12, MUTED);
 
 		List<ItemStack> items = data.items();
-		for (int i = 0; i < items.size(); i++) {
+		int drawn = Math.min(items.size(), shownRows * COLS);
+		for (int i = 0; i < drawn; i++) {
 			int col = i % COLS;
 			int row = i / COLS;
 			int x = gridX + col * SLOT;
@@ -237,6 +263,17 @@ public class CobbiePanelScreen extends Screen {
 				graphics.setTooltipForNextFrame(font, stack, mouseX, mouseY);
 			}
 		}
+		if (hiddenSlots > 0) {
+			graphics.text(font, Component.literal("+" + hiddenSlots + " more"), gridX,
+					gridY + shownRows * SLOT + 2, MUTED);
+		}
+	}
+
+	/** Lay the panel out for a given window, so a test can measure it without opening it on a screen. */
+	public void layoutFor(int width, int height) {
+		this.width = width;
+		this.height = height;
+		this.init();
 	}
 
 	// ---- test surface: what the screen actually shows ----
@@ -264,5 +301,32 @@ public class CobbiePanelScreen extends Screen {
 	/** Which drawn slot is in his hand, or -1. Asserted by the panel gametest. */
 	public int shownHeldIndex() {
 		return data.heldIndex();
+	}
+
+	/** Where the header's name ends, in pixels: the level line must start after it. */
+	public int shownNameRight() {
+		String levelLine = "LV " + data.xpLevel() + " · " + data.xpProgress() + "/" + data.xpNeeded();
+		int pillLeft = panelX + PANEL_W - 14 - pillWidth();
+		int room = pillLeft - 12 - (panelX + 14) - font.width(levelLine) - 12;
+		return panelX + 14 + font.width(font.plainSubstrByWidth(data.name(), Math.max(24, room)));
+	}
+
+	/** Where the header's level line starts. */
+	public int shownLevelLeft() {
+		return shownNameRight() + 12;
+	}
+
+	/** The panel's bottom edge, which must sit inside the window. */
+	public int shownPanelBottom() {
+		return panelY + panelH;
+	}
+
+	/** Bag rows drawn, and slots the window had no room for. */
+	public int shownRows() {
+		return shownRows;
+	}
+
+	public int shownHiddenSlots() {
+		return hiddenSlots;
 	}
 }
