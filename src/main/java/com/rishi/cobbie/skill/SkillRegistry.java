@@ -177,6 +177,7 @@ public final class SkillRegistry {
 				if (s.trials() > 0) {
 					sb.append(" (").append(Math.round(100.0 * s.successes() / s.trials())).append("%)");
 				}
+				if (!s.learnedIn().isEmpty()) sb.append(" from ").append(s.learnedIn());
 				sb.append('\n');
 				if (!s.description().isEmpty()) sb.append("    ").append(s.description()).append('\n');
 				for (ActionStep st : s.steps()) {
@@ -195,6 +196,16 @@ public final class SkillRegistry {
 
 	/** Validate and store a new skill. False = rejected (bad input, dup name, store full). */
 	public static boolean saveSkill(String name, String description, List<ActionStep> steps) {
+		return saveSkill(name, description, steps, "");
+	}
+
+	/**
+	 * @param learnedIn the world it was learned in. Skills are procedural knowledge and are shared
+	 *     across worlds on purpose — the anchor and the material make a gather sensible anywhere — so
+	 *     this is metadata for the owner, not a filter.
+	 */
+	public static boolean saveSkill(String name, String description, List<ActionStep> steps,
+			String learnedIn) {
 		try {
 			String clean = cleanName(name);
 			if (clean.isEmpty()) return false;
@@ -216,7 +227,8 @@ public final class SkillRegistry {
 					Cobbie.LOGGER.info("Cobbie knows {} skills already, not learning '{}'", MAX_SKILLS, clean);
 					return false;
 				}
-				skills.put(key(clean), new Skill(clean, fit(description, MAX_DESCRIPTION), cleanSteps, 0, 0, true));
+				skills.put(key(clean), new Skill(clean, fit(description, MAX_DESCRIPTION), cleanSteps, 0, 0,
+						true, fit(learnedIn, MAX_DESCRIPTION)));
 				return save();
 			}
 		} catch (Throwable t) {
@@ -388,7 +400,8 @@ public final class SkillRegistry {
 				steps,
 				intOr(obj, "successes") + intOr(obj, "success"),
 				intOr(obj, "failures") + intOr(obj, "failure"),
-				!obj.has("enabled") || obj.get("enabled").getAsBoolean());
+				!obj.has("enabled") || obj.get("enabled").getAsBoolean(),
+				str(obj, "learned_in", str(obj, "world", "")));
 	}
 
 	/** Caller holds LOCK. Writes temp + ATOMIC_MOVE, falling back to a plain replace. */
@@ -404,6 +417,7 @@ public final class SkillRegistry {
 				so.addProperty("enabled", s.enabled());
 				so.addProperty("successes", s.successes());
 				so.addProperty("failures", s.failures());
+				if (!s.learnedIn().isEmpty()) so.addProperty("learned_in", s.learnedIn());
 				JsonArray steps = new JsonArray();
 				for (ActionStep st : s.steps()) {
 					JsonObject to = new JsonObject();

@@ -104,6 +104,20 @@ public final class CobbieSkillTest implements FabricClientGameTest {
                         + " it was learned against, so it could only replay where it was learned: "
                         + skill.steps().get(0).summary());
             }
+            String worldName = server.computeOnServer(s -> s.getWorldData().getLevelName());
+            if (skill.learnedIn().isBlank()) {
+                throw new AssertionError("The skill \"" + skill.name() + "\" does not record which world"
+                        + " it came from, so the owner cannot tell a habit from one learned elsewhere");
+            }
+            if (!skill.learnedIn().equals(worldName)) {
+                throw new AssertionError("The skill says it came from \"" + skill.learnedIn()
+                        + "\" but this world is \"" + worldName + "\"");
+            }
+            boolean listed = server.computeOnServer(s -> SkillRegistry.inspect().contains(" from " + worldName));
+            if (!listed) {
+                throw new AssertionError("The world is recorded but /cobbie skills list does not show it: "
+                        + server.computeOnServer(s -> SkillRegistry.inspect()));
+            }
             Path stored = FabricLoader.getInstance().getConfigDir().resolve("cobbie_skills.json");
             boolean onDisk = server.computeOnServer(s -> {
                 try {
@@ -117,7 +131,8 @@ public final class CobbieSkillTest implements FabricClientGameTest {
                         + ", so it would not survive a restart");
             }
             System.out.println("[gametest] skill: learned \"" + skill.name() + "\" — "
-                    + skill.steps().size() + " anchored step(s), saved to disk");
+                    + skill.steps().size() + " anchored step(s), from world \"" + skill.learnedIn()
+                    + "\", saved to disk and shown in the list");
 
             // --- A fresh pile, somewhere it was never learned. ---
             server.computeOnServer(s -> {

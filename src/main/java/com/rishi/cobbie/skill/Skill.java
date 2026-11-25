@@ -14,11 +14,19 @@ public record Skill(
         List<ActionStep> steps,
         int successes,
         int failures,
-        boolean enabled) {
+        boolean enabled,
+        String learnedIn) {
 
 	public Skill {
 		if (steps == null) steps = List.of();
 		description = description == null ? "" : description;
+		learnedIn = learnedIn == null ? "" : learnedIn;
+	}
+
+	/** The constructor every caller had before skills recorded where they came from. */
+	public Skill(String name, String description, List<ActionStep> steps, int successes, int failures,
+			boolean enabled) {
+		this(name, description, steps, successes, failures, enabled, "");
 	}
 
 	/** Total times this skill has been run to a verdict. */
