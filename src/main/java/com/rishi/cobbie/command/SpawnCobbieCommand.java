@@ -40,7 +40,10 @@ public final class SpawnCobbieCommand {
 
 	public static void register() {
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
-				dispatcher.register(Commands.literal("spawncobbie").executes(SpawnCobbieCommand::run)));
+				dispatcher.register(Commands.literal("spawncobbie")
+						.executes(SpawnCobbieCommand::run)
+						.then(Commands.argument("name", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+								.executes(SpawnCobbieCommand::run))));
 	}
 
 	private static int run(CommandContext<CommandSourceStack> ctx) {
@@ -80,8 +83,23 @@ public final class SpawnCobbieCommand {
 
 		cobbie.setOwner(player.getUUID());
 		cobbie.startFollowing();
-		cobbie.setCustomName(Component.literal("Cobbie"));
-		cobbie.setCustomNameVisible(true);
+		// A name on the command line is the same rule as /cobbie name, applied before he is in the world.
+		String asked = "";
+		try {
+			asked = com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name");
+		} catch (IllegalArgumentException noArgument) {
+			// A bare /spawncobbie: the default name applies, and asking for the argument must not throw.
+		}
+		if (!asked.isBlank()) {
+			String refusal = cobbie.renameTo(asked);
+			if (refusal != null) {
+				cobbie.discard();
+				source.sendFailure(Component.literal(refusal));
+				return 0;
+			}
+		} else {
+			cobbie.showNameplate("§e" + cobbie.companionName());
+		}
 		Vec3 at = player.position();
 		cobbie.setPos(at.x + 2.0, at.y, at.z + 2.0);
 		if (!level.addFreshEntity(cobbie)) {
@@ -89,7 +107,8 @@ public final class SpawnCobbieCommand {
 			return 0;
 		}
 		Cobbie.LOGGER.info("Cobbie spawned, owned by {}", name);
-		player.sendSystemMessage(Component.literal("§e[Cobbie] §7Connecting to the AI..."));
+		player.sendSystemMessage(Component.literal("§e[" + cobbie.companionName()
+				+ "] §7Connecting to the AI..."));
 
 		connectAsync(cobbie, player, level.getServer());
 		return 1;
@@ -97,7 +116,7 @@ public final class SpawnCobbieCommand {
 
 	/** Probe the configured provider off-thread, then report through the nameplate + chat. */
 	private static void connectAsync(CobbieEntity cobbie, ServerPlayer player, MinecraftServer server) {
-		cobbie.setCustomName(Component.literal("§eConnecting..."));
+		cobbie.showNameplate("§eConnecting...");
 		OllamaDiscovery.probeConfiguredAsync().thenAccept(probe -> {
 			CobbieBrain.noteProbe(probe);
 			server.execute(() -> apply(cobbie, player, probe));
@@ -115,8 +134,7 @@ public final class SpawnCobbieCommand {
 
 		switch (probe.state()) {
 			case MODEL_AVAILABLE -> {
-				cobbie.setCustomName(Component.literal("§eCobbie"));
-				cobbie.setCustomNameVisible(true);
+				cobbie.showNameplate("§e" + cobbie.companionName());
 				cobbie.wave();
 				player.sendSystemMessage(Component.literal("§aI'm Ready To Play"));
 				player.sendSystemMessage(Component.literal("§7(model " + probe.matchedModel() + ")"));

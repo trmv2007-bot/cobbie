@@ -47,6 +47,10 @@ public final class CobbieCommands {
 						.then(Commands.literal("stay").executes(CobbieCommands::stay))
 						.then(Commands.literal("cancel").executes(CobbieCommands::cancel))
 						.then(Commands.literal("inventory").executes(CobbieCommands::inventory))
+						.then(Commands.literal("name")
+								.executes(CobbieCommands::showName)
+								.then(Commands.argument("name", StringArgumentType.greedyString())
+										.executes(CobbieCommands::rename)))
 						.then(Commands.literal("do")
 								.then(Commands.argument("skill", StringArgumentType.greedyString())
 										.executes(CobbieCommands::runSkill)))
@@ -190,6 +194,32 @@ public final class CobbieCommands {
 			return 0;
 		}
 		reply(ctx, "§fUpdated. " + CobbieConfig.describe().replace("\n", "  |  "));
+		return 1;
+	}
+
+	private static int showName(CommandContext<CommandSourceStack> ctx) {
+		CobbieEntity cobbie = requireCompanion(ctx);
+		if (cobbie == null) return 0;
+		reply(ctx, cobbie.companionName() + " — rename with /cobbie name <name>");
+		return 1;
+	}
+
+	/**
+	 * The name is his, so it lives on him: saved with his body, shown on his nameplate, in his panel, on
+	 * his own chat lines and in his own prompt. Memory, skills and levels are keyed by owner, so a rename
+	 * orphans nothing.
+	 */
+	private static int rename(CommandContext<CommandSourceStack> ctx) {
+		CobbieEntity cobbie = requireCompanion(ctx);
+		if (cobbie == null) return 0;
+		String wanted = StringArgumentType.getString(ctx, "name");
+		String before = cobbie.companionName();
+		String refusal = cobbie.renameTo(wanted);
+		if (refusal != null) {
+			reply(ctx, "§c" + refusal);
+			return 0;
+		}
+		reply(ctx, "§f" + before + " is now called " + cobbie.companionName());
 		return 1;
 	}
 

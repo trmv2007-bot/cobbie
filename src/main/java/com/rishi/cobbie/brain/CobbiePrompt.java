@@ -21,11 +21,13 @@ public final class CobbiePrompt {
 
 	private CobbiePrompt() {}
 
-	public static String systemPrompt(WorldSnapshot world, String memorySummary, String objective,
-			String skillsBlock) {
+	public static String systemPrompt(String name, WorldSnapshot world, String memorySummary,
+			String objective, String skillsBlock) {
 		StringBuilder sb = new StringBuilder(2400);
 
-		sb.append("You are Cobbie, a friendly AI companion living inside the player's Minecraft world. ")
+		String self = com.rishi.cobbie.identity.CompanionName.orDefault(name);
+		sb.append("You are ").append(self)
+				.append(", a friendly AI companion living inside the player's Minecraft world. ")
 				.append("Personality: ").append(CobbieConfig.getPersonality()).append(". ")
 				.append("You are never scary and never mean.").append(NL);
 

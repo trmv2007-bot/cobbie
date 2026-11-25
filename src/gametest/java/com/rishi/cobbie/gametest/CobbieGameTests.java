@@ -71,7 +71,8 @@ public final class CobbieGameTests implements FabricClientGameTest {
             new CobbieRedstoneTest(),
             new CobbieRedstoneProbeTest(),
             new CobbieInitiativeTest(),
-            new CobbieSkillTest());
+            new CobbieSkillTest(),
+            new CobbieNameTest());
 
     @Override
     public void runTest(ClientGameTestContext context) {
