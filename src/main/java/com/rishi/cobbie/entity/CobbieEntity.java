@@ -633,6 +633,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 	private String offerPlan(String request, List<ActionIntent> intents, boolean urgent) {
 		if (this.isRemoved()) return "I am not around any more";
+		String impossible = unsatisfiableCraft(intents);
+		if (impossible != null) {
+			// Refused, not announced: nothing is handed to the runner, so there is no plan to fail and no
+			// promise in the chat about work that was never possible.
+			return "I can't make that — " + impossible;
+		}
 		String refusal = tasks.start(request, intents, urgent);
 		if (refusal == null) {
 			planOrigin = this.blockPosition().immutable();
@@ -829,6 +835,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	/** The project request saved as in flight, for whoever has to check the marker: blank when idle. */
 	public String interruptedPlanRequest() {
 		return interruptedPlan;
+	}
+
+	/** Whether the line about a lost project is still owed — the state a reload check has to read. */
+	public boolean wakeLinePending() {
+		return wakeLinePending;
 	}
 
 	/**
@@ -2562,11 +2573,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return BuiltInRegistries.ITEM.getOptional(id).map(item -> new ItemStack(item, 1)).orElse(ItemStack.EMPTY);
 	}
 
-	/** Build the plan and hand it to the tick loop. */
-	private ActionOutcome beginWork(ActionIntent intent, String wanted, int quantity, BlockPos fixedStation) {
-		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("craft", "no server world");
-		Map<String, CraftRecipes.Match> matches = new LinkedHashMap<>();
-		CraftChain.Book book = itemId -> {
+	/** The recipe table as the planner asks for it, remembering each match so the step can run it. */
+	private CraftChain.Book recipeBook(ServerLevel serverLevel, Map<String, CraftRecipes.Match> matches) {
+		return itemId -> {
 			List<CraftChain.Recipe> recipes = new ArrayList<>();
 			for (CraftRecipes.Match match : CraftRecipes.allFor(serverLevel, itemId)) {
 				matches.put(match.recipe().id(), match);
@@ -2574,6 +2583,39 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			}
 			return recipes;
 		};
+	}
+
+	/**
+	 * Why a craft the owner just asked for cannot be done at all, or null when it can.
+	 *
+	 * <p>Asked <b>before the plan exists</b>, because an instruction that cannot be satisfied should be refused
+	 * rather than announced and then failed: a project that appears and dies leaves the owner with a chat message
+	 * about a job nobody was able to start. Only a plan made entirely of crafts is judged this way — a mixed plan is
+	 * still a sequence of steps, each with its own reason — and smelting is left to its own step, because a
+	 * furnace's target is the ore, not the result.
+	 */
+	private String unsatisfiableCraft(List<ActionIntent> intents) {
+		if (!(level() instanceof ServerLevel serverLevel) || intents == null || intents.isEmpty()) return null;
+		for (ActionIntent intent : intents) {
+			if (!ActionVocabulary.CRAFT.equals(intent.action())) return null;
+		}
+		for (ActionIntent intent : intents) {
+			String wanted = resolveItemId(intent.target());
+			if (wanted == null) return null;                      // an unknown item is the step's own refusal
+			int quantity = craftQuantity(intent.data());
+			if (countItem(wanted) >= quantity) continue;          // he already has it: "I already have N" stands
+			CraftChain.Plan plan = CraftChain.plan(wanted, quantity,
+					recipeBook(serverLevel, new LinkedHashMap<>()), carriedByItem(), CRAFT_CHAIN_DEPTH);
+			if (!plan.possible()) return plan.failure();
+		}
+		return null;
+	}
+
+	/** Build the plan and hand it to the tick loop. */
+	private ActionOutcome beginWork(ActionIntent intent, String wanted, int quantity, BlockPos fixedStation) {
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("craft", "no server world");
+		Map<String, CraftRecipes.Match> matches = new LinkedHashMap<>();
+		CraftChain.Book book = recipeBook(serverLevel, matches);
 		String verb = intent.action();
 		CraftChain.Plan plan = CraftChain.plan(wanted, quantity, book, carriedByItem(), CRAFT_CHAIN_DEPTH);
 		if (!plan.possible()) return ActionOutcome.fail(verb, plan.failure());

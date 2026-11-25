@@ -128,6 +128,38 @@ class CraftChainTest {
 	}
 
 	@Test
+	void theMissingItemReportedIsTheOneFromTheRecipeThatFittedHisBag() {
+		// A bed, as the game actually declares it: three wool and three planks, or dyeing another bed, whose
+		// chain runs through white dye and bone meal to bone. He is carrying the wool. The reason that helps
+		// the owner is "no planks", not "no bone" — the recipe he is half-ready for is the one to report.
+		CraftChain.Book beds = item -> switch (item) {
+			case "white_bed" -> List.of(
+					recipe("minecraft:dye_white_bed", "white_bed", 1, slot("white_dye"), slot("red_bed")),
+					recipe("minecraft:white_bed", "white_bed", 1,
+							slot("white_wool"), slot("white_wool"), slot("white_wool"),
+							slot("oak_planks"), slot("oak_planks"), slot("oak_planks")));
+			case "white_dye" -> List.of(recipe("minecraft:white_dye_from_bone_meal", "white_dye", 1,
+					slot("bone_meal")));
+			case "bone_meal" -> List.of(recipe("minecraft:bone_meal_from_bone", "bone_meal", 3, slot("bone")));
+			default -> List.of();
+		};
+
+		CraftChain.Plan plan = CraftChain.plan("white_bed", 1, beds, Map.of("white_wool", 3));
+
+		assertFalse(plan.possible());
+		assertTrue(plan.failure().contains("oak_planks"), plan.failure());
+		assertFalse(plan.failure().contains("bone"), "the dye path's missing bone is not what he is short of");
+	}
+
+	@Test
+	void anItemWithNoRecipeAtAllSaysSoRatherThanNothing() {
+		CraftChain.Plan plan = CraftChain.plan("bone", 1, item -> List.of(), Map.of());
+
+		assertFalse(plan.possible());
+		assertTrue(plan.failure().contains("bone"), plan.failure());
+	}
+
+	@Test
 	void theRecipeThatFitsHisBagWinsWhenThereAreSeveral() {
 		// Sticks come from planks and from bamboo in vanilla data. The first option is the one he
 		// cannot do; the planner has to try the second instead of reporting "no recipe".
