@@ -11,3 +11,6 @@ out/
 
 # Cobbie run logs are local, never tracked
 logs/
+
+# Serena MCP tool config is local, never tracked
+.serena/
