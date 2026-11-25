@@ -107,6 +107,15 @@ class ItemQueryTest {
     }
 
     @Test
+    void theOwningWordDoesNotConfuseAMatch() {
+        // "my sword" is how a player says it; the possessive is not part of the item's name.
+        ItemQuery.Candidate sword = new ItemQuery.Candidate("minecraft:iron_sword", "", 1, List.of(), 0, 250);
+        ItemQuery.Result result = ItemQuery.resolve("my sword", List.of(sword));
+        assertTrue(result.ok(), "\"my sword\" must resolve to the only sword: " + result.refusal());
+        assertEquals(sword, result.chosen());
+    }
+
+    @Test
     void oneSwordIsNotAmbiguous() {
         ItemQuery.Result result = ItemQuery.resolve("sword", List.of(SWORD_FIVE));
         assertTrue(result.ok(), result.refusal());
