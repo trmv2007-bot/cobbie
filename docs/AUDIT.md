@@ -39,6 +39,26 @@ exists for exactly this and has to be remembered. Until the shape is unwritable 
 fails the build on a tick-modulo predicate — it will be typed again by whoever writes the next probe.
 `tools/audit-bug-families.py` now flags the shape in gametest sources for that reason.
 
+## A fifth family: an allowlist that means "not a claim" when it misses
+
+Four of this project's defects share a second shape, and it is worth naming separately because the fix is
+different: **a rule written for the cases someone thought of, where a miss is silent and means "nothing happened".**
+
+| Allowlist | What a miss looked like |
+|---|---|
+| the mining tool gate | a log was refused as if it were obsidian, so a project could not start |
+| the empty-hand guard | every bare-handed block use refused, so a lever answered *"I am not holding anything to use"* |
+| the item-description path beside the id scan | "diamond sword" spelled an id, so the first of two swords was taken |
+| the promise verb list | *"Equipping my worst pickaxe — the worn one — now"* was **not a promise**, so no repair ran and the sentence was delivered as if the work had been done |
+
+The last one is the dangerous version: a claim the list does not know is not merely unhandled, it is *reported as
+true*. The fix that worked was to invert the default — **anything that looks like a claim gets one bounded repair
+call**, rather than only the claims on the list. Where an allowlist cannot be avoided, the miss has to be loud: a
+refusal with a reason, or a check that fails, never silence.
+
+The refusal test is as load-bearing as the positive ones: *"I have no hoe"* is a report, not a claim, and must not
+trigger a repair. A fix that turns every sentence into a model call would be a worse defect than the one it fixed.
+
 ## Summary
 
 | Family | Hits | Real defects | Verdict |
