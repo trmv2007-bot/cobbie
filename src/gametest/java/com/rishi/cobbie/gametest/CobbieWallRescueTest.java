@@ -61,8 +61,12 @@ public final class CobbieWallRescueTest implements FabricClientGameTest {
                     .map(c -> c.getHealth() + "/" + c.getMaxHealth() + " at " + c.blockPosition().toShortString()
                             + " inWall=" + c.isInWall())
                     .orElse("MISSING"));
+            // The window, not the newest line: what he said about the block can be followed a tick later by a
+            // plan's own settled report, and one field would score the report instead of the explanation.
+            boolean namedTheCause = server.computeOnServer(s -> CobbieTestSupport.cobbie(s)
+                    .map(c -> c.saidRecently("block")).orElse(false));
             String said = server.computeOnServer(s -> CobbieTestSupport.cobbie(s)
-                    .map(CobbieEntity::lastSpokenLine).orElse(""));
+                    .map(c -> c.recentLines().toString()).orElse(""));
 
             if (state.equals("MISSING")) {
                 throw new AssertionError("He died inside the block instead of getting himself out: he was sealed "
@@ -77,15 +81,15 @@ public final class CobbieWallRescueTest implements FabricClientGameTest {
                 throw new AssertionError("He reads as not-in-wall but never left the sealed column " + state
                         + " — the game's own collision push is not a rescue");
             }
-            if (said == null || said.isBlank()) {
+            if (said == null || said.equals("[]")) {
                 throw new AssertionError("He got out of the block at " + state + " but said nothing about it");
             }
-            if (!said.toLowerCase(java.util.Locale.ROOT).contains("block")) {
-                throw new AssertionError("He got out of the block at " + state + " but the line he said does not "
-                        + "name the cause: \"" + said + "\"");
+            if (!namedTheCause) {
+                throw new AssertionError("He got out of the block at " + state + " but nothing he said names the "
+                        + "cause: " + said);
             }
             System.out.println("[gametest] wall rescue ok: sealed at " + sealed.toShortString() + ", stood up at "
-                    + state + ", saying \"" + said + "\"");
+                    + state + ", saying " + said);
         }
     }
 }
