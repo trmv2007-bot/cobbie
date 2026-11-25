@@ -586,6 +586,14 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return tasks.plan();
 	}
 
+	/**
+	 * The first plan created after this many were already known — the way a caller binds a plan to the request
+	 * that made it. Null means the request produced no plan at all.
+	 */
+	public com.rishi.cobbie.task.TaskPlan planAfter(long id) {
+		return tasks.planAfter(id);
+	}
+
 	public String companionName() {
 		return com.rishi.cobbie.identity.CompanionName.orDefault(this.entityData.get(DATA_NAME));
 	}

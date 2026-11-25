@@ -52,6 +52,19 @@ public final class TaskRunner {
 	 * runner is the only place that knows both edges of a step, and the entity is the only place
 	 * that can speak. Nothing here can change a decision — a listener that throws is swallowed.
 	 */
+	/** The first plan created after the given id, or null when nothing was created since. */
+	public TaskPlan planAfter(long id) {
+		for (TaskPlan made : created) {
+			if (made.id() > id) return made;
+		}
+		return null;
+	}
+
+	/** How many plans this runner has created in its lifetime, which is what an attribution check counts. */
+	public int plansCreated() {
+		return created.size();
+	}
+
 	public interface Listener {
 
 		/** A step is about to be handed to the world. */
@@ -71,6 +84,13 @@ public final class TaskRunner {
 	private final long durationMillis;
 
 	private TaskPlan plan;
+	/**
+	 * Every plan created here, newest last. Kept so a caller can bind a plan to the request that produced it:
+	 * the running plan is replaced by the next one, and a follow-up plan generated to comment on a failure is
+	 * a different plan — reading "the last plan" scores whatever happened most recently, not the ask.
+	 */
+	private final java.util.Deque<TaskPlan> created = new java.util.ArrayDeque<>();
+	private static final int CREATED_MEMORY = 16;
 	/** Requests that arrived while he was busy. One plan at a time, but nothing is thrown away. */
 	private final java.util.Deque<TaskPlan> queued = new java.util.ArrayDeque<>();
 	/** Typed commands: they pre-empt the running job, which is then resumed from where it stopped. */
@@ -130,6 +150,8 @@ public final class TaskRunner {
 		}
 
 		TaskPlan candidate = new TaskPlan(summarise(request), accepted, maxRetriesPerStep, durationMillis);
+		created.addLast(candidate);
+		while (created.size() > CREATED_MEMORY) created.removeFirst();
 		candidate.setStatus(TaskPlan.Status.VALIDATED);
 		for (String problem : rejected) {
 			candidate.note(problem);
