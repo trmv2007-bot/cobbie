@@ -1902,6 +1902,72 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 * and the result is verified by reading the slot back.
 	 */
 	/** One row of his bag as a description can see it, with the slot it came from. */
+	private com.rishi.cobbie.action.ItemQuery.Candidate candidateOf(ItemStack stack) {
+		List<String> enchantments = new ArrayList<>();
+		var held = stack.get(net.minecraft.core.component.DataComponents.ENCHANTMENTS);
+		if (held != null) {
+			held.entrySet().forEach(entry -> enchantments.add(
+					entry.getKey().getRegisteredName().replace("minecraft:", "") + " " + entry.getIntValue()));
+		}
+		String customName = stack.get(net.minecraft.core.component.DataComponents.CUSTOM_NAME) == null
+				? "" : stack.get(net.minecraft.core.component.DataComponents.CUSTOM_NAME).getString();
+		return new com.rishi.cobbie.action.ItemQuery.Candidate(itemId(stack), customName, stack.getCount(),
+				enchantments, stack.getDamageValue(), stack.getMaxDamage());
+	}
+
+	/** A resolved stack, or the reason it could not be resolved — the question when two of them match. */
+	private record Pick(ItemStack stack, String refusal) {
+		boolean ok() {
+			return stack != null && !stack.isEmpty();
+		}
+	}
+
+	/**
+	 * The single place an item-taking verb turns words into a stack. Every verb that accepts an item calls this,
+	 * never its own id lookup: a second path beside the first is how "diamond sword" came to mean "the first one"
+	 * in one verb and "which one?" in another.
+	 *
+	 * @param eligible what this verb would accept at all, so "the sharpness book" cannot resolve to a sword
+	 */
+	private Pick pick(String description, java.util.function.Predicate<ItemStack> eligible) {
+		return pick(description, eligible, "I have nothing here that would do");
+	}
+
+	/**
+	 * @param noneEligible what to say when nothing he carries would suit this verb. Each verb keeps its own
+	 *     sentence: an eligibility filter that answers every refusal with one generic line is how a reason turns
+	 *     into "I have nothing here that would do", which tells the owner nothing about what was wrong.
+	 */
+	private Pick pick(String description, java.util.function.Predicate<ItemStack> eligible, String noneEligible) {
+		List<ItemStack> stacks = new ArrayList<>();
+		List<com.rishi.cobbie.action.ItemQuery.Candidate> candidates = new ArrayList<>();
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty() || !eligible.test(stack)) continue;
+			stacks.add(stack);
+			candidates.add(candidateOf(stack));
+		}
+		if (candidates.isEmpty()) return new Pick(ItemStack.EMPTY, noneEligible);
+		if (description == null || description.isBlank()) return new Pick(stacks.get(0), null);
+		var result = com.rishi.cobbie.action.ItemQuery.resolve(description.trim(), candidates);
+		if (!result.ok()) {
+			boolean carriedAtAll = resolveDescribed(description.trim()).ok();
+			return new Pick(ItemStack.EMPTY, carriedAtAll ? noneEligible : result.refusal());
+		}
+		for (int i = 0; i < candidates.size(); i++) {
+			if (candidates.get(i).equals(result.chosen())) return new Pick(stacks.get(i), null);
+		}
+		return new Pick(ItemStack.EMPTY, "I lost track of the " + description.trim());
+	}
+
+	/** The slot holding this exact stack, or -1. */
+	private int slotOfStack(ItemStack stack) {
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			if (inventory.getItem(i) == stack) return i;
+		}
+		return -1;
+	}
+
 	private record BagEntry(com.rishi.cobbie.action.ItemQuery.Candidate candidate, int slot) {}
 
 	/**
@@ -1910,6 +1976,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 */
 	private com.rishi.cobbie.action.ItemQuery.Result resolveDescribed(String description) {
 		List<com.rishi.cobbie.action.ItemQuery.Candidate> candidates = new ArrayList<>();
+		ItemStack inHand = this.getMainHandItem();
+		if (!inHand.isEmpty()) candidates.add(candidateOf(inHand));
 		for (int i = 0; i < inventory.getContainerSize(); i++) {
 			ItemStack stack = inventory.getItem(i);
 			if (stack.isEmpty()) continue;
@@ -2732,30 +2800,20 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		BlockPos anvil = findAnvil();
 		if (anvil == null) return ActionOutcome.fail("anvil", "I need an anvil and there is none near me");
 
-		String wanted = intent.target() == null || intent.target().isBlank() ? null : resolveItemId(intent.target());
-		int itemSlot = -1;
-		for (int i = 0; i < inventory.getContainerSize() && itemSlot < 0; i++) {
-			ItemStack stack = inventory.getItem(i);
-			if (stack.isEmpty() || stack.is(Items.ENCHANTED_BOOK)) continue;
-			if (wanted == null ? stack.isEnchantable() : wanted.equals(itemId(stack))) itemSlot = i;
-		}
-		if (itemSlot < 0) {
-			return ActionOutcome.fail("anvil", wanted == null
-					? "I have nothing here that a book would improve"
-					: "I have no " + wanted + " to work on");
-		}
-		int bookSlot = -1;
-		String bookWanted = intent.data() == null || intent.data().isBlank() ? null : resolveItemId(intent.data());
-		for (int i = 0; i < inventory.getContainerSize() && bookSlot < 0; i++) {
-			ItemStack stack = inventory.getItem(i);
-			if (stack.isEmpty() || !stack.is(Items.ENCHANTED_BOOK)) continue;
-			if (stack.get(net.minecraft.core.component.DataComponents.STORED_ENCHANTMENTS) == null) continue;
-			if (bookWanted != null && !bookWanted.equals(itemId(stack))) continue;
-			bookSlot = i;
-		}
-		if (bookSlot < 0) {
-			return ActionOutcome.fail("anvil", "I have no enchanted book" + (bookWanted == null ? "" : " like that"));
-		}
+		Pick work = pick(intent.target(), stack -> stack.isEnchantable() && !stack.is(Items.ENCHANTED_BOOK),
+				intent.target() == null || intent.target().isBlank()
+						? "I have nothing here that a book would improve"
+						: "nothing I carry that a book would improve is called \"" + intent.target().trim() + "\"");
+		if (!work.ok()) return ActionOutcome.fail("anvil", work.refusal());
+		int itemSlot = slotOfStack(work.stack());
+		if (itemSlot < 0) return ActionOutcome.fail("anvil", "I lost track of what to work on");
+		Pick bookPick = pick(intent.data(), stack -> stack.is(Items.ENCHANTED_BOOK)
+				&& stack.get(net.minecraft.core.component.DataComponents.STORED_ENCHANTMENTS) != null,
+				intent.data() == null || intent.data().isBlank() ? "I have no enchanted book"
+						: "I have no enchanted book like \"" + intent.data().trim() + "\"");
+		if (!bookPick.ok()) return ActionOutcome.fail("anvil", bookPick.refusal());
+		int bookSlot = slotOfStack(bookPick.stack());
+		if (bookSlot < 0) return ActionOutcome.fail("anvil", "I lost track of the book");
 
 		ItemStack item = inventory.getItem(itemSlot);
 		ItemStack book = inventory.getItem(bookSlot);
@@ -2888,13 +2946,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		}
 		if (stand == null) return ActionOutcome.fail("brew", "I need a brewing stand and there is none near me");
 
-		String asked = intent.target() == null || intent.target().isBlank() ? null : resolveItemId(intent.target());
+		String asked = intent.target() == null || intent.target().isBlank() ? null : intent.target().trim();
 		int reagentSlot = -1;
 		if (asked != null) {
-			for (int i = 0; i < inventory.getContainerSize() && reagentSlot < 0; i++) {
-				if (asked.equals(itemId(inventory.getItem(i)))) reagentSlot = i;
-			}
-			if (reagentSlot < 0) return ActionOutcome.fail("brew", "I have no " + asked);
+			Pick reagent = pick(asked, stack -> true, "I have no " + asked);
+			if (!reagent.ok()) return ActionOutcome.fail("brew", reagent.refusal());
+			reagentSlot = slotOfStack(reagent.stack());
 			if (!stand.canPlaceItem(Brewing.INGREDIENT_SLOT, inventory.getItem(reagentSlot))) {
 				return ActionOutcome.fail("brew", "a brewing stand will not take " + asked);
 			}
@@ -3102,8 +3159,20 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		BlockPos table = Smithing.tableNear(serverLevel, this.blockPosition(), FURNACE_SEARCH);
 		if (table == null) return ActionOutcome.fail("smith", "I need a smithing table and there is none near me");
 
-		String wantedBase = intent.target() == null || intent.target().isBlank() ? null : resolveItemId(intent.target());
-		String wantedAddition = intent.data() == null || intent.data().isBlank() ? null : resolveItemId(intent.data());
+		// The base and the addition may be described ("my best sword", "the netherite ingot"), so both go
+		// through the one resolver; the template is whatever the table accepts.
+		Pick basePick = pick(intent.target(), stack -> Smithing.isBase(serverLevel, stack),
+				intent.target() == null || intent.target().isBlank()
+						? "I have nothing the table would upgrade"
+						: "I have nothing the table would upgrade called \"" + intent.target().trim() + "\"");
+		if (!basePick.ok()) return ActionOutcome.fail("smith", basePick.refusal());
+		Pick additionPick = pick(intent.data(), stack -> Smithing.isAddition(serverLevel, stack),
+				intent.data() == null || intent.data().isBlank()
+						? "I have no template or ingot the table would take"
+						: "I have nothing the table would take called \"" + intent.data().trim() + "\"");
+		if (!additionPick.ok()) return ActionOutcome.fail("smith", additionPick.refusal());
+		String wantedBase = itemId(basePick.stack());
+		String wantedAddition = itemId(additionPick.stack());
 
 		// Only the slots the table itself would accept are worth trying, which takes 45^3 recipe
 		// searches down to a handful of candidate trios.
@@ -3210,20 +3279,14 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		BlockPos stone = findGrindstone();
 		if (stone == null) return ActionOutcome.fail("grind", "I need a grindstone and there is none near me");
 
-		String wanted = intent.target() == null || intent.target().isBlank() ? null : resolveItemId(intent.target());
-		int slot = -1;
-		for (int i = 0; i < inventory.getContainerSize() && slot < 0; i++) {
-			ItemStack stack = inventory.getItem(i);
-			if (stack.isEmpty() || !net.minecraft.world.item.enchantment.EnchantmentHelper.hasAnyEnchantments(stack)) {
-				continue;
-			}
-			if (wanted == null || wanted.equals(itemId(stack))) slot = i;
-		}
-		if (slot < 0) {
-			return ActionOutcome.fail("grind", wanted == null
-					? "I have nothing with an enchantment on it to take off"
-					: "I have no enchanted " + wanted);
-		}
+		Pick toStrip = pick(intent.target(),
+				stack -> net.minecraft.world.item.enchantment.EnchantmentHelper.hasAnyEnchantments(stack),
+				intent.target() == null || intent.target().isBlank()
+						? "I have nothing with an enchantment on it to take off"
+						: "I have no enchanted " + intent.target().trim());
+		if (!toStrip.ok()) return ActionOutcome.fail("grind", toStrip.refusal());
+		int slot = slotOfStack(toStrip.stack());
+		if (slot < 0) return ActionOutcome.fail("grind", "I lost track of what to strip");
 
 		ItemStack item = inventory.getItem(slot);
 		String itemName = itemId(item);
@@ -3773,6 +3836,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		boolean emptyTarget = intent.target() == null || intent.target().isBlank();
 		ItemStack held;
 		if (emptyTarget) {
+			held = this.getMainHandItem();
+		} else if (matchesItem(intent.target().trim(), this.getMainHandItem())) {
+			// What he is already holding is something he carries. The resolver searches the bag, and a stack
+			// that a previous step raised into his hand is not in the bag — which is how a fishing rod he was
+			// holding became "I have no fishing_rod with me".
 			held = this.getMainHandItem();
 		} else {
 			// "use my sharpest book on the anvil": an id and a description resolve through the same rules, and
