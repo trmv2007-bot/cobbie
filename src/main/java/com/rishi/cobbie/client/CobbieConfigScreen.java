@@ -83,13 +83,19 @@ public class CobbieConfigScreen extends Screen {
 
         int footerY = height - FOOTER_HEIGHT + 20;
         addRenderableWidget(Button.builder(Component.literal("§aSave"), b -> {
-            saveConfig();
-            onClose();
+            // Closing on a failed save would hide the reason behind a screen the player can no longer see.
+            if (saveConfig()) onClose();
         }).bounds(width / 2 - 160, footerY, 95, 20).build());
         addRenderableWidget(Button.builder(Component.literal("§eTest Connection"), b -> testConnection())
                 .bounds(width / 2 - 55, footerY, 110, 20).build());
         addRenderableWidget(Button.builder(Component.literal("§cCancel"), b -> onClose())
                 .bounds(width / 2 + 65, footerY, 95, 20).build());
+        addRenderableWidget(Button.builder(
+                Component.literal(advancedOpen ? "§7Advanced ▾" : "§7Advanced ▸"), b -> {
+                    advancedOpen = !advancedOpen;
+                    b.setMessage(Component.literal(advancedOpen ? "§7Advanced ▾" : "§7Advanced ▸"));
+                    applyScroll();
+                }).bounds(16, footerY, 110, 20).build());
 
         applyScroll();
     }
@@ -159,7 +165,7 @@ public class CobbieConfigScreen extends Screen {
     }
 
     private void buildRows() {
-        header("AI Provider (bring your own key)");
+        header("Brain");
         providerField();
         secretField("api_key", "API Key", "paste your key — it stays on this PC");
         textField("base_url", "Base URL", "https://api.groq.com/openai/v1");
@@ -170,7 +176,7 @@ public class CobbieConfigScreen extends Screen {
         intField("read_timeout", "Read Timeout (s)", 5, 600, 10);
         intField("max_retries", "Max Retries", 0, 8, 1);
 
-        header("Personality");
+        header("Behaviour");
         textField("personality", "Personality", "warm, curious, a little playful");
         enumField("autonomy_mode", "Autonomy", new String[]{"OFF", "ASSISTIVE", "CREATIVE"});
 
@@ -217,7 +223,12 @@ public class CobbieConfigScreen extends Screen {
     // ---- row builders ----
 
     private void header(String text) {
-        rows.add(new Row(null, text, Kind.HEADER));
+        // A header records how its fields are filtered: "Advanced" is the only section that may be collapsed,
+        // and the flag above decides whether its fields are drawn at all.
+        this.section = text;
+        Row row = new Row(null, text, Kind.HEADER);
+        row.section = text;
+        rows.add(row);
     }
 
     private void textField(String key, String label, String placeholder) {
@@ -337,6 +348,16 @@ public class CobbieConfigScreen extends Screen {
         int footerTop = height - FOOTER_HEIGHT;
         int y = 32 + scroll;
         for (Row row : rows) {
+            boolean hidden = !advancedOpen && row.kind == Kind.FIELD
+                    && "Advanced".equals(row.section);
+            if (hidden) {
+                row.y = Integer.MIN_VALUE;
+                if (row.widget != null) {
+                    row.widget.visible = false;
+                    row.widget.active = false;
+                }
+                continue;
+            }
             int rowHeight = row.kind == Kind.HEADER ? 18 : ROW_HEIGHT;
             row.y = y;
             if (row.widget != null) {
@@ -429,21 +450,25 @@ public class CobbieConfigScreen extends Screen {
         return Math.round(v * 10.0) / 10.0;
     }
 
-    private void saveConfig() {
-        if (configFile == null) return;
+    private boolean saveConfig() {
+        if (configFile == null) {
+            status = "§cThere is no config file to write.";
+            return false;
+        }
+        String refusal = ConfigStore.write(configFile, configJson);
+        if (refusal != null) {
+            // A save that failed must say so where the player is looking, not fail silently behind a closed screen.
+            status = "§c" + refusal;
+            return false;
+        }
         try {
-            Path tmp = configFile.resolveSibling(configFile.getFileName() + ".tmp");
-            Files.writeString(tmp, GSON.toJson(configJson));
-            try {
-                Files.move(tmp, configFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } catch (IOException noAtomic) {
-                Files.move(tmp, configFile, StandardCopyOption.REPLACE_EXISTING);
-            }
             Cobbie.LOGGER.info("Cobbie config saved via GUI");
             com.rishi.cobbie.config.CobbieConfig.reload();
+            return true;
         } catch (Exception e) {
             Cobbie.LOGGER.error("Failed to save Cobbie config: {}", e.toString());
-            status = "Save failed: " + e.getClass().getSimpleName();
+            status = "§cSave failed: " + e.getClass().getSimpleName();
+            return false;
         }
     }
 
@@ -485,7 +510,13 @@ public class CobbieConfigScreen extends Screen {
 
     private enum Kind { HEADER, FIELD }
 
+    /** Whether the Advanced section is open. Closed by default: the numbers are the last thing a player needs. */
+    private boolean advancedOpen = false;
+    /** The section a row belongs to, taken from the last header above it. */
+    private String section = "Brain";
+
     private static final class Row {
+        String section = "Brain";
         final AbstractWidget widget;
         final String label;
         final Kind kind;
