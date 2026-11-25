@@ -246,6 +246,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	/** The last thing he said out loud, so a test can check the words and not just the effect. */
 	private String lastSpokenLine = "";
 	/**
+	 * The last few lines, newest last. One field answers "what did he say"; "did he say X" is the question a test
+	 * actually has, and a line that lands a tick later must not erase the one that explained the event.
+	 */
+	private final com.rishi.cobbie.presence.RecentLines recentLines =
+			new com.rishi.cobbie.presence.RecentLines();
+	/**
 	 * The request of the project that was in flight, saved with him so a reload can own up to it, and
 	 * cleared the moment that project settles. Blank means nothing was running: a reload then has nothing
 	 * to lose and he must stay quiet.
@@ -784,6 +790,26 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return lastSpokenLine;
 	}
 
+	/** Record a line he actually said: the newest field, and the bounded window behind it. */
+	private void noteSaid(String text) {
+		if (text == null || text.isBlank()) return;
+		lastSpokenLine = text;
+		recentLines.add(text);
+	}
+
+	/**
+	 * Did he say a line containing this fragment recently? A window, not a slot — asked this way so a report landing
+	 * a tick behind the line it summarises cannot score as "he never said it".
+	 */
+	public boolean saidRecently(String fragment) {
+		return recentLines.saidRecently(fragment);
+	}
+
+	/** What he has said recently, oldest first, for a failure message that shows the actual words. */
+	public java.util.List<String> recentLines() {
+		return recentLines.recent();
+	}
+
 	/** One-shot "here is what actually happened" text when a plan settles. */
 	public String takeTaskReport() {
 		return tasks.takeReport();
@@ -817,7 +843,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		net.minecraft.server.level.ServerPlayer owner = ownerAnywhere();
 		if (owner == null) return false;
 		owner.sendSystemMessage(com.rishi.cobbie.brain.CobbieBrain.cobbieSays(this, text));
-		lastSpokenLine = text;
+		noteSaid(text);
 		return true;
 	}
 
@@ -1496,6 +1522,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		String line = "I could not find a way to you from " + (int) Math.sqrt(distSq)
 				+ " blocks out, so I came the quick way. Tell me if you would rather I kept walking.";
 		owner.sendSystemMessage(Component.literal("§e[Cobbie] §f" + line));
+		noteSaid(line);
 		Cobbie.LOGGER.info("Cobbie recalled to his owner from {} blocks away", (int) Math.sqrt(distSq));
 		return true;
 	}
@@ -1988,7 +2015,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private void speakNearby(String line) {
 		if (line == null || line.isBlank() || level() == null) return;
 		String text = line.length() > 200 ? line.substring(0, 200) : line;
-		lastSpokenLine = text;
+		noteSaid(text);
 		for (Player p : level().getEntitiesOfClass(Player.class,
 				new AABB(this.blockPosition()).inflate(32.0))) {
 			p.sendSystemMessage(Component.literal("§e[Cobbie] §f" + text));

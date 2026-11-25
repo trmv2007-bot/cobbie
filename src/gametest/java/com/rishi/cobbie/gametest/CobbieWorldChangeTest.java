@@ -67,22 +67,28 @@ public final class CobbieWorldChangeTest implements FabricClientGameTest {
             // Poll rather than sleep a fixed number of ticks: the line is said on a later tick, and
             // reading one field at one instant would score whatever happened to be last.
             boolean idle = false;
-            String said = "";
-            for (int tick = 0; tick < 20 && !said.contains("changed worlds"); tick++) {
+            boolean explained = false;
+            for (int tick = 0; tick < 20 && !explained; tick++) {
                 context.waitTicks(2);
                 idle = server.computeOnServer(s -> anyCobbie(s).map(c -> !c.isBusy()).orElse(false));
-                said = server.computeOnServer(s -> anyCobbie(s)
-                        .map(CobbieEntity::lastSpokenLine).orElse(""));
+                // The window, not the newest line: the plan's own settled report can land a tick behind the line
+                // that explains the event, and reading one field then scores whatever happened to be last.
+                explained = server.computeOnServer(s -> anyCobbie(s)
+                        .map(c -> c.saidRecently("changed worlds")).orElse(false));
             }
             if (!idle) {
                 throw new AssertionError("The plan survived the world change; he is "
                         + server.computeOnServer(s -> anyCobbie(s)
                                 .map(CobbieWorldChangeTest::describe).orElse("gone")));
             }
-            if (!said.contains("changed worlds")) {
-                throw new AssertionError("He stopped, but did not explain why; he said \"" + said + "\"");
+            if (!explained) {
+                throw new AssertionError("He stopped, but did not explain why; he said "
+                        + server.computeOnServer(s -> anyCobbie(s)
+                                .map(c -> c.recentLines().toString()).orElse("nothing")));
             }
-            System.out.println("[gametest] world change guard ok: the plan ended with \"" + said + "\"");
+            System.out.println("[gametest] world change guard ok: he said "
+                    + server.computeOnServer(s -> anyCobbie(s)
+                            .map(c -> c.recentLines().toString()).orElse("nothing")));
 
             // The engine: a real crossing, and what actually becomes of a plan on it.
             BlockPos before = server.computeOnServer(s -> anyCobbie(s).orElseThrow().blockPosition());
@@ -122,8 +128,8 @@ public final class CobbieWorldChangeTest implements FabricClientGameTest {
                 throw new AssertionError("A plan survived a real crossing (" + where
                         + ") — the guard above is no longer the whole story and this test needs rewriting");
             }
-            System.out.println("[gametest] world change ok: the guard ended a plan with \"" + said
-                    + "\", and a real crossing left him at " + where + " with no plan to cancel");
+            System.out.println("[gametest] world change ok: the guard ended a plan, and a real crossing left him at "
+                    + where + " with no plan to cancel");
         }
     }
 
