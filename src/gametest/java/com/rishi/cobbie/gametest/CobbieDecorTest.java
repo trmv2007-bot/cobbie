@@ -139,6 +139,47 @@ public final class CobbieDecorTest implements FabricClientGameTest {
                 throw new AssertionError("The diamond came out of the frame and vanished: he carries " + carried);
             }
 
+            // --- 4. A banner that already carries a pattern: it must be placed WITH it, not blank. ---
+            BlockPos bannerAt = server.computeOnServer(s -> {
+                CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
+                BlockPos pos = cobbie.blockPosition().offset(3, 0, -1);
+                ItemStack banner = new ItemStack(Items.BANNER.white(), 1);
+                var holder = s.registryAccess()
+                        .lookupOrThrow(net.minecraft.core.registries.Registries.BANNER_PATTERN)
+                        .getOrThrow(net.minecraft.world.level.block.entity.BannerPatterns.CROSS);
+                banner.set(net.minecraft.core.component.DataComponents.BANNER_PATTERNS,
+                        new net.minecraft.world.level.block.entity.BannerPatternLayers.Builder()
+                                .add(holder, net.minecraft.world.item.DyeColor.RED).build());
+                cobbie.addItem(banner);
+                return pos.offset(0, -1, 0);
+            });
+            // The colour is part of the item's own id, so the ask has to name the item he is holding
+            // rather than the family it belongs to.
+            String bannerId = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .countItem("minecraft:white_banner") > 0 ? "minecraft:white_banner" : "minecraft:banner");
+            String bannerRefusal = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .offerPlan("put the banner up", List.of(new ActionIntent(ActionVocabulary.USE,
+                            bannerId, bannerAt.getX(), bannerAt.getY(), bannerAt.getZ(), "up"))));
+            if (bannerRefusal != null) {
+                throw new AssertionError("Placing the patterned banner was refused: " + bannerRefusal);
+            }
+            CobbieTestSupport.awaitPlanSettled(server, 600);
+            int layers = server.computeOnServer(s -> {
+                BlockPos at = bannerAt.above();
+                var be = s.overworld().getBlockEntity(at);
+                if (be instanceof net.minecraft.world.level.block.entity.BannerBlockEntity bannerBe) {
+                    return bannerBe.getPatterns().layers().size();
+                }
+                return -1;
+            });
+            if (layers < 1) {
+                throw new AssertionError("The placed banner carries " + (layers < 0 ? "no block entity"
+                        : layers + " pattern layers")
+                        + " — a patterned banner was placed blank: " + lastReport(server));
+            }
+            System.out.println("[gametest] decor ok: patterned banner placed with " + layers
+                    + " layer(s) intact");
+
             System.out.println("[gametest] decor ok: sign line 0 \"" + written + "\", line 1 \"" + second
                     + "\"; over-long text refused with its reason; frame held " + holds
                     + " and gave it back (" + carried + " diamond carried)");

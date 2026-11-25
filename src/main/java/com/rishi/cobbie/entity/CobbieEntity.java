@@ -2220,6 +2220,15 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return null;
 	}
 
+	/** What he is carrying, as copies: the panel shows it and a test can look at what he holds. */
+	public java.util.List<ItemStack> bagContents() {
+		java.util.List<ItemStack> out = new ArrayList<>(inventory.getContainerSize());
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			out.add(inventory.getItem(i).copy());
+		}
+		return out;
+	}
+
 	/** His level, for the panel and for anything that has to spend one. */
 	public int experienceLevel() {
 		return experienceLevel;
