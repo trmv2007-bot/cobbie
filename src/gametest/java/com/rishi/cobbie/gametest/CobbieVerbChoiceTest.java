@@ -64,7 +64,8 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
             new Ask("cobbie harvest the wheat and replant it", "farm", null),
             new Ask("cobbie till this dirt and plant some wheat", "use", null),
             new Ask("cobbie breed the cows", "breed", null),
-            new Ask("cobbie buy some pumpkin pie from the villager", "trade", null));
+            new Ask("cobbie buy some pumpkin pie from the villager", "trade", null),
+            new Ask("cobbie flip that lever", "use", null));
 
     @Override
     public void runTest(ClientGameTestContext context) {
@@ -148,6 +149,9 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                 farmer.setPersistenceRequired();
                 s.overworld().addFreshEntity(farmer);
                 cobbie.addItem(new ItemStack(Items.EMERALD, 8));
+                // A lever for the redstone ask, and dirt for the tilling one.
+                CobbieTestSupport.command(s, "setblock " + (at.getX() + 2) + " " + (at.getY() - 1) + " "
+                        + (at.getZ() - 2) + " minecraft:lever[face=floor,facing=north,powered=false]");
                 BlockPos bare = new BlockPos(at.getX() + 1, at.getY() - 1, at.getZ() - 1);
                 CobbieTestSupport.command(s, "setblock " + bare.getX() + " " + bare.getY() + " " + bare.getZ()
                         + " minecraft:dirt");
