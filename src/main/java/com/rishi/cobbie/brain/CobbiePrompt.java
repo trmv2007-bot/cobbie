@@ -22,7 +22,7 @@ public final class CobbiePrompt {
 	private CobbiePrompt() {}
 
 	public static String systemPrompt(String name, WorldSnapshot world, String memorySummary,
-			String objective, String skillsBlock) {
+			String objective, String skillsBlock, String renameNote) {
 		StringBuilder sb = new StringBuilder(2400);
 
 		String self = com.rishi.cobbie.identity.CompanionName.orDefault(name);
@@ -39,6 +39,9 @@ public final class CobbiePrompt {
 
 		if (objective != null && !objective.isBlank()) {
 			sb.append("CURRENT OBJECTIVE: ").append(objective).append(NL);
+		}
+		if (renameNote != null && !renameNote.isBlank()) {
+			sb.append("NOTE: ").append(renameNote).append(NL);
 		}
 		if (memorySummary != null && !memorySummary.isBlank()) {
 			sb.append("WHAT YOU REMEMBER ABOUT THIS PLAYER: ").append(memorySummary).append(NL);

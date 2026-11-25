@@ -275,7 +275,7 @@ public final class CobbieBrain {
 		final String system = CobbiePrompt.systemPrompt(body.companionName(), snapshot.value,
 				CobbieConfig.isMemoryEnabled() ? CobbieMemory.longTermSummary(speakerId) : "",
 				CobbieConfig.isMemoryEnabled() ? CobbieMemory.currentObjective(speakerId) : "",
-				SkillRegistry.describeForPrompt(4));
+				SkillRegistry.describeForPrompt(4), body.takeRenameNote());
 		final String user = CobbiePrompt.userMessage(name, text);
 		final long now = System.currentTimeMillis();
 
@@ -748,7 +748,7 @@ public final class CobbieBrain {
 
 		final String system = CobbiePrompt.systemPrompt(cobbie.companionName(), cobbie.perceive(),
 				CobbieConfig.isMemoryEnabled() ? CobbieMemory.longTermSummary(ownerId) : "",
-				"", SkillRegistry.describeForPrompt(4));
+				"", SkillRegistry.describeForPrompt(4), cobbie.takeRenameNote());
 
 		client.complete(system, List.of(), instruction).thenAccept(result -> {
 			inFlight.decrementAndGet();

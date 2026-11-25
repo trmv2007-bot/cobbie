@@ -214,7 +214,7 @@ public final class CobbieCommands {
 		if (cobbie == null) return 0;
 		String wanted = StringArgumentType.getString(ctx, "name");
 		String before = cobbie.companionName();
-		String refusal = cobbie.renameTo(wanted);
+		String refusal = cobbie.renameBy(player(ctx), wanted);
 		if (refusal != null) {
 			reply(ctx, "§c" + refusal);
 			return 0;

@@ -62,6 +62,15 @@ class CompanionNameTest {
     }
 
     @Test
+    void squareBracketsAreRefusedBecauseTheyWrapTheNameInChat() {
+        CompanionName.Check check = CompanionName.check("Sir [Fluff]");
+        assertFalse(check.ok());
+        assertTrue(check.refusal().contains("brackets"), check.refusal());
+        assertFalse(CompanionName.check("[Fluff").ok());
+        assertFalse(CompanionName.check("Fluff]").ok());
+    }
+
+    @Test
     void aNameThatIsOnlySeparatorPunctuationIsRefused() {
         assertFalse(CompanionName.check("·").ok());
         assertFalse(CompanionName.check(" · — ").ok());
