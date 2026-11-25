@@ -604,6 +604,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return tasks.latestPlanId();
 	}
 
+	/** What became of a plan he started earlier: its request, status and report. */
+	public String planRecord(long id) {
+		var plan = tasks.planById(id);
+		return plan == null ? null : plan.request() + " -> " + plan.status() + " — " + plan.report();
+	}
+
 	/** Plans created since an id: one is the ask's, more than one means a follow-up slipped into the window. */
 	public int plansSince(long id) {
 		return tasks.plansSince(id);
