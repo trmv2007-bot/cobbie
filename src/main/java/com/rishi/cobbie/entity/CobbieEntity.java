@@ -145,6 +145,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private static final int STATION_STALL_TICKS = 400;
 	/** How far he will look for a furnace before giving up on making iron. */
 	private static final int FURNACE_SEARCH = 12;
+	/** How often he looks for a project, how long he waits after one, and how quiet the owner must be. */
+	private static final int INITIATIVE_INTERVAL_TICKS = 100;
+	private static final int INITIATIVE_COOLDOWN_TICKS = 2400;
+	private static final int INITIATIVE_QUIET_TICKS = 200;
 	/** How far round himself he will look for two animals of a kind. */
 	private static final int BREED_RADIUS = 8;
 	/** How far round himself he will tend a farm. A plot is small; a field he walks. */
@@ -241,6 +245,13 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 	/** The job in flight when it spans ticks: crafting through a furnace, or smelting on purpose. */
 	private Work work;
+
+	/** True while the plan running is a project he started, so an owner instruction can cancel it. */
+	private boolean initiativePlan;
+	/** Ticks since his last project, so he does not start one every few seconds. */
+	private int initiativeCooldown;
+	/** The tick the owner last asked him for anything: he does not start work mid-sentence. */
+	private int lastOwnerContactTick;
 
 	/** The batch in the brewing stand, while it is brewing. */
 	private Brew brew;
@@ -495,7 +506,29 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 *         to the player instead of going quiet
 	 */
 	public String offerPlan(String request, List<ActionIntent> intents) {
+		// Anyone asking him for anything ends his own project: it is his to abandon the moment the owner
+		// wants him. A project that outranks an instruction would make him the one in charge.
+		lastOwnerContactTick = this.tickCount;
+		if (initiativePlan && tasks.hasActiveTask()) {
+			tasks.cancel("the owner asked me for something else");
+			initiativePlan = false;
+		}
 		return offerPlan(request, intents, false);
+	}
+
+	/**
+	 * Start a project of his own: the same plan machinery, with the intent to cancel it on a word.
+	 *
+	 * @return null when started, otherwise why not
+	 */
+	private String startProject(com.rishi.cobbie.task.Initiative.Project project) {
+		if (project == null || project.steps().isEmpty()) return "nothing worth doing here";
+		String refusal = tasks.start(project.request(), project.steps(), false);
+		if (refusal == null) {
+			initiativePlan = true;
+			planOrigin = this.blockPosition().immutable();
+		}
+		return refusal;
 	}
 
 	/**
@@ -505,6 +538,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 * @return null when merged, otherwise why it could not be
 	 */
 	public String offerAddition(String request, List<ActionIntent> intents) {
+		lastOwnerContactTick = this.tickCount;
 		if (intents == null || intents.isEmpty()) return "nothing to add";
 		List<ActionIntent> ordered = new ArrayList<>(intents);
 		ordered.sort(java.util.Comparator.comparingDouble(this::urgencyDistance));
@@ -640,6 +674,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		// learning, and the model's own feedback all hang off that single delivery).
 		String report = tasks.takeReport();
 		if (report != null) {
+			initiativePlan = false;
 			com.rishi.cobbie.task.TaskPlan settledPlan = tasks.plan();
 			com.rishi.cobbie.presence.ActionTiming.settled(System.currentTimeMillis(),
 					settledPlan == null ? 0 : settledPlan.steps().size());
@@ -660,6 +695,38 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				&& CobbieConfig.isCreative() && CobbieConfig.permits("explore")
 				&& this.random.nextInt(400) == 0) {
 			exploreSomewhereNearby();
+		}
+
+		initiativeTick();
+	}
+
+	/**
+	 * Start a project of his own, if it is allowed and there is something worth doing.
+	 *
+	 * <p>The conditions are the brief's, each with a reason: <b>creative autonomy only</b> (assistive
+	 * stays assistive), <b>the switch is on</b>, <b>nothing else is running</b>, and <b>the owner has been
+	 * quiet</b> — starting work while being spoken to is worse than waiting. One look every
+	 * {@link #INITIATIVE_INTERVAL_TICKS} rather than every tick, and a cooldown after each project so a
+	 * companion does not churn.
+	 *
+	 * <p>He announces it once, in the same breath as handing the plan over, and the declared-action
+	 * contract covers the rest: a project that promised work and queued no step is a contradiction the
+	 * code can see.
+	 */
+	private void initiativeTick() {
+		if (this.initiativeCooldown > 0) this.initiativeCooldown--;
+		if (initiativeCooldown > 0) return;
+		if (!CobbieConfig.isInitiativeAllowed()) return;
+		if (!CobbieConfig.isCreative()) return;
+		if (isBusy() || active != null || pendingOutcome != null) return;
+		if (this.tickCount % INITIATIVE_INTERVAL_TICKS != 0) return;
+		if (this.tickCount - lastOwnerContactTick < INITIATIVE_QUIET_TICKS) return;
+
+		com.rishi.cobbie.task.Initiative.Project project = com.rishi.cobbie.task.Initiative.choose(this);
+		if (project == null) return;
+		if (startProject(project) == null) {
+			speak(project.line());
+			initiativeCooldown = INITIATIVE_COOLDOWN_TICKS;
 		}
 	}
 
@@ -1673,8 +1740,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		float hardness = state.getDestroySpeed(serverLevel, pos);
 		if (hardness < 0) return ActionOutcome.fail("mine", id + " cannot be broken");
 
+		// What he needs a tool for is the drop, not the break: a log comes off with bare hands in
+		// survival and anything comes off in creative, while stone yields nothing without a pickaxe.
 		ItemStack tool = equipBestToolFor(id);
-		if (hardness > 1.5f && tool.isEmpty()) {
+		boolean slowByHand = hardness > 1.5f && !CobbieConfig.isCreative();
+		if (tool.isEmpty() && (state.requiresCorrectToolForDrops() || slowByHand)) {
 			return ActionOutcome.fail("mine", "I need a proper tool for " + id + " and have none");
 		}
 
