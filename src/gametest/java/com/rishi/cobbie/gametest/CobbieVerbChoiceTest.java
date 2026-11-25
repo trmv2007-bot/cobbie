@@ -63,7 +63,8 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
             new Ask("cobbie zoom my map out with paper", "map", null),
             new Ask("cobbie harvest the wheat and replant it", "farm", null),
             new Ask("cobbie till this dirt and plant some wheat", "use", null),
-            new Ask("cobbie breed the cows", "breed", null));
+            new Ask("cobbie breed the cows", "breed", null),
+            new Ask("cobbie buy some pumpkin pie from the villager", "trade", null));
 
     @Override
     public void runTest(ClientGameTestContext context) {
@@ -131,6 +132,22 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                     cow.setPersistenceRequired();
                     s.overworld().addFreshEntity(cow);
                 }
+                // A farmer to trade with, and emeralds to trade with it.
+                net.minecraft.world.entity.npc.villager.Villager farmer =
+                        new net.minecraft.world.entity.npc.villager.Villager(
+                                net.minecraft.world.entity.EntityTypes.VILLAGER, s.overworld());
+                farmer.setPos(at.getX() + 0.5, at.getY(), at.getZ() - 1.5);
+                var professions = s.overworld().registryAccess()
+                        .lookupOrThrow(net.minecraft.core.registries.Registries.VILLAGER_PROFESSION);
+                var types = s.overworld().registryAccess()
+                        .lookupOrThrow(net.minecraft.core.registries.Registries.VILLAGER_TYPE);
+                farmer.setVillagerData(new net.minecraft.world.entity.npc.villager.VillagerData(
+                        types.getOrThrow(net.minecraft.world.entity.npc.villager.VillagerType.PLAINS),
+                        professions.getOrThrow(net.minecraft.world.entity.npc.villager.VillagerProfession.FARMER), 2));
+                farmer.setNoAi(true);
+                farmer.setPersistenceRequired();
+                s.overworld().addFreshEntity(farmer);
+                cobbie.addItem(new ItemStack(Items.EMERALD, 8));
                 BlockPos bare = new BlockPos(at.getX() + 1, at.getY() - 1, at.getZ() - 1);
                 CobbieTestSupport.command(s, "setblock " + bare.getX() + " " + bare.getY() + " " + bare.getZ()
                         + " minecraft:dirt");

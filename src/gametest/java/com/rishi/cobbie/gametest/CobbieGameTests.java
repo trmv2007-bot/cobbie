@@ -64,7 +64,9 @@ public final class CobbieGameTests implements FabricClientGameTest {
             new CobbieFarmTest(),
             new CobbieFarmProbeTest(),
             new CobbieBreedTest(),
-            new CobbieAnimalProbeTest());
+            new CobbieAnimalProbeTest(),
+            new CobbieTradeTest(),
+            new CobbieTradeProbeTest());
 
     @Override
     public void runTest(ClientGameTestContext context) {

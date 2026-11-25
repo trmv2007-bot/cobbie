@@ -447,6 +447,9 @@ public final class CobbieConfig {
 			case "place", "light", "use" -> buildingAllowed;
 			// Farming is block work with his hands, so it sits under the same switch as planting.
 			case "farm", "breed" -> buildingAllowed;
+			// Trading spends what he carries, so it sits under the switch that governs his own things
+			// being used up, and it is never entered into without being asked.
+			case "trade" -> containersAllowed;
 			case "attack" -> combatAllowed;
 			case "explore" -> explorationAllowed && autonomyMode != AutonomyMode.OFF;
 			case "collect" -> collectionAllowed;

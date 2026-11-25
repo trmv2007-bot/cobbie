@@ -136,6 +136,16 @@ public final class FakeActor {
 		}
 	}
 
+	/**
+	 * The actor for this level, unplaced and holding nothing.
+	 *
+	 * <p>For callers that need his {@code Player.Inventory} — the trade menu is built from one — rather
+	 * than a hand to stand in. Same cached instance, so nothing accumulates.
+	 */
+	public static FakePlayer actorFor(ServerLevel level) {
+		return FakePlayer.get(level, PROFILE);
+	}
+
 	/** Right-click a block: seeds on farmland, bone meal on a crop, a lever, a button. */
 	public static Outcome useOnBlock(CobbieEntity body, BlockPos pos, Direction face, ItemStack held) {
 		if (!(body.level() instanceof ServerLevel level)) return null;

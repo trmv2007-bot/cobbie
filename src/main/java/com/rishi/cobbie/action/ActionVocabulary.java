@@ -49,11 +49,12 @@ public final class ActionVocabulary {
 	public static final String MAP = "map";
 	public static final String FARM = "farm";
 	public static final String BREED = "breed";
+	public static final String TRADE = "trade";
 	public static final String LOOKUP = "lookup";
 	public static final String WAIT = "wait";
 
 	private static final Set<String> ALLOWED = new LinkedHashSet<>(List.of(
-			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE, REPAIR, DYE, ENCHANT, ANVIL, BREW, SMITH, GRIND, WEAVE, MAP, FARM, BREED, LOOKUP, WAIT));
+			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE, REPAIR, DYE, ENCHANT, ANVIL, BREW, SMITH, GRIND, WEAVE, MAP, FARM, BREED, TRADE, LOOKUP, WAIT));
 
 	/** Actions that are meaningless without an explicit target position. */
 	private static final Set<String> NEEDS_POSITION = Set.of(WALK_TO, MINE, PLACE, LIGHT, TAKE, PUT, SMELT);
@@ -68,7 +69,7 @@ public final class ActionVocabulary {
 	/** Actions that change the world and therefore need verification afterwards. */
 	private static final Set<String> WORLD_CHANGING =
 			Set.of(MINE, PLACE, ATTACK, COLLECT, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE,
-					REPAIR, DYE, ENCHANT, ANVIL, BREW, SMITH, GRIND, WEAVE, MAP, FARM, BREED);
+					REPAIR, DYE, ENCHANT, ANVIL, BREW, SMITH, GRIND, WEAVE, MAP, FARM, BREED, TRADE);
 
 	private ActionVocabulary() {}
 
@@ -118,6 +119,7 @@ public final class ActionVocabulary {
 			case "cartography", "cartography-table", "map-making", "zoom-map", "make-map" -> MAP;
 			case "harvest-crops", "replant", "tend-crops", "tend", "farm-crops", "harvest-and-replant" -> FARM;
 			case "mate", "breed-animals", "raise-animals", "make-a-baby", "tame" -> BREED;
+			case "buy", "villager", "trade-with", "purchase", "sell" -> TRADE;
 			case "colour", "color", "dye-item", "paint" -> DYE;
 			case "look-up", "search", "wiki", "google" -> LOOKUP;
 			case "say", "speak", "tell" -> CHAT;
@@ -155,6 +157,7 @@ public final class ActionVocabulary {
 			else if (MAP.equals(verb)) sb.append(" (target = the map; data = paper to zoom, empty_map to copy, glass_pane to lock)");
 			else if (FARM.equals(verb)) sb.append(" (harvests every ripe crop near me and replants it; target = the crop, e.g. wheat, or blank for all)");
 			else if (BREED.equals(verb)) sb.append(" (feeds two adults of a kind and lets them breed; target = the animal, e.g. cow)");
+			else if (TRADE.equals(verb)) sb.append(" (buys from a villager; target = what to buy, e.g. bread; data = how many)");
 		}
 		return sb.toString();
 	}
