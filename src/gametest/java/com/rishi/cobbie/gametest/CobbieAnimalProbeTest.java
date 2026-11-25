@@ -58,7 +58,7 @@ public final class CobbieAnimalProbeTest implements FabricClientGameTest {
             });
 
             // Give them a few seconds to find each other and produce a calf.
-            server.waitFor(s -> s.getTickCount() % 20 == 0, 240);
+            CobbieTestSupport.elapsed(server, 240);
             server.computeOnServer(s -> {
                 CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
                 var level = s.overworld();

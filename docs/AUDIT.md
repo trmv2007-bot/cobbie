@@ -21,6 +21,18 @@ subtle once seen, and all three were found by a test or a probe rather than by r
 recognises the shape — *who else calls this?* asked at the moment the condition is narrowed — saves the day
 each of them cost.
 
+### The same bug, twice, in a file written by the person who fixed it
+
+`waitFor(tickCount % 20 == 0, ticks)` matches the **first** tick divisible by twenty and waits nothing. It was
+found and fixed in 0.46.0, and then reintroduced in 0.60.0 — in the probe *about measuring things*, where every
+phase reported the same number and the measurement was worthless.
+
+The lesson is not that the helper was wrong. It is that **the wrong helper is still the obvious thing to type**:
+`waitFor(predicate, timeout)` reads like "wait a while", compiles, and looks correct. `CobbieTestSupport.elapsed`
+exists for exactly this and has to be remembered. Until the shape is unwritable — one way to wait, or a check that
+fails the build on a tick-modulo predicate — it will be typed again by whoever writes the next probe.
+`tools/audit-bug-families.py` now flags the shape in gametest sources for that reason.
+
 ## Summary
 
 | Family | Hits | Real defects | Verdict |
