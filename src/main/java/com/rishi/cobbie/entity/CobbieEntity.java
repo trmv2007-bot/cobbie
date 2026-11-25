@@ -594,6 +594,16 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return tasks.planAfter(id);
 	}
 
+	/** The most recently created plan's id: a caller notes this before asking, so it can bracket the ask. */
+	public long latestPlanId() {
+		return tasks.latestPlanId();
+	}
+
+	/** Plans created since an id: one is the ask's, more than one means a follow-up slipped into the window. */
+	public int plansSince(long id) {
+		return tasks.plansSince(id);
+	}
+
 	public String companionName() {
 		return com.rishi.cobbie.identity.CompanionName.orDefault(this.entityData.get(DATA_NAME));
 	}
