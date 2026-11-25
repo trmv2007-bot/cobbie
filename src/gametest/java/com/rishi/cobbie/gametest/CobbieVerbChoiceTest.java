@@ -189,8 +189,21 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
             int retries = 0;
             int unmeasurable = 0;
             int hijacked = 0;
+            long lastSeen = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .latestPlanId());
+            int strays = 0;
             for (Ask ask : ASKS) {
+                // Anything created while no ask was pending belongs to nobody in this loop: report it rather
+                // than let the next ask claim it.
+                long stray = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                        .latestPlanId());
+                if (stray > lastSeen) {
+                    strays++;
+                    System.out.println("[gametest] VerbChoice STRAY: a plan (" + stray + ") appeared while no ask"
+                            + " was pending; it is not scored against any ask");
+                }
                 long before = server.computeOnServer(s -> planId(s));
+                final long mark = before;
                 // A cold call to a hosted gateway occasionally lands on the 30-second read timeout.
                 // One retry keeps a slow reply from being recorded as the model choosing nothing —
                 // and the retry is counted, so a run that needed it says so.
@@ -199,6 +212,13 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                     retries++;
                     before = server.computeOnServer(s -> planId(s));
                     planned = sendAndWait(context, server, ask, before);
+                }
+                // The bracket: the ask's plan is the first plan created after the mark. If none appears the
+                // ask produced no plan, which is an answer, not a failure of attribution.
+                try {
+                    server.waitFor(s -> CobbieTestSupport.cobbie(s).orElseThrow().plansSince(mark) > 0, 600);
+                } catch (Throwable ignored) {
+                    // no plan: scored below as "no plan"
                 }
                 server.waitFor(s -> s.getTickCount() % 10 == 0, 40);
                 // The plan THIS ask created, never "the last plan": a failed plan makes the brain ask the
@@ -215,6 +235,15 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                 // An ask that produced no plan is an answer ("he said he cannot"), not an attribution
                 // failure; an ask whose plan is a follow-up IS one, and must not be scored as the ask.
                 if (transcript.contains(" follow-up after results ")) hijacked++;
+                long afterAsk = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                        .latestPlanId());
+                if (server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                        .plansSince(mark)) > 1) {
+                    hijacked++;
+                    System.out.println("[gametest] VerbChoice FOLLOW-UP: a second plan (" + afterAsk
+                            + ") appeared inside the ask's window; excluded rather than scored");
+                }
+                lastSeen = afterAsk;
                 String reply = server.computeOnServer(s -> CobbieMemory.history(ownerId, 40).stream()
                         .filter(m -> "assistant".equals(m.role()) && !m.content().isBlank())
                         .reduce((a, b) -> b).map(CobbieMemory.Message::content).orElse(""));
@@ -249,6 +278,10 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                 System.out.println("[gametest] VerbChoice UNATTRIBUTED: scored " + scored + " of "
                         + ASKS.size() + " asks. Refusing a ratio.");
                 return;
+            }
+            if (strays > 0) {
+                System.out.println("[gametest] VerbChoice STRAYS: " + strays + " plan(s) appeared while no ask was"
+                        + " pending. That is a finding about the brain's follow-ups, not an attribution problem.");
             }
             if (hijacked > 0) {
                 System.out.println("[gametest] VerbChoice UNATTRIBUTED: " + hijacked + " of " + ASKS.size()

@@ -52,6 +52,21 @@ public final class TaskRunner {
 	 * runner is the only place that knows both edges of a step, and the entity is the only place
 	 * that can speak. Nothing here can change a decision — a listener that throws is swallowed.
 	 */
+	/** The id of the most recently created plan, or -1 when none has been made. Monotonic. */
+	public long latestPlanId() {
+		TaskPlan last = created.peekLast();
+		return last == null ? -1 : last.id();
+	}
+
+	/** How many plans have been created since the given id: more than one means a follow-up appeared too. */
+	public int plansSince(long id) {
+		int count = 0;
+		for (TaskPlan made : created) {
+			if (made.id() > id) count++;
+		}
+		return count;
+	}
+
 	/** The first plan created after the given id, or null when nothing was created since. */
 	public TaskPlan planAfter(long id) {
 		for (TaskPlan made : created) {
