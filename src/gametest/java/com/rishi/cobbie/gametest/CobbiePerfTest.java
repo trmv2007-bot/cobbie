@@ -15,27 +15,28 @@ import net.minecraft.world.Difficulty;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.List;
 
 /**
- * A probe, not a test: what a companion actually costs a ticking server.
+ * A probe, not a test: what a companion costs a ticking server, measured so that drift cannot pass for effect.
  *
- * <p>Rishi's first two complaints were "he is taking too much time" and "my PC gets laggy". The model round trips
- * were fixed and the brain moved off his GPU, but the mod has grown per-tick work since — perception every few
- * ticks, an initiative scan every second, follow re-aiming, an experience sweep every four ticks, the status tag,
- * narration — and nobody has measured any of it.
+ * <p>The first version of this probe ran its phases in blocks and every phase read the same number — which turned
+ * out to be the vacuous-wait bug, in the probe written to measure things. The second version sampled properly and
+ * produced a result that was honest but useless as a number: the server's own tick average drifts further across
+ * a session than the companion moves it, so "with him" and "without him" overlapped and the sign flipped.
  *
- * <p>The measurement is the server's own tick durations, taken as the delta between the same world with and
- * without him, because a delta is the only number that answers "what does he cost" rather than "how fast is this
- * machine". Each phase reports microseconds per tick, and the model-request counter reports calls per minute for
- * the same phase.
+ * <p>So the phases are **interleaved**: kill him, sample; spawn him, sample; five rounds. Each pair is adjacent in
+ * time, so drift affects both halves. The report is the paired deltas — median, range, and how many rounds put him
+ * above the empty world — rather than one mean that hides whether the effect is even resolvable.
  *
  * <p>Prints, never asserts. Run with {@code ./gradlew runClientGameTest -PcobbieTests=Perf}.
  */
 public final class CobbiePerfTest implements FabricClientGameTest {
 
-    private static final int WARMUP = 100;
-    private static final int SAMPLE = 100;
+    private static final int ROUNDS = 5;
+    private static final int WARMUP = 60;
+    private static final int SAMPLE = 80;
 
     @Override
     public void runTest(ClientGameTestContext context) {
@@ -45,98 +46,110 @@ public final class CobbiePerfTest implements FabricClientGameTest {
             TestServerContext server = world.getServer();
             describeProbe(server);
 
-            // --- 1. The world with nobody in it. ---
-            CobbieTestSupport.elapsed(server, WARMUP);
-            double empty = sample(server);
-            System.out.println("[perf] no companion:            " + fmt(empty) + " us/tick");
+            double[] without = new double[ROUNDS];
+            double[] with = new double[ROUNDS];
+            for (int round = 0; round < ROUNDS; round++) {
+                kill(server);
+                CobbieTestSupport.elapsed(server, WARMUP);
+                without[round] = sample(server);
 
-            // --- 2. Him, idle, assistive. ---
-            CobbieEntity cobbie = CobbieTestSupport.spawn(context, server);
-            CobbieTestSupport.command(server, "cobbie stay");
-            int requestsBefore = LlmClient.requestsSent();
-            CobbieTestSupport.elapsed(server, WARMUP);
-            double idle = sample(server);
-            int idleCalls = LlmClient.requestsSent() - requestsBefore;
-            System.out.println("[perf] him idle (assistive):    " + fmt(idle) + " us/tick  delta "
-                    + fmt(idle - empty) + "  model calls in " + SAMPLE + " ticks: " + idleCalls);
+                spawn(server);
+                CobbieTestSupport.command(server, "cobbie stay");
+                CobbieTestSupport.elapsed(server, WARMUP);
+                with[round] = sample(server);
+                System.out.println("[perf] round " + (round + 1) + ": without " + fmt(without[round])
+                        + "  with " + fmt(with[round]) + "  delta " + fmt(with[round] - without[round])
+                        + " us/tick");
+            }
 
-            // --- 3. Him idle with initiative allowed: the once-a-second world scan. ---
+            double[] deltas = new double[ROUNDS];
+            for (int i = 0; i < ROUNDS; i++) deltas[i] = with[i] - without[i];
+            double[] sortedDeltas = deltas.clone();
+            Arrays.sort(sortedDeltas);
+            int above = 0;
+            for (double delta : deltas) {
+                if (delta > 0) above++;
+            }
+            System.out.println("[perf] paired delta median " + fmt(sortedDeltas[ROUNDS / 2]) + " us/tick, range "
+                    + fmt(sortedDeltas[0]) + " .. " + fmt(sortedDeltas[ROUNDS - 1]) + ", " + above + " of " + ROUNDS
+                    + " rounds above zero");
+            System.out.println("[perf] verdict: " + verdict(sortedDeltas, above));
+
+            // --- model calls: idle in both autonomy modes, then while a plan runs ---
+            int idleAssistive = requestsOver(server, 200, null);
             CobbieTestSupport.command(server, "cobbie autonomy creative");
-            int creativeRequests = LlmClient.requestsSent();
-            CobbieTestSupport.elapsed(server, WARMUP);
-            double creative = sample(server);
-            int creativeCalls = LlmClient.requestsSent() - creativeRequests;
-            System.out.println("[perf] him idle (creative):     " + fmt(creative) + " us/tick  delta "
-                    + fmt(creative - empty) + "  model calls in " + SAMPLE + " ticks: " + creativeCalls);
+            int idleCreative = requestsOver(server, 200, null);
             CobbieTestSupport.command(server, "cobbie autonomy assistive");
-
-            // --- 4. Him working: the same world, a real plan running. ---
-            BlockPos target = server.computeOnServer(s -> {
+            int working = requestsOver(server, 200, s -> {
                 CobbieEntity body = CobbieTestSupport.cobbie(s).orElseThrow();
                 BlockPos base = body.blockPosition().offset(2, 0, 2);
-                for (int i = 0; i < 6; i++) {
+                for (int i = 0; i < 4; i++) {
                     CobbieTestSupport.command(s, "setblock " + (base.getX() + i) + " " + base.getY() + " "
                             + base.getZ() + " minecraft:oak_log");
                 }
                 body.offerPlan("mine the logs", List.of(
                         new ActionIntent(ActionVocabulary.MINE, "minecraft:oak_log", base.getX(), base.getY(),
-                                base.getZ(), ""),
-                        new ActionIntent(ActionVocabulary.MINE, "minecraft:oak_log", base.getX() + 1,
-                                base.getY(), base.getZ(), "")));
-                return base;
+                                base.getZ(), "")));
             });
-            int workRequests = LlmClient.requestsSent();
-            double working = sample(server);
-            int workCalls = LlmClient.requestsSent() - workRequests;
-            System.out.println("[perf] him working:             " + fmt(working) + " us/tick  delta "
-                    + fmt(working - empty) + "  model calls in " + SAMPLE + " ticks: " + workCalls);
-
-            // --- 5. He is gone: the world again. ---
-            CobbieTestSupport.command(server, "kill @e[type=cobbie]");
-            CobbieTestSupport.elapsed(server, WARMUP);
-            double after = sample(server);
-            System.out.println("[perf] after he is killed:      " + fmt(after) + " us/tick  delta vs empty "
-                    + fmt(after - empty));
-
-            double ticksPerMinute = 1200.0;
-            double idlePerMinute = idleCalls * ticksPerMinute / (SAMPLE * 5);
-            double creativePerMinute = creativeCalls * ticksPerMinute / (SAMPLE * 5);
-            System.out.println("[perf] model calls/minute — idle(assistive) " + fmt1(idlePerMinute)
-                    + ", idle(creative) " + fmt1(creativePerMinute) + ", working "
-                    + fmt1(workCalls * ticksPerMinute / (SAMPLE * 5)));
+            System.out.println("[perf] model calls per minute — idle(assistive) " + fmt1(idleAssistive * 6.0)
+                    + ", idle(creative) " + fmt1(idleCreative * 6.0) + ", working " + fmt1(working * 6.0)
+                    + "   (measured over 200 ticks each)");
             System.out.println("[perf] done");
         }
     }
 
     /**
-     * A phase is sampled five times and reported as its median: the server's rolling average moves by more than
-     * a hundred microseconds between windows on one machine, so a single reading cannot tell a cost from noise.
+     * The honest sentence for a set of paired deltas: an effect smaller than its own spread is not a number.
      */
-    private static double sample(TestServerContext server) {
-        double[] readings = new double[5];
-        for (int i = 0; i < readings.length; i++) {
-            CobbieTestSupport.elapsed(server, SAMPLE);
-            readings[i] = server.computeOnServer(CobbiePerfTest::averageTickMicros);
+    private static String verdict(double[] sortedDeltas, int above) {
+        double median = sortedDeltas[sortedDeltas.length / 2];
+        double spread = sortedDeltas[sortedDeltas.length - 1] - sortedDeltas[0];
+        if (Math.abs(median) < Math.abs(spread) / 2.0) {
+            return "he costs less than this measurement can resolve (median " + fmt(median) + " us/tick against a"
+                    + " spread of " + fmt(spread) + "), so nothing here justifies an optimisation";
         }
-        java.util.Arrays.sort(readings);
-        StringBuilder all = new StringBuilder();
-        for (double reading : readings) {
-            if (all.length() > 0) all.append(' ');
-            all.append(fmt(reading));
-        }
-        System.out.println("[perf]   samples: " + all);
-        return readings[readings.length / 2];
+        return "he costs " + fmt(median) + " us/tick, which is larger than the spread (" + fmt(spread) + ")";
     }
 
-    /** Reads whatever this version exposes: a method first, then a field. Prints which one worked. */
+    private static int requestsOver(TestServerContext server, int ticks, java.util.function.Consumer<MinecraftServer> setup) {
+        if (setup != null) server.computeOnServer(s -> { setup.accept(s); return null; });
+        int before = LlmClient.requestsSent();
+        CobbieTestSupport.elapsed(server, ticks);
+        return LlmClient.requestsSent() - before;
+    }
+
+    private static void kill(TestServerContext server) {
+        CobbieTestSupport.command(server, "kill @e[type=cobbie]");
+        try {
+            server.waitFor(s -> CobbieTestSupport.cobbie(s).isEmpty(), 120);
+        } catch (Throwable ignored) {
+            // nothing to kill: already gone
+        }
+    }
+
+    private static void spawn(TestServerContext server) {
+        CobbieTestSupport.command(server, "spawncobbie");
+        try {
+            server.waitFor(s -> CobbieTestSupport.cobbie(s).isPresent(), 200);
+        } catch (Throwable t) {
+            throw new AssertionError("The probe could not respawn him, so the interleaved comparison stopped", t);
+        }
+    }
+
+    /** One sample: wait a measured window, then read the server's own rolling average. */
+    private static double sample(TestServerContext server) {
+        CobbieTestSupport.elapsed(server, SAMPLE);
+        return server.computeOnServer(CobbiePerfTest::averageTickMicros);
+    }
+
     private static Double readAverage(MinecraftServer server) {
         for (String name : new String[] {"getAverageTickTimeNanos", "getAverageTickTime"}) {
             try {
                 Method method = MinecraftServer.class.getMethod(name);
                 Object value = method.invoke(server);
                 if (value instanceof Number number) {
-                    double nanos = number.doubleValue();
-                    return nanos > 100_000 ? nanos / 1000.0 : nanos;   // nanos vs millis
+                    double raw = number.doubleValue();
+                    return raw > 100_000 ? raw / 1000.0 : raw;
                 }
             } catch (ReflectiveOperationException ignored) {
                 // try the next shape
@@ -151,7 +164,7 @@ public final class CobbiePerfTest implements FabricClientGameTest {
                     long total = 0;
                     for (long time : times) total += time;
                     double mean = (double) total / times.length;
-                    return mean > 100_000 ? mean / 1000.0 : mean;   // nanos vs millis
+                    return mean > 100_000 ? mean / 1000.0 : mean;
                 }
             } catch (ReflectiveOperationException ignored) {
                 // try the next shape
@@ -168,14 +181,13 @@ public final class CobbiePerfTest implements FabricClientGameTest {
     private static void describeProbe(TestServerContext server) {
         server.computeOnServer(s -> {
             Double value = readAverage(s);
-            System.out.println("[perf] probe: server tick average reads as " + (value == null ? "unavailable"
-                    : fmt(value) + " us"));
+            System.out.println("[perf] probe: server tick average reads as "
+                    + (value == null ? "unavailable" : fmt(value) + " us"));
             return null;
         });
     }
 
     private static String fmt(double micros) {
-        // -1 is the "could not read it" sentinel; a negative DELTA is a real result and must print.
         return micros == -1 ? "unavailable" : String.format("%.1f", micros);
     }
 

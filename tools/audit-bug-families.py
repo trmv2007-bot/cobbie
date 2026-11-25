@@ -21,6 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MAIN = ROOT / "src" / "main" / "java"
+GAMETEST = ROOT / "src" / "gametest" / "java"
 
 findings = []
 
@@ -29,6 +30,7 @@ READ = re.compile(r"\b(\w+)\.(getCount|getItem|copy|isEmpty|is|has|get)\(")
 LOCAL_STACK = re.compile(r"ItemStack\s+(\w+)\s*=")
 COMPONENT = re.compile(r"\.has\(\s*DataComponents\.(\w+)\s*\)")
 CONSTANT_OK = re.compile(r'ActionOutcome\.ok\("([a-z\-]+)",\s*"([^"]*)"\)')
+TICK_WAIT = re.compile(r"waitFor\(\s*\w+\s*->\s*\w+\.?\w*\(?[^;]*%\s*\d+")
 STALE_FIELD = re.compile(r"private\s+(?!static)(?!final)[\w<>,. ]+\s+(active|activeTarget|workTarget|"
                          r"planOrigin|\w*Cache|cached\w*)\s*[;=]")
 
@@ -86,8 +88,16 @@ def family_d():
                 add("D", path, i, line)
 
 
+def family_e():
+    """A wait that waits nothing: a tick-modulo predicate matches the first tick and returns at once."""
+    for path in GAMETEST.rglob("*.java"):
+        for i, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
+            if TICK_WAIT.search(line):
+                add("E", path, i, "tick-modulo predicate inside waitFor waits nothing: " + line)
+
+
 def main():
-    for family in (family_a, family_b, family_c, family_d):
+    for family in (family_a, family_b, family_c, family_d, family_e):
         family()
     if not findings:
         print("no findings in any family")

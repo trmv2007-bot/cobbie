@@ -220,7 +220,7 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                 } catch (Throwable ignored) {
                     // no plan: scored below as "no plan"
                 }
-                server.waitFor(s -> s.getTickCount() % 10 == 0, 40);
+                CobbieTestSupport.elapsed(server, 40);
                 // The plan THIS ask created, never "the last plan": a failed plan makes the brain ask the
                 // model to comment, and that follow-up plan replaces the running one — so scoring by last
                 // plan let the same code read 11/14 and then 6/14 within ten minutes.
