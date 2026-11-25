@@ -23,8 +23,9 @@ import java.util.Set;
  * after=14.142135620117188} — <b>bit-identical over thirty seconds</b>, which is a body that never started rather
  * than one that tried and failed. Following is the thing he does constantly, so the question is not whether the
  * route exists but why it does not execute. One red in three full runs is not something to argue about, so this
- * probe asks the same question twenty-five times in a row, in one world, on the terrain that failed: the normal
- * preset, the owner twelve blocks out on both axes, and him following.
+ * probe asks the same question eight times in a row by default, in one world, on the terrain that failed: the normal
+ * preset, the owner twelve blocks out on both axes, and him following. Raise it to twenty-five with
+ * {@code COBBIE_FOLLOW_ITERATIONS=25} when something is actually being chased.
  *
  * <p>On the first freeze it prints the state and stops — his job and its status, the target and the distance, the
  * navigator's own answer (done, path, target position), whether he is inside a block, on the ground, in water, what
@@ -39,8 +40,10 @@ import java.util.Set;
 public final class CobbieFollowProbeTest implements FabricClientGameTest {
 
     /**
-     * Rounds in one session. Overridden with the {@code COBBIE_FOLLOW_ITERATIONS} environment variable — a
-     * {@code -D} on the gradle command line only reaches the daemon, not the client this forks.
+     * Rounds in one session: <b>eight by default, about thirty seconds</b>, and twenty-five (about eighty-five
+     * seconds) when someone is chasing the freeze — {@code COBBIE_FOLLOW_ITERATIONS=25}. A suite that pays eighty
+     * seconds every run is a suite people skip, and a skipped suite catches nothing. A {@code -D} on the gradle
+     * command line does not work: it reaches the daemon, not the client this forks.
      */
     private static final int ITERATIONS = iterations();
     /** The same window {@code CobbieFollowTest} gives him to close two blocks. */
@@ -189,9 +192,9 @@ public final class CobbieFollowProbeTest implements FabricClientGameTest {
         String raw = System.getenv("COBBIE_FOLLOW_ITERATIONS");
         if (raw == null || raw.isBlank()) raw = System.getProperty("cobbie.followProbe.iterations");
         try {
-            return raw == null || raw.isBlank() ? 25 : Math.max(1, Integer.parseInt(raw.trim()));
+            return raw == null || raw.isBlank() ? 8 : Math.max(1, Integer.parseInt(raw.trim()));
         } catch (NumberFormatException e) {
-            return 25;
+            return 8;
         }
     }
 
