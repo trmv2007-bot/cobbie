@@ -188,6 +188,17 @@ final class CobbieTestSupport {
         }
     }
 
+    /**
+     * Let this many ticks elapse. A predicate like {@code tick % 20 == 0} matches on the <b>first</b>
+     * tick divisible by twenty, so it waits nothing — two negatives in this suite passed in a second
+     * while claiming twenty and forty-five. Time is measured, not requested.
+     */
+    static int elapsed(TestServerContext server, int ticks) {
+        int start = server.computeOnServer(MinecraftServer::getTickCount);
+        server.waitFor(s -> s.getTickCount() - start >= ticks, ticks + 200);
+        return server.computeOnServer(MinecraftServer::getTickCount) - start;
+    }
+
     /** Teleport the owner properly: a server-side snap is undone by the client's next position packet. */
     static void teleportOwner(TestServerContext server, double dx, double dy, double dz) {
         server.computeOnServer(s -> {

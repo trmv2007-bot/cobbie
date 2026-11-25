@@ -36,6 +36,39 @@ public final class CobbieInitiativeTest implements FabricClientGameTest {
             CobbieTestSupport.permit(server, "mining", true);
             CobbieTestSupport.permit(server, "collect", true);
 
+            // --- 0. Nothing is announced that cannot start. ---
+            // Stone needs a pickaxe for its drop and he has none, so the only thing in sight is work
+            // he could not begin. The tick has to fire and decline; phase 2 proves in the same run
+            // that it does fire, which is what keeps this from passing on a gate that never woke.
+            server.computeOnServer(s -> {
+                CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
+                BlockPos base = cobbie.blockPosition();
+                for (int i = 0; i < 3; i++) {
+                    CobbieTestSupport.command(s, "setblock " + (base.getX() + 1 + i) + " " + base.getY() + " "
+                            + (base.getZ() + 2) + " minecraft:stone");
+                }
+                return null;
+            });
+            CobbieTestSupport.command(server, "cobbie autonomy creative");
+            int stoneBefore = server.computeOnServer(CobbieInitiativeTest::planCount);
+            int stoneTicks = CobbieTestSupport.elapsed(server, 900);
+            int stoneAfter = server.computeOnServer(CobbieInitiativeTest::planCount);
+            if (stoneAfter != stoneBefore) {
+                throw new AssertionError("He announced a project on blocks he cannot take without a"
+                        + " pickaxe, which is a promise made before the check: " + lastReport(server));
+            }
+            System.out.println("[gametest] initiative: announced nothing with only un-mineable stone"
+                    + " in sight over " + stoneTicks + " ticks, though the gate was running");
+            server.computeOnServer(s -> {
+                CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
+                BlockPos base = cobbie.blockPosition();
+                for (int i = 0; i < 3; i++) {
+                    CobbieTestSupport.command(s, "setblock " + (base.getX() + 1 + i) + " " + base.getY() + " "
+                            + (base.getZ() + 2) + " minecraft:air");
+                }
+                return null;
+            });
+
             // Something worth doing: a pile of logs beside him, and rubble at his feet level.
             server.computeOnServer(s -> {
                 CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
@@ -50,7 +83,7 @@ public final class CobbieInitiativeTest implements FabricClientGameTest {
             // --- 1. ASSISTIVE starts nothing. ---
             CobbieTestSupport.command(server, "cobbie autonomy assistive");
             int plansBefore = server.computeOnServer(CobbieInitiativeTest::planCount);
-            server.waitFor(s -> s.getTickCount() % 20 == 0, 400);
+            int assistiveTicks = CobbieTestSupport.elapsed(server, 400);
             int plansAfter = server.computeOnServer(CobbieInitiativeTest::planCount);
             if (plansAfter != plansBefore) {
                 throw new AssertionError("He started " + (plansAfter - plansBefore) + " project(s) in"
@@ -84,7 +117,8 @@ public final class CobbieInitiativeTest implements FabricClientGameTest {
                         + lastReport(server));
             }
 
-            System.out.println("[gametest] initiative ok: started no project in ASSISTIVE over 20s, then"
+            System.out.println("[gametest] initiative ok: started no project in ASSISTIVE over "
+                    + assistiveTicks + " ticks, then"
                     + " started \"" + request + "\" unprompted in CREATIVE and it reached " + status
                     + " — " + lastReport(server));
         }

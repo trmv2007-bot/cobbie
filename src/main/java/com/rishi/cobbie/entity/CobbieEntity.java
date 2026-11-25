@@ -1742,11 +1742,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		// What he needs a tool for is the drop, not the break: a log comes off with bare hands in
 		// survival and anything comes off in creative, while stone yields nothing without a pickaxe.
+		String refusal = toolRefusal(state, id, hardness);
+		if (refusal != null) return ActionOutcome.fail("mine", refusal);
 		ItemStack tool = equipBestToolFor(id);
-		boolean slowByHand = hardness > 1.5f && !CobbieConfig.isCreative();
-		if (tool.isEmpty() && (state.requiresCorrectToolForDrops() || slowByHand)) {
-			return ActionOutcome.fail("mine", "I need a proper tool for " + id + " and have none");
-		}
 
 		// Loot comes from the game with the tool actually in hand. Never fabricated.
 		List<ItemStack> drops = Block.getDrops(state, serverLevel, pos, null, this, tool);
@@ -4218,7 +4216,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 * Pick the best tool for the block kind and raise it into the hand — moving the real stack, so
 	 * there is never a second copy of it.
 	 */
-	private ItemStack equipBestToolFor(String blockId) {
+	/**
+	 * The tool he could raise for this block, without raising it — so that a promise about a block and
+	 * the attempt at it are judged by one rule instead of two that can drift apart.
+	 */
+	private ItemStack bestToolFor(String blockId) {
 		ItemStack held = this.getMainHandItem();
 		if (isTool(held) && scores(held, blockId) > 0 && !isBroken(held)) {
 			return held; // already holding something usable
@@ -4233,6 +4235,40 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				bestScore = score;
 				best = stack;
 			}
+		}
+		return best;
+	}
+
+	/** What stops his hands taking this block at all, or null when they can: the drop, not the break. */
+	private String toolRefusal(BlockState state, String id, float hardness) {
+		boolean slowByHand = hardness > 1.5f && !CobbieConfig.isCreative();
+		return bestToolFor(id).isEmpty() && (state.requiresCorrectToolForDrops() || slowByHand)
+				? "I need a proper tool for " + id + " and have none"
+				: null;
+	}
+
+	/**
+	 * Whether he could actually start on this block, judged by the rules the step itself will apply:
+	 * the drop gate, somewhere to stand, and room for what comes out. An announced project that cannot
+	 * take its first step is a promise made before the check.
+	 */
+	public boolean canStartMining(BlockPos pos) {
+		if (!(level() instanceof ServerLevel serverLevel) || !serverLevel.isLoaded(pos)) return false;
+		BlockState state = serverLevel.getBlockState(pos);
+		if (state.isAir() || PROTECTED.contains(state.getBlock())) return false;
+		float hardness = state.getDestroySpeed(serverLevel, pos);
+		if (hardness < 0) return false;
+		String id = blockId(state);
+		if (toolRefusal(state, id, hardness) != null) return false;
+		if (standingSpotNear(pos) == null) return false;
+		return fitsInInventory(Block.getDrops(state, serverLevel, pos, null, this, bestToolFor(id)));
+	}
+
+	private ItemStack equipBestToolFor(String blockId) {
+		ItemStack held = this.getMainHandItem();
+		ItemStack best = bestToolFor(blockId);
+		if (best == held) {
+			return held; // already holding something usable
 		}
 		if (best.isEmpty()) {
 			if (isTool(held)) this.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
