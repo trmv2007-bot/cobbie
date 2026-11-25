@@ -191,7 +191,9 @@ public final class Narrator {
 			if (step.status() == TaskStep.Status.FAILED) failed++;
 		}
 		return switch (plan.status()) {
-			case COMPLETED -> done <= 1 ? "all done" : "all done — " + done + " things sorted";
+			case COMPLETED -> plan.alreadyDoneCount() >= done && done > 0
+					? "nothing left to do — the world had already done that"
+					: done <= 1 ? "all done" : "all done — " + done + " things sorted";
 			case CANCELLED -> "stopped, like you asked";
 			case EXPIRED -> "gave up on that one, it was taking too long";
 			case FAILED -> failed == 0

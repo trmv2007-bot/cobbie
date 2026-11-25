@@ -28,6 +28,12 @@ public final class TaskPlan {
 
 	private Status status = Status.PLANNED;
 	private String failureReason = "";
+	/**
+	 * How many of the finished steps needed no work because the world already held the answer when the
+	 * plan started. A plan made only of those completed with nothing done, and saying "all done" about it
+	 * would be a claim about work nobody did.
+	 */
+	private int alreadyDone = 0;
 	private int totalRetries = 0;
 	private final StringBuilder log = new StringBuilder();
 
@@ -124,6 +130,17 @@ public final class TaskPlan {
 			if (s.status() == TaskStep.Status.FAILED) n++;
 		}
 		return n;
+	}
+
+	/** How many finished steps were already true in the world when the plan started. */
+	public int alreadyDoneCount() {
+		return alreadyDone;
+	}
+
+	/** Record a step that needed no work: the world already held the answer when the plan started. */
+	void recordAlreadyDone(String action) {
+		alreadyDone++;
+		note(action + " skipped: already done — nothing left to do");
 	}
 
 	void setStatus(Status next) {

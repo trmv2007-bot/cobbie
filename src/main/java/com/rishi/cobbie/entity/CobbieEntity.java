@@ -109,6 +109,15 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	/** Said once, plainly, when a world change ends a plan that was running. */
 	static final String WORLD_CHANGED = "we changed worlds, so I stopped what I was doing";
 
+	/**
+	 * Said once when he wakes into a save that had a project in flight. A project cannot survive a
+	 * reload — the plan, its steps and where it had got to live in memory — so the only honest thing he
+	 * can do is say he lost it and ask again. Silence here was the defect: the owner came back to a
+	 * companion standing still with no word about the work that had been running.
+	 */
+	public static final String WAKE_LINE =
+			"I lost track of what I was doing before the world reloaded — ask me again";
+
 	private static final int WAVE_TICKS = 40;
 	private static final int STEP_DEADLINE_TICKS = 1200;  // 60s per step, then it is abandoned
 	private static final double ARRIVE_RADIUS = 1.5;      // "I have walked there", not "I can touch it"
@@ -234,6 +243,17 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private String lastActionResult = "nothing yet";
 	/** The last thing he said out loud, so a test can check the words and not just the effect. */
 	private String lastSpokenLine = "";
+	/**
+	 * The request of the project that was in flight, saved with him so a reload can own up to it, and
+	 * cleared the moment that project settles. Blank means nothing was running: a reload then has nothing
+	 * to lose and he must stay quiet.
+	 */
+	private String interruptedPlan = "";
+	/**
+	 * Set from that saved marker on load: one line is owed to the owner, said on the first tick (or the
+	 * first tick they are there to hear it), and never said again.
+	 */
+	private boolean wakeLinePending = false;
 	/** His voice: one short line per step, at most one every chat cooldown. */
 	private final Narrator narrator = new Narrator();
 	private int lastObservationTick;
@@ -549,6 +569,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (refusal == null) {
 			initiativePlan = true;
 			planOrigin = this.blockPosition().immutable();
+			interruptedPlan = project.request();
 		}
 		return refusal;
 	}
@@ -590,7 +611,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private String offerPlan(String request, List<ActionIntent> intents, boolean urgent) {
 		if (this.isRemoved()) return "I am not around any more";
 		String refusal = tasks.start(request, intents, urgent);
-		if (refusal == null) planOrigin = this.blockPosition().immutable();
+		if (refusal == null) {
+			planOrigin = this.blockPosition().immutable();
+			// Saved with him: a reload while this plan is in flight is exactly what he must own up to.
+			interruptedPlan = request;
+		}
 		return refusal;
 	}
 
@@ -758,6 +783,70 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return tasks.cancel(reason);
 	}
 
+	/** The project request saved as in flight, for whoever has to check the marker: blank when idle. */
+	public String interruptedPlanRequest() {
+		return interruptedPlan;
+	}
+
+	/**
+	 * One line for the owner, in his own voice, recorded as the last thing he said.
+	 *
+	 * <p>Everything he says to the owner goes through the same prefix — the companion's own name — so the
+	 * chat line and the nameplate cannot disagree. Returns whether it actually reached them, because a
+	 * line owed to an owner who is still joining is a line not yet said.
+	 */
+	public boolean sayToOwner(String text) {
+		if (text == null || text.isBlank()) return false;
+		net.minecraft.server.level.ServerPlayer owner = ownerAnywhere();
+		if (owner == null) return false;
+		owner.sendSystemMessage(com.rishi.cobbie.brain.CobbieBrain.cobbieSays(this, text));
+		lastSpokenLine = text;
+		return true;
+	}
+
+	/**
+	 * The wake-up line: a save that came back with a project in flight lost that project, and saying what
+	 * was lost is the difference between a companion who forgot and one who vanished without a word.
+	 *
+	 * <p>Said exactly once, on the first tick he can be heard — never in the read method, which runs
+	 * before he is in a world, and never again on a later login: the marker is cleared as soon as it is
+	 * spoken, so a save taken afterwards carries nothing to say. A reload with nothing in flight leaves
+	 * the marker blank and he says nothing at all, which is the half of this that matters most.
+	 */
+	private void wakeTick() {
+		if (!wakeLinePending) return;
+		if (!sayToOwner(WAKE_LINE)) return;
+		wakeLinePending = false;
+		interruptedPlan = "";
+		Cobbie.LOGGER.info("Cobbie woke into a save with a project in flight and said so");
+	}
+
+	/**
+	 * Is this objective already true in the world? Asked by the planner when a plan starts, so a project
+	 * that went stale while it queued is reported as finished instead of being walked into.
+	 *
+	 * <p>Deliberately narrow — the three verbs whose goal is a world state that can be read back. A step
+	 * that needs an item moved, a mob killed or a menu opened is never "already done" here, because
+	 * nothing in the world says so.
+	 */
+	@Override
+	public boolean alreadySatisfied(ActionIntent intent) {
+		if (intent == null || level() == null) return false;
+		BlockPos pos = new BlockPos(intent.x(), intent.y(), intent.z());
+		if (!level().isLoaded(pos)) return false;
+		return switch (intent.action()) {
+			// The thing he was sent to remove is gone: the goal holds, and there is nothing to swing at.
+			case ActionVocabulary.MINE -> level().getBlockState(pos).isAir();
+			// What he was sent to build is already standing there.
+			case ActionVocabulary.PLACE -> {
+				BlockState wanted = resolveState(intent.target(), pos);
+				yield wanted != null && level().getBlockState(pos).is(wanted.getBlock());
+			}
+			case ActionVocabulary.WALK_TO -> this.blockPosition().closerThan(pos, 1.5);
+			default -> false;
+		};
+	}
+
 	/**
 	 * A plan is a list of coordinates in one world. When a portal or a teleport changes the world
 	 * under him, those coordinates are a place he can no longer reach, and the step fails with "that
@@ -857,6 +946,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		super.tick();
 		if (level() == null || level().isClientSide()) return;
 
+		wakeTick();
+
 		if (waveTicksLeft > 0 && --waveTicksLeft == 0) {
 			this.entityData.set(DATA_WAVING, false);
 		}
@@ -886,6 +977,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			com.rishi.cobbie.presence.ActionTiming.settled(System.currentTimeMillis(),
 					settledPlan == null ? 0 : settledPlan.steps().size());
 			com.rishi.cobbie.brain.CobbieBrain.reportPlanSettled(this, settledPlan);
+		}
+
+		// The marker is about work in flight. Once nothing is running and nothing is waiting behind it,
+		// a reload would lose nothing, so a later save must not manufacture a line out of a stale fact.
+		if (!interruptedPlan.isEmpty() && !tasks.hasActiveTask() && tasks.queuedCount() == 0) {
+			interruptedPlan = "";
 		}
 
 		flushNarration();
@@ -5142,6 +5239,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		out.putString("CobbieName", companionName());
 		out.putInt("CobbieXpLevel", experienceLevel);
 		out.putFloat("CobbieXpProgress", experienceProgress);
+		// Written blank when nothing is in flight, so a marker can never outlive the project it names.
+		out.putString("CobbieInterrupted", interruptedPlan);
 		if (ownerUuid != null) {
 			out.putLong("CobbieOwnerMost", ownerUuid.getMostSignificantBits());
 			out.putLong("CobbieOwnerLeast", ownerUuid.getLeastSignificantBits());
@@ -5170,6 +5269,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		// A level he earned is his: death does not take it back, unlike a player's.
 		experienceLevel = Math.max(0, in.getIntOr("CobbieXpLevel", 0));
 		experienceProgress = Math.max(0.0f, in.getFloatOr("CobbieXpProgress", 0.0f));
+
+		// A project does not survive a reload: its plan, its steps and where it had got to were memory.
+		// The marker says one was running, so he owes the owner a line about it — spoken on a tick, not
+		// here, because this runs before he is in a world and before anyone is there to hear it.
+		interruptedPlan = in.getStringOr("CobbieInterrupted", "");
+		wakeLinePending = !interruptedPlan.isBlank();
 
 		Optional<Long> most = in.getLong("CobbieOwnerMost");
 		Optional<Long> least = in.getLong("CobbieOwnerLeast");
