@@ -26,6 +26,10 @@ import java.util.Map;
  * project cannot cost anything per block and cannot be invented out of nothing. The owner's instruction
  * remains the only source of arbitrary plans.
  *
+ * <p>Three kinds. <b>Gather</b> and <b>flatten</b> are blocks he noticed worth taking; the third,
+ * <b>a cairn</b>, is the one whose shape he decides — three blocks stacked on flat ground out of what he
+ * is carrying, so "what he builds" is his choice and not only "which block".
+ *
  * <p><b>Announced only when it can start.</b> A candidate that fails the same gate its own step
  * applies — no tool for the drop, nowhere to stand, no room for what comes out — is not counted, so a
  * project that could not take its first step is never promised out loud.
@@ -41,6 +45,10 @@ public record Initiative() {
     private static final int RADIUS = 6;
     private static final int MAX_STEPS = 3;
     private static final int MIN_BLOCKS = 3;
+
+    /** What he is willing to stack a cairn out of, in the order he would rather use it. */
+    private static final List<String> CAIRN_MATERIALS = List.of(
+            "minecraft:cobblestone", "minecraft:stone", "minecraft:oak_planks", "minecraft:dirt");
 
     /** What he has decided to do, and the sentence he says once about it. */
     public record Project(String request, String line, List<ActionIntent> steps) {}
@@ -78,7 +86,9 @@ public record Initiative() {
         }
 
         // Gather first: a pile of a useful block is the clearer project of the two.
-        for (Map.Entry<String, List<BlockPos>> entry : gatherable.entrySet()) {
+        for (Map.Entry<String, List<BlockPos>> entry : gatherable.isEmpty() || !permits(ActionVocabulary.MINE)
+                ? java.util.Collections.<Map.Entry<String, List<BlockPos>>>emptyList()
+                : gatherable.entrySet()) {
             if (entry.getValue().size() < MIN_BLOCKS) continue;
             List<BlockPos> take = entry.getValue().subList(0, Math.min(MAX_STEPS, entry.getValue().size()));
             return new Project("gathering the " + entry.getKey().toLowerCase(java.util.Locale.ROOT) + " nearby",
@@ -86,12 +96,80 @@ public record Initiative() {
                             + " while we're standing here.",
                     mines(take));
         }
-        if (rubble.size() >= MIN_BLOCKS) {
+        Project build = cairn(cobbie, level, feet);
+        if (build != null) return build;
+        if (rubble.size() >= MIN_BLOCKS && permits(ActionVocabulary.MINE)) {
             return new Project("clearing the rubble around me",
                     "I'm going to clear this bit of rubble so the ground's tidy.",
                     mines(rubble.subList(0, Math.min(MAX_STEPS, rubble.size()))));
         }
         return null;
+    }
+
+    /**
+     * Something he <b>decides the shape of</b>, rather than a block he noticed: a cairn, three blocks
+     * stacked on flat ground out of material he is carrying. It is the first project whose content is a
+     * decision, and it stays small enough to be honest about — a marker he can build in three steps,
+     * not a structure he would have to survey a site for.
+     */
+    private static Project cairn(CobbieEntity cobbie, net.minecraft.server.level.ServerLevel level, BlockPos feet) {
+        if (!permits(ActionVocabulary.PLACE)) return null;
+        for (String material : CAIRN_MATERIALS) {
+            if (cobbie.countOf(material) < MIN_BLOCKS) continue;
+            // Every site gets a full try: one blocked spot — his own feet, the owner standing there —
+            // must not cost him the project when the next spot over is clear.
+            for (BlockPos site : flatSitesNear(level, feet)) {
+                List<ActionIntent> steps = new ArrayList<>();
+                for (int i = 0; i < MAX_STEPS && cobbie.countOf(material) > steps.size(); i++) {
+                    BlockPos pos = site.above(i);
+                    // The base needs real ground under it; each block above stands on the one his own
+                    // plan has already promised to place.
+                    boolean buildable = i == 0 ? cobbie.canPlace(material, pos) : cobbie.canPlaceOnOwn(material, pos);
+                    if (!buildable) break;
+                    steps.add(new ActionIntent(ActionVocabulary.PLACE, material,
+                            pos.getX(), pos.getY(), pos.getZ(), ""));
+                }
+                if (steps.size() < MIN_BLOCKS) continue;
+                String name = material.substring(material.indexOf(':') + 1).replace('_', ' ');
+                return new Project("building a cairn of " + name + " here",
+                        "I'm going to stack a little cairn of " + name + " so this spot's marked.",
+                        steps);
+            }
+        }
+        return null;
+    }
+
+    /** Flat ground within reach that nothing occupies and nobody he can see is standing on. */
+    private static List<BlockPos> flatSitesNear(net.minecraft.server.level.ServerLevel level, BlockPos feet) {
+        List<BlockPos> sites = new ArrayList<>();
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dz = -2; dz <= 2; dz++) {
+                if (dx == 0 && dz == 0) continue;
+                BlockPos site = feet.offset(dx, 0, dz);
+                if (!level.isLoaded(site)) continue;
+                if (level.getBlockState(site.below()).isAir()) continue;
+                if (!level.getBlockState(site).canBeReplaced()) continue;
+                if (crowded(level, site)) continue;
+                sites.add(site);
+            }
+        }
+        return sites;
+    }
+
+    /** Somebody standing on the spot, in any of the three blocks he would fill. */
+    private static boolean crowded(net.minecraft.server.level.ServerLevel level, BlockPos site) {
+        for (int i = 0; i < MAX_STEPS; i++) {
+            BlockPos pos = site.above(i);
+            if (!level.getEntitiesOfClass(net.minecraft.world.entity.LivingEntity.class,
+                    new net.minecraft.world.phys.AABB(pos), e -> e.isAlive()).isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean permits(String verb) {
+        return com.rishi.cobbie.config.CobbieConfig.permits(verb);
     }
 
     private static List<ActionIntent> mines(List<BlockPos> positions) {

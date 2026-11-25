@@ -3893,6 +3893,15 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 * loaded chunk, reach, replacement rules, support, collision, materials.
 	 */
 	private String placementRefusal(String blockName, BlockPos pos) {
+		return placementRefusal(blockName, pos, false);
+	}
+
+	/**
+	 * @param supportComing the support for this block is one his own plan will place first, so the
+	 *     question "is there something underneath" is answered by a step he has already committed to
+	 *     rather than by the world as it stands
+	 */
+	private String placementRefusal(String blockName, BlockPos pos, boolean supportComing) {
 		if (blockName == null || blockName.isBlank()) return "no block name given";
 		BlockState wanted = resolveState(blockName, pos);
 		if (wanted == null) return "I do not know a block called " + blockName;
@@ -3910,7 +3919,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (!existing.isAir() && !existing.canBeReplaced()) {
 			return describe(pos) + " is occupied by " + blockId(existing);
 		}
-		if (!NO_SUPPORT_NEEDED.contains(wanted.getBlock())) {
+		if (!supportComing && !NO_SUPPORT_NEEDED.contains(wanted.getBlock())) {
 			BlockPos below = pos.below();
 			if (!level().isLoaded(below)) return "the ground under " + describe(pos) + " is not loaded";
 			if (level().getBlockState(below).isAir()) return "nothing to support a block at " + describe(pos);
@@ -3919,6 +3928,36 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				e -> e.isAlive() && e != this);
 		if (!occupants.isEmpty()) return "something is standing in " + describe(pos);
 		return null;
+	}
+
+	/**
+	 * Whether he could actually build here, judged by the rules {@link #placeBlock} applies plus the
+	 * material in his bag — so a project he announces is one he can start.
+	 */
+	public boolean canPlace(String blockName, BlockPos pos) {
+		return canPlace(blockName, pos, false);
+	}
+
+	/**
+	 * Whether he could build this as a later step of a plan of his own, where the block under it is one
+	 * the plan places first. Occupancy and bodies still count; support is his own promise, not the
+	 * world's.
+	 */
+	public boolean canPlaceOnOwn(String blockName, BlockPos pos) {
+		return canPlace(blockName, pos, true);
+	}
+
+	private boolean canPlace(String blockName, BlockPos pos, boolean supportComing) {
+		if (placementRefusal(blockName, pos, supportComing) != null) return false;
+		BlockState wanted = resolveState(blockName, pos);
+		return wanted != null
+				&& countItem(BuiltInRegistries.BLOCK.getKey(wanted.getBlock()).toString()) >= 1;
+	}
+
+	/** How many of a block's item he is carrying, for a project that plans to spend them. */
+	public int countOf(String blockName) {
+		Block block = resolveBlock(blockName);
+		return block == null ? 0 : countItem(BuiltInRegistries.BLOCK.getKey(block).toString());
 	}
 
 	/** Place one block. The material is consumed only AFTER the block is verified to be there. */
