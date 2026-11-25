@@ -42,11 +42,29 @@ public final class ActionParser {
 	 * @param actions  validated intents, in the order the model asked for them
 	 * @param problems what was rejected, empty when the reply was clean
 	 */
-	public record ActionPlan(String answer, List<ActionIntent> actions, List<String> problems) {
+	public record ActionPlan(String answer, List<ActionIntent> actions, List<String> problems,
+			Boolean doing) {
+
+		/** Plans built without a declaration: the caller decides from the words. */
+		public ActionPlan(String answer, List<ActionIntent> actions, List<String> problems) {
+			this(answer, actions, problems, null);
+		}
 
 		public ActionPlan {
 			actions = actions == null ? List.of() : List.copyOf(actions);
 			problems = problems == null ? List.of() : List.copyOf(problems);
+		}
+
+		/**
+		 * Whether the reply <em>declared</em> it was acting, or null when it did not say.
+		 *
+		 * <p>This is the contract that replaced a regex over the answer's wording: the model marks its
+		 * own reply, so "he promised and did nothing" becomes a contradiction the code can see rather
+		 * than a phrase it has to guess at. Null means an older or malformed reply, and the caller falls
+		 * back to reading the words.
+		 */
+		public Boolean declaredAction() {
+			return doing;
 		}
 
 		public boolean hasWorldAction() {
@@ -92,6 +110,11 @@ public final class ActionParser {
 		String answer = clean(root.has("answer") && root.get("answer").isJsonPrimitive()
 				? root.get("answer").getAsString()
 				: salvageAnswer(llmResponse));
+		Boolean doing = null;
+		if (root.has("doing") && root.get("doing").isJsonPrimitive()) {
+			var d = root.get("doing");
+			if (d.getAsJsonPrimitive().isBoolean()) doing = d.getAsBoolean();
+		}
 
 		List<ActionIntent> actions = new ArrayList<>();
 		List<String> problems = new ArrayList<>();
@@ -99,12 +122,12 @@ public final class ActionParser {
 		JsonElement actionsEl = root.get("actions");
 		if (actionsEl == null || actionsEl.isJsonNull()) {
 			actions.add(silentAnswer());
-			return new ActionPlan(answer, actions, problems);
+			return new ActionPlan(answer, actions, problems, doing);
 		}
 		if (!actionsEl.isJsonArray()) {
 			problems.add("\"actions\" must be an array");
 			actions.add(silentAnswer());
-			return new ActionPlan(answer, actions, problems);
+			return new ActionPlan(answer, actions, problems, doing);
 		}
 
 		JsonArray arr = actionsEl.getAsJsonArray();
@@ -128,7 +151,7 @@ public final class ActionParser {
 			actions.add(silentAnswer());
 			if (problems.isEmpty()) problems.add("no usable actions in reply");
 		}
-		return new ActionPlan(answer, actions, problems);
+		return new ActionPlan(answer, actions, problems, doing);
 	}
 
 	// ---- one action entry ----
