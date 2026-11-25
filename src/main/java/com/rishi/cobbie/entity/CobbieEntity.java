@@ -48,6 +48,7 @@ import net.minecraft.world.entity.ai.goal.FloatGoal;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
 import net.minecraft.world.entity.ai.navigation.GroundPathNavigation;
+import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.entity.ai.goal.MeleeAttackGoal;
 import net.minecraft.world.entity.ai.goal.OpenDoorGoal;
 import net.minecraft.world.Container;
@@ -383,6 +384,16 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		this.setPathfindingMalus(PathType.TRAPDOOR, 8.0f);
 	}
 
+	/**
+	 * His own navigation, so that a closed fence gate is a way through rather than a wall. Everything
+	 * else about how he walks — water, doors, one-block rises, targets below the surface — is the
+	 * ground navigator he had, unchanged.
+	 */
+	@Override
+	protected PathNavigation createNavigation(Level level) {
+		return new GateAwareNavigation(this, level);
+	}
+
 	public static AttributeSupplier.Builder createAttributes() {
 		return PathfinderMob.createMobAttributes()
 				.add(Attributes.MAX_HEALTH, 20.0)
@@ -409,6 +420,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		// Doors: a player opens them; so does he, and the navigator is told they are passable so it
 		// does not route a long way around a house to reach a bed inside it.
 		this.goalSelector.addGoal(3, new OpenDoorGoal(this, true));
+		// Gates: vanilla gives him no way to open one and its planner prices a closed gate as a fence,
+		// so a fenced lane was a wall. GateAwareNavigation makes the route and this opens the gate.
+		this.goalSelector.addGoal(3, new OpenFenceGateGoal(this, true));
 		this.goalSelector.addGoal(4, new LookAtPlayerGoal(this, Player.class, 8.0f));
 		this.goalSelector.addGoal(5, new RandomLookAroundGoal(this));
 		// Deliberately absent: FollowMobGoal (it would trail whoever was nearest, not the owner)
