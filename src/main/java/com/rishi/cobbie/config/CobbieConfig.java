@@ -467,7 +467,9 @@ public final class CobbieConfig {
 			case "repair", "dye", "enchant", "anvil", "smith", "grind", "weave", "map" -> craftingAllowed;
 			// Brewing is a station job like smelting: a stand in the world he puts things into.
 			case "brew" -> containersAllowed;
-			case "follow", "stay", "wave", "chat", "answer", "wait", "walk-to", "give", "drop", "equip", "lookup" -> true;
+			// Riding is how he comes along; it changes nothing he carries and nothing in the world.
+			case "board", "follow", "stay", "wave", "chat", "answer", "wait", "walk-to", "give", "drop",
+					"equip", "lookup" -> true;
 			default -> false;
 		};
 	}

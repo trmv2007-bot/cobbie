@@ -42,6 +42,7 @@ public final class ActionVocabulary {
 	public static final String DYE = "dye";
 	public static final String ENCHANT = "enchant";
 	public static final String ANVIL = "anvil";
+	public static final String BOARD = "board";
 	public static final String BREW = "brew";
 	public static final String SMITH = "smith";
 	public static final String GRIND = "grind";
@@ -54,7 +55,7 @@ public final class ActionVocabulary {
 	public static final String WAIT = "wait";
 
 	private static final Set<String> ALLOWED = new LinkedHashSet<>(List.of(
-			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE, REPAIR, DYE, ENCHANT, ANVIL, BREW, SMITH, GRIND, WEAVE, MAP, FARM, BREED, TRADE, LOOKUP, WAIT));
+			ANSWER, CHAT, FOLLOW, STAY, WAVE, WALK_TO, MINE, PLACE, ATTACK, COLLECT, EXPLORE, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE, REPAIR, DYE, ENCHANT, ANVIL, BOARD, BREW, SMITH, GRIND, WEAVE, MAP, FARM, BREED, TRADE, LOOKUP, WAIT));
 
 	/** Actions that are meaningless without an explicit target position. */
 	private static final Set<String> NEEDS_POSITION = Set.of(WALK_TO, MINE, PLACE, LIGHT, TAKE, PUT, SMELT);
@@ -112,6 +113,7 @@ public final class ActionVocabulary {
 			case "mend", "fix", "repair-item" -> REPAIR;
 			case "enchant-item", "enchanting", "imbue" -> ENCHANT;
 			case "apply-book", "anvil-use", "book-on" -> ANVIL;
+			case "ride", "get-in", "sit", "hop-in" -> BOARD;
 			case "brew-potion", "alchemy", "make-potion", "make-potions", "potions" -> BREW;
 			case "smithing", "upgrade", "netherite", "apply-template", "trim", "smithing-table" -> SMITH;
 			case "grindstone", "disenchant", "unenchant", "strip", "strip-enchantments" -> GRIND;
@@ -150,6 +152,7 @@ public final class ActionVocabulary {
 			else if (DYE.equals(verb)) sb.append(" (target = the colour; data = what to dye)");
 			else if (ENCHANT.equals(verb)) sb.append(" (target = what to enchant; data = low|mid|high)");
 			else if (ANVIL.equals(verb)) sb.append(" (target = the item; data = the enchanted book to apply)");
+			else if (BOARD.equals(verb)) sb.append(" (target = boat|minecart; sails only if you drive)");
 			else if (BREW.equals(verb)) sb.append(" (target = the ingredient to brew in, e.g. nether_wart)");
 			else if (SMITH.equals(verb)) sb.append(" (target = the item to upgrade, e.g. diamond_pickaxe)");
 			else if (GRIND.equals(verb)) sb.append(" (target = the enchanted thing to take the enchantments off)");

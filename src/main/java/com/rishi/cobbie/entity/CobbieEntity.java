@@ -34,6 +34,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.Container;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.SimpleContainer;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
@@ -1397,6 +1398,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (active != null) {
 			return ActionOutcome.fail(verb, "still busy with " + active.action());
 		}
+		// Anything else means he is done riding: a companion who cannot get out of a boat is stuck in
+		// the water for good.
+		if (this.isPassenger() && !ActionVocabulary.BOARD.equals(verb)) {
+			this.stopRiding();
+		}
 		if (!ActionVocabulary.ANSWER.equals(verb) && !ActionVocabulary.WAIT.equals(verb)) {
 			com.rishi.cobbie.presence.ActionTiming.firstStep(System.currentTimeMillis());
 		}
@@ -1435,6 +1441,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			case ActionVocabulary.DYE -> dyeFromBag(intent);
 			case ActionVocabulary.ENCHANT -> enchantFromBag(intent);
 			case ActionVocabulary.ANVIL -> anvilFromBag(intent);
+			case ActionVocabulary.BOARD -> boardCraft(intent);
 			case ActionVocabulary.BREW -> startBrew(intent);
 			case ActionVocabulary.SMITH -> smithFromBag(intent);
 			case ActionVocabulary.GRIND -> grindFromBag(intent);
@@ -2626,6 +2633,57 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		}
 		return ActionOutcome.ok("anvil", "put an enchantment on " + itemId(leftover) + " for "
 				+ used.levelsSpent() + " level(s)");
+	}
+
+	/**
+	 * Get into a boat or a minecart and ride it.
+	 *
+	 * <p>Riding, not driving. A fake player cannot even board one — `startRiding` refuses and the boat
+	 * ends with no passengers — so steering is impossible by construction rather than unimplemented, and
+	 * what a companion can honestly do is sit in the craft and come along.
+	 */
+	private ActionOutcome boardCraft(ActionIntent intent) {
+		if (this.isPassenger()) {
+			Entity riding = this.getVehicle();
+			return ActionOutcome.ok("board", "already in " + (riding == null ? "something" : riding.getName().getString()));
+		}
+		Entity craft = nearestCraft(intent.target());
+		if (craft == null) {
+			return ActionOutcome.fail("board", "there is no boat or minecart near me to get into");
+		}
+		if (!this.startRiding(craft, true, true)) {
+			return ActionOutcome.fail("board", "the " + craft.getName().getString() + " would not take me");
+		}
+		// Verified by the craft, not by the call: is he actually one of its passengers?
+		if (!craft.getPassengers().contains(this)) {
+			return ActionOutcome.fail("board", "I got in but the " + craft.getName().getString()
+					+ " is not carrying me");
+		}
+		return ActionOutcome.ok("board", "in the " + craft.getName().getString());
+	}
+
+	/** The nearest boat or minecart, honouring a hint of which kind he was asked for. */
+	private Entity nearestCraft(String hint) {
+		String wanted = hint == null ? "" : hint.trim().toLowerCase(Locale.ROOT);
+		boolean boatsOnly = wanted.contains("boat") || wanted.contains("raft");
+		boolean cartsOnly = wanted.contains("cart");
+		List<Entity> found = level().getEntitiesOfClass(Entity.class,
+				new AABB(this.blockPosition()).inflate(10.0),
+				e -> e.isAlive() && !e.isRemoved() && e.getPassengers().isEmpty()
+						&& (e instanceof net.minecraft.world.entity.vehicle.boat.AbstractBoat
+								|| e instanceof net.minecraft.world.entity.vehicle.minecart.AbstractMinecart)
+						&& (!boatsOnly || e instanceof net.minecraft.world.entity.vehicle.boat.AbstractBoat)
+						&& (!cartsOnly || e instanceof net.minecraft.world.entity.vehicle.minecart.AbstractMinecart));
+		Entity best = null;
+		double bestDist = Double.MAX_VALUE;
+		for (Entity candidate : found) {
+			double d = candidate.distanceToSqr(this);
+			if (d < bestDist) {
+				bestDist = d;
+				best = candidate;
+			}
+		}
+		return best;
 	}
 
 	private BlockPos findAnvil() {
