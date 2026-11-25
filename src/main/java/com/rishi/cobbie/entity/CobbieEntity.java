@@ -2013,6 +2013,69 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return new Pick(ItemStack.EMPTY, "I lost track of the " + description.trim());
 	}
 
+	/** Whether the game says every enchantment on this book applies to this item. */
+	private boolean bookFits(ItemStack book, ItemStack item) {
+		var stored = book.get(net.minecraft.core.component.DataComponents.STORED_ENCHANTMENTS);
+		if (stored == null || stored.isEmpty()) return false;
+		for (var entry : stored.entrySet()) {
+			if (!entry.getKey().value().canEnchant(item)) return false;
+		}
+		return true;
+	}
+
+	/** How much a book would add: a new enchantment beats a duplicate, then a higher level wins. */
+	private int bookScore(ItemStack book, ItemStack item) {
+		var stored = book.get(net.minecraft.core.component.DataComponents.STORED_ENCHANTMENTS);
+		if (stored == null || stored.isEmpty()) return 0;
+		var already = net.minecraft.world.item.enchantment.EnchantmentHelper.getEnchantmentsForCrafting(item);
+		int score = 0;
+		for (var entry : stored.entrySet()) {
+			boolean carried = already.getLevel(entry.getKey()) > 0;
+			score += entry.getIntValue() * 10 + (carried ? 0 : 1);
+		}
+		return score;
+	}
+
+	/** A book named the way a person names it: what it holds. */
+	private String bookLabel(ItemStack book) {
+		var stored = book.get(net.minecraft.core.component.DataComponents.STORED_ENCHANTMENTS);
+		if (stored == null || stored.isEmpty()) return itemId(book);
+		StringBuilder sb = new StringBuilder();
+		for (var entry : stored.entrySet()) {
+			if (sb.length() > 0) sb.append(" and ");
+			sb.append(entry.getKey().value().description().getString().toLowerCase(Locale.ROOT))
+					.append(' ').append(entry.getIntValue());
+		}
+		return sb.toString();
+	}
+
+	/** Every enchanted book he carries, named, for a refusal that tells him what he does have. */
+	private String bookList() {
+		StringBuilder sb = new StringBuilder();
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty() || !stack.is(Items.ENCHANTED_BOOK)) continue;
+			if (sb.length() > 0) sb.append(", ");
+			sb.append(bookLabel(stack));
+		}
+		return sb.length() == 0 ? "no enchanted books at all" : sb.toString();
+	}
+
+	/** The first stack he carries of this item that now carries an enchantment, or null. */
+	private ItemStack carriedWithEnchantments(String registryId) {
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty() || !itemId(stack).equals(registryId)) continue;
+			if (stack.get(net.minecraft.core.component.DataComponents.ENCHANTMENTS) != null) return stack;
+		}
+		ItemStack hand = this.getMainHandItem();
+		if (!hand.isEmpty() && itemId(hand).equals(registryId)
+				&& hand.get(net.minecraft.core.component.DataComponents.ENCHANTMENTS) != null) {
+			return hand;
+		}
+		return null;
+	}
+
 	/** The slot holding this exact stack, or -1. */
 	private int slotOfStack(ItemStack stack) {
 		for (int i = 0; i < inventory.getContainerSize(); i++) {
@@ -2860,15 +2923,51 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (!work.ok()) return ActionOutcome.fail("anvil", work.refusal());
 		int itemSlot = slotOfStack(work.stack());
 		if (itemSlot < 0) return ActionOutcome.fail("anvil", "I lost track of what to work on");
-		Pick bookPick = pick(intent.data(), stack -> stack.is(Items.ENCHANTED_BOOK)
-				&& stack.get(net.minecraft.core.component.DataComponents.STORED_ENCHANTMENTS) != null,
-				intent.data() == null || intent.data().isBlank() ? "I have no enchanted book"
-						: "I have no enchanted book like \"" + intent.data().trim() + "\"");
-		if (!bookPick.ok()) return ActionOutcome.fail("anvil", bookPick.refusal());
-		int bookSlot = slotOfStack(bookPick.stack());
-		if (bookSlot < 0) return ActionOutcome.fail("anvil", "I lost track of the book");
-
 		ItemStack item = inventory.getItem(itemSlot);
+		// The book is chosen by what the game says will go on this item — never "the first enchanted book in the
+		// bag", which is how the anvil came to refuse work it had just been handed.
+		List<Integer> fitting = new ArrayList<>();
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack candidate = inventory.getItem(i);
+			if (candidate.isEmpty() || !candidate.is(Items.ENCHANTED_BOOK)) continue;
+			if (candidate.get(net.minecraft.core.component.DataComponents.STORED_ENCHANTMENTS) == null) continue;
+			if (bookFits(candidate, item)) fitting.add(i);
+		}
+		if (fitting.isEmpty()) {
+			return ActionOutcome.fail("anvil", "none of my books will go on the "
+					+ item.getHoverName().getString().toLowerCase(Locale.ROOT) + " — I have " + bookList());
+		}
+		int bookSlot;
+		if (intent.data() != null && !intent.data().isBlank()) {
+			Pick named = pick(intent.data(), stack -> stack.is(Items.ENCHANTED_BOOK)
+					&& stack.get(net.minecraft.core.component.DataComponents.STORED_ENCHANTMENTS) != null,
+					"I have no enchanted book like \"" + intent.data().trim() + "\"");
+			if (!named.ok()) return ActionOutcome.fail("anvil", named.refusal());
+			bookSlot = slotOfStack(named.stack());
+			if (bookSlot < 0) return ActionOutcome.fail("anvil", "I lost track of the book");
+			if (!bookFits(inventory.getItem(bookSlot), item)) {
+				return ActionOutcome.fail("anvil", "\"" + bookLabel(inventory.getItem(bookSlot))
+						+ "\" will not go on the " + item.getHoverName().getString().toLowerCase(Locale.ROOT));
+			}
+		} else if (fitting.size() == 1) {
+			bookSlot = fitting.get(0);
+		} else {
+			// More than one would work: prefer a new enchantment over a duplicate, then the strongest. A real tie
+			// is the owner's choice, not something to guess.
+			fitting.sort((a, b) -> Integer.compare(bookScore(inventory.getItem(b), item),
+					bookScore(inventory.getItem(a), item)));
+			if (bookScore(inventory.getItem(fitting.get(0)), item)
+					== bookScore(inventory.getItem(fitting.get(1)), item)) {
+				StringBuilder which = new StringBuilder();
+				for (int slot : fitting) {
+					if (which.length() > 0) which.append(", ");
+					which.append(bookLabel(inventory.getItem(slot)));
+				}
+				return ActionOutcome.fail("anvil", "more than one of my books would go on the "
+						+ item.getHoverName().getString().toLowerCase(Locale.ROOT) + " — which one? " + which);
+			}
+			bookSlot = fitting.get(0);
+		}
 		ItemStack book = inventory.getItem(bookSlot);
 		com.rishi.cobbie.actor.FakeActor.AnvilOutcome used = com.rishi.cobbie.actor.FakeActor.applyBook(this,
 				serverLevel, anvil, item.copy(), book.copyWithCount(1), experienceLevel, experienceProgress);
@@ -2886,10 +2985,14 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			pile.setDefaultPickUpDelay();
 			level().addFreshEntity(pile);
 		}
-		if (used.remaining().get(net.minecraft.core.component.DataComponents.ENCHANTMENTS) == null) {
+		// Success is read off what he now carries, not off the actor's return value: the anvil's output is taken
+		// from the menu after it has been cleared, so "remaining" can be air on a run that worked perfectly.
+		// The same lesson as the item frame — the receipt is the world, never the interaction's answer.
+		ItemStack finished = carriedWithEnchantments(itemId(item));
+		if (finished == null) {
 			return ActionOutcome.fail("anvil", "the anvil returned nothing enchanted");
 		}
-		return ActionOutcome.ok("anvil", "put an enchantment on " + itemId(leftover) + " for "
+		return ActionOutcome.ok("anvil", "put an enchantment on " + itemId(finished) + " for "
 				+ used.levelsSpent() + " level(s)");
 	}
 
