@@ -60,7 +60,9 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
             new Ask("cobbie take the sharpness off this axe", "grind", null),
             new Ask("cobbie shear that sheep", "use", "minecraft:sheep"),
             new Ask("cobbie put a creeper pattern on my banner", "weave", null),
-            new Ask("cobbie zoom my map out with paper", "map", null));
+            new Ask("cobbie zoom my map out with paper", "map", null),
+            new Ask("cobbie harvest the wheat and replant it", "farm", null),
+            new Ask("cobbie till this dirt and plant some wheat", "use", null));
 
     @Override
     public void runTest(ClientGameTestContext context) {
@@ -105,6 +107,19 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                 cobbie.addItem(net.minecraft.world.item.MapItem.create(s.overworld(), at.getX(), at.getZ(),
                         (byte) 0, true, false));
                 cobbie.addItem(new ItemStack(Items.PAPER, 4));
+                // The farm asks: a hoe for tilling, seeds for sowing, and a plot with ripe wheat.
+                cobbie.addItem(new ItemStack(Items.IRON_HOE, 1));
+                cobbie.addItem(new ItemStack(Items.WHEAT_SEEDS, 8));
+                for (int i = 0; i < 3; i++) {
+                    BlockPos farm = new BlockPos(at.getX() + 1 + i, at.getY() - 1, at.getZ() + 1);
+                    CobbieTestSupport.command(s, "setblock " + farm.getX() + " " + farm.getY() + " " + farm.getZ()
+                            + " minecraft:farmland[moisture=7]");
+                    CobbieTestSupport.command(s, "setblock " + farm.getX() + " " + (farm.getY() + 1) + " "
+                            + farm.getZ() + " minecraft:wheat[age=7]");
+                }
+                BlockPos bare = new BlockPos(at.getX() + 1, at.getY() - 1, at.getZ() - 1);
+                CobbieTestSupport.command(s, "setblock " + bare.getX() + " " + bare.getY() + " " + bare.getZ()
+                        + " minecraft:dirt");
                 Sheep sheep = new Sheep(EntityTypes.SHEEP, s.overworld());
                 sheep.setPos(at.getX() + 2.5, at.getY() + 0.1, at.getZ());
                 // No AI: a wandering sheep leaves the 12-block perception range mid-run and the ask

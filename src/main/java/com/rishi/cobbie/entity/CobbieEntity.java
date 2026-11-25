@@ -145,6 +145,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private static final int STATION_STALL_TICKS = 400;
 	/** How far he will look for a furnace before giving up on making iron. */
 	private static final int FURNACE_SEARCH = 12;
+	/** How far round himself he will tend a farm. A plot is small; a field he walks. */
+	private static final int FARM_RADIUS = 4;
 	/** How far he will reach for a mob with an item. A player's reach is three blocks; he is taller. */
 	private static final double ENTITY_USE_REACH = 6.0;
 	/**
@@ -1369,6 +1371,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			case ActionVocabulary.GRIND -> grindFromBag(intent);
 			case ActionVocabulary.WEAVE -> weaveFromBag(intent);
 			case ActionVocabulary.MAP -> mapFromBag(intent);
+			case ActionVocabulary.FARM -> farmAround(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
@@ -3102,6 +3105,107 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			level().addFreshEntity(pile);
 		}
 		return ActionOutcome.ok("map", "worked the map with " + itemId(addition));
+	}
+
+	/**
+	 * Harvest every ripe crop near him and replant it, which is what a person wants when they say
+	 * "do the farm".
+	 *
+	 * <p>Tilling, sowing and bone meal already work through {@code use} — a hoe is a
+	 * {@code BLOCK_TRANSFORMER} component and seeds are a plain {@code BlockItem}, both reached through
+	 * {@code ItemStack.useOn}. A probe confirmed all three before this verb existed. What was missing is
+	 * the cycle: a ripe crop is broken, its drops are his, and the same cell is sown again from his bag.
+	 *
+	 * <p>What replants a crop is not guessed: the seed item is the one whose {@code BlockItem} places
+	 * this very block, which is the game's own link between wheat and wheat seeds. {@code
+	 * CropBlock.getBaseSeedId} is protected, so that link is the way to ask.
+	 *
+	 * <p>A refusal names the real reason — nothing ripe, or no seed to replant with — because "it did
+	 * not work" teaches nothing.
+	 */
+	private ActionOutcome farmAround(ActionIntent intent) {
+		if (!CobbieConfig.permits("farm")) {
+			return ActionOutcome.fail("farm", "my owner has not allowed building — /cobbie permit building on");
+		}
+		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("farm", "no server world");
+
+		String wanted = intent.target() == null || intent.target().isBlank() ? null : intent.target()
+				.trim().toLowerCase(Locale.ROOT).replace(' ', '_');
+
+		BlockPos base = this.blockPosition();
+		List<BlockPos> ripe = new ArrayList<>();
+		List<BlockPos> growing = new ArrayList<>();
+		for (BlockPos probe : BlockPos.betweenClosed(base.offset(-FARM_RADIUS, -2, -FARM_RADIUS),
+				base.offset(FARM_RADIUS, 2, FARM_RADIUS))) {
+			BlockState state = level().getBlockState(probe);
+			if (!(state.getBlock() instanceof net.minecraft.world.level.block.CropBlock crop)) continue;
+			String cropId = blockPath(crop);
+			if (wanted != null && !wanted.contains(cropId.replace("crop", "")) && !cropId.contains(wanted)) continue;
+			if (crop.isMaxAge(state)) ripe.add(probe.immutable());
+			else growing.add(probe.immutable());
+		}
+		if (ripe.isEmpty()) {
+			return ActionOutcome.fail("farm", growing.isEmpty()
+					? "there are no crops near me to harvest"
+					: "nothing is ripe yet — " + growing.size() + " crop(s) are still growing");
+		}
+
+		int harvested = 0;
+		int replanted = 0;
+		String what = null;
+		for (BlockPos pos : ripe) {
+			BlockState state = level().getBlockState(pos);
+			if (!(state.getBlock() instanceof net.minecraft.world.level.block.CropBlock crop)) continue;
+			what = blockPath(crop);
+			String seedId = replantItemFor(crop);
+			boolean replant = seedId != null && countItem(seedId) > 0;
+			// Drops, not a silent removal: what a crop gives is the game's business (and it varies with
+			// the tool), so it drops and he picks it up the way he collects anything else.
+			level().destroyBlock(pos, true, this);
+			harvested++;
+			if (replant && level().getBlockState(pos).isAir() && consumeItem(seedId, 1)) {
+				level().setBlock(pos, crop.getStateForAge(0), 3);
+				replanted++;
+			}
+		}
+		collectWithinReach();
+
+		if (harvested == 0) return ActionOutcome.fail("farm", "nothing came off the crops");
+		String name = what == null ? "crops" : what;
+		return ActionOutcome.ok("farm", "harvested " + harvested + " ripe " + name
+				+ (replanted == harvested ? " and replanted them all"
+						: replanted == 0 ? " and had no seed to replant with"
+								: " and replanted " + replanted));
+	}
+
+	/**
+	 * The item that sows this crop, or null when nothing does.
+	 *
+	 * <p>Found by the link the game keeps: a seed is a {@code BlockItem} that places this exact block.
+	 * Asking the registry beats a table, which would silently rot when a crop is added or renamed.
+	 */
+	/** A block's registry path, wherever the key type puts it. */
+	private static String blockPath(Block block) {
+		String id = String.valueOf(BuiltInRegistries.BLOCK.getKey(block));
+		int colon = id.indexOf(':');
+		return colon < 0 ? id : id.substring(colon + 1);
+	}
+
+	private static String replantItemFor(Block crop) {
+		String name = blockPath(crop);
+		for (String candidate : List.of(name + "_seeds", name)) {
+			Identifier id;
+			try {
+				id = Identifier.parse("minecraft:" + candidate);
+			} catch (Exception e) {
+				continue;
+			}
+			var item = BuiltInRegistries.ITEM.getOptional(id).orElse(null);
+			if (item instanceof net.minecraft.world.item.BlockItem blockItem && blockItem.getBlock() == crop) {
+				return id.toString();
+			}
+		}
+		return null;
 	}
 
 	/** The nearest block of a kind he already knows how to walk to, or null. */
