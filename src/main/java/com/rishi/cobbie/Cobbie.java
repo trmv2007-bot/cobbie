@@ -33,6 +33,10 @@ public class Cobbie implements ModInitializer {
 		net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry.clientboundPlay()
 				.register(com.rishi.cobbie.net.CobbiePanelPayload.TYPE,
 						com.rishi.cobbie.net.CobbiePanelPayload.CODEC);
+		// A line he said, for the listeners' own machines to speak. No audio crosses the wire.
+		net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry.clientboundPlay()
+				.register(com.rishi.cobbie.net.CobbieSpeechPayload.TYPE,
+						com.rishi.cobbie.net.CobbieSpeechPayload.CODEC);
 		SpawnCobbieCommand.register();
 		CobbieCommands.register();
 		try {

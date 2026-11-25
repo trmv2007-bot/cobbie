@@ -50,6 +50,12 @@ public class CobbieClient implements ClientModInitializer {
 					client.execute(() -> client.setScreenAndShow(new CobbiePanelScreen(payload)));
 				});
 
+		// He said something nearby: speak it here, on the machine with the speakers, if this player
+		// asked for a voice. The line is already on screen, so a failure here is a missing voice only.
+		net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.registerGlobalReceiver(
+				com.rishi.cobbie.net.CobbieSpeechPayload.TYPE, (payload, context) ->
+						context.client().execute(() -> voice().offer(payload.line())));
+
 		net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			while (OPEN_CONFIG.consumeClick()) {
 				client.setScreenAndShow(new CobbieConfigScreen(null));
@@ -57,5 +63,25 @@ public class CobbieClient implements ClientModInitializer {
 		});
 
 		Cobbie.LOGGER.info("Cobbie client renderer + config screen registered (◕‿◕)");
+	}
+
+	/**
+	 * The voice, built once from config. Off unless {@code voice_allowed} is on, and silent rather
+	 * than broken when this machine has no engine for the configured name.
+	 */
+	private static com.rishi.cobbie.voice.SpeechService voice;
+
+	private static synchronized com.rishi.cobbie.voice.SpeechService voice() {
+		if (voice == null) {
+			com.rishi.cobbie.voice.VoiceEngine engine =
+					"sapi".equals(com.rishi.cobbie.config.CobbieConfig.getVoiceEngine())
+							? new com.rishi.cobbie.voice.SapiVoiceEngine(
+									com.rishi.cobbie.config.CobbieConfig.getVoiceName())
+							: null;
+			voice = new com.rishi.cobbie.voice.SpeechService(
+					com.rishi.cobbie.config.CobbieConfig::isVoiceAllowed, engine, new ClipAudioSink(),
+					com.rishi.cobbie.config.CobbieConfig.getVoiceMaxMs());
+		}
+		return voice;
 	}
 }

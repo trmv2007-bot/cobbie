@@ -1728,6 +1728,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		for (Player p : level().getEntitiesOfClass(Player.class,
 				new AABB(this.blockPosition()).inflate(32.0))) {
 			p.sendSystemMessage(Component.literal("§e[Cobbie] §f" + text));
+			// The listeners' own machines speak it; a client with voice off ignores the payload.
+			if (p instanceof net.minecraft.server.level.ServerPlayer listener) {
+				net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(listener,
+						new com.rishi.cobbie.net.CobbieSpeechPayload(text));
+			}
 		}
 	}
 

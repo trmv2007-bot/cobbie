@@ -144,6 +144,16 @@ public final class CobbieConfig {
 	/** How long a burst of chat is collected before one model call is made. */
 	private static int chatBatchMs = 350;
 
+	// ---- Voice (spoken chat lines; this is a client setting — the listening machine speaks) ----
+	/** Off by default: a companion that talks out loud during a call, uninvited, is a nuisance. */
+	private static boolean voiceAllowed = false;
+	/** Which engine speaks. "sapi" is Windows' own voices; "none" turns synthesis off entirely. */
+	private static String voiceEngine = "sapi";
+	/** The SAPI voice's exact installed name. An unknown name falls back to the system default. */
+	private static String voiceName = "Microsoft Hazel Desktop";
+	/** A line that takes longer than this to synthesise is dropped rather than played late. */
+	private static int voiceMaxMs = 1500;
+
 	// ---- Memory ----
 	private static boolean memoryEnabled = true;
 	private static int maxChatHistory = 12;
@@ -245,6 +255,11 @@ public final class CobbieConfig {
 		chatMode = ChatMode.parse(str(root, "chat_mode", chatMode.name()), chatMode);
 		chatCooldownMs = integer(root, "chat_cooldown_ms", chatCooldownMs, 0, 10000);
 		chatBatchMs = integer(root, "chat_batch_ms", chatBatchMs, 0, 5000);
+
+		voiceAllowed = bool(root, "voice_allowed", voiceAllowed);
+		voiceEngine = str(root, "voice_engine", voiceEngine).trim().toLowerCase(Locale.ROOT);
+		voiceName = str(root, "voice_name", voiceName);
+		voiceMaxMs = integer(root, "voice_max_ms", voiceMaxMs, 100, 10000);
 		allowedPlayers.clear();
 		if (root.has("allowed_players") && root.get("allowed_players").isJsonArray()) {
 			for (var el : root.getAsJsonArray("allowed_players")) {
@@ -420,6 +435,18 @@ public final class CobbieConfig {
 		return chatBatchMs;
 	}
 
+	/** Whether his spoken lines are voiced at all. Off by default. */
+	public static boolean isVoiceAllowed() { ensureLoaded(); return voiceAllowed; }
+
+	/** Which engine speaks his lines: "sapi", or "none". */
+	public static String getVoiceEngine() { ensureLoaded(); return voiceEngine; }
+
+	/** The installed name of the voice, e.g. "Microsoft Hazel Desktop". */
+	public static String getVoiceName() { ensureLoaded(); return voiceName; }
+
+	/** How long a line may take to synthesise before it is dropped rather than played late. */
+	public static int getVoiceMaxMs() { ensureLoaded(); return voiceMaxMs; }
+
 	public static boolean isMemoryEnabled() { ensureLoaded(); return memoryEnabled; }
 	public static int getMaxChatHistory() { ensureLoaded(); return maxChatHistory; }
 	public static boolean isPersistentMemory() { ensureLoaded(); return persistentMemory; }
@@ -529,6 +556,11 @@ public final class CobbieConfig {
 			root.add("allowed_players", players);
 			root.addProperty("chat_cooldown_ms", chatCooldownMs);
 		root.addProperty("chat_batch_ms", chatBatchMs);
+
+			root.addProperty("voice_allowed", voiceAllowed);
+			root.addProperty("voice_engine", voiceEngine);
+			root.addProperty("voice_name", voiceName);
+			root.addProperty("voice_max_ms", voiceMaxMs);
 
 			root.addProperty("memory_enabled", memoryEnabled);
 			root.addProperty("max_chat_history", maxChatHistory);
