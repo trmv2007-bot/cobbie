@@ -93,6 +93,12 @@ public final class CobbieConfig {
 	// Hosted reasoners spend 100-250 tokens thinking before they answer. A 300-token budget was
 	// cutting the answer off and coming back empty; 800 leaves room for the thinking and the reply.
 	private static int maxTokens = 1200;
+	/**
+	 * Whether he may start a project of his own. Separate from the autonomy mode on purpose: "explore on
+	 * your own terms" and "start work while I am standing here" are different permissions, and the
+	 * second one is the one people want to switch off.
+	 */
+	private static boolean initiativeAllowed = true;
 	private static int connectTimeoutSeconds = 5;
 	// Fail fast enough that the never-silent fallback lands while the player is still looking: a
 	// hosted call that hangs for two minutes reads as a crashed companion. Slow local setups can
@@ -208,6 +214,7 @@ public final class CobbieConfig {
 		llmProvider = normProvider(str(root, "provider", llmProvider));
 		temperature = dbl(root, "temperature", temperature, 0.0, 2.0);
 		maxTokens = integer(root, "max_tokens", maxTokens, 32, 8192);
+		initiativeAllowed = bool(root, "initiative_allowed", initiativeAllowed);
 		connectTimeoutSeconds = integer(root, "connect_timeout", connectTimeoutSeconds, 1, 120);
 		readTimeoutSeconds = integer(root, "read_timeout", readTimeoutSeconds, 5, 600);
 		maxRetries = integer(root, "max_retries", maxRetries, 0, 8);
@@ -374,6 +381,8 @@ public final class CobbieConfig {
 
 	public static String getPersonality() { ensureLoaded(); return personality; }
 	public static AutonomyMode getAutonomyMode() { ensureLoaded(); return autonomyMode; }
+
+	public static boolean isInitiativeAllowed() { ensureLoaded(); return initiativeAllowed; }
 	public static int getPlanStepLimit() { ensureLoaded(); return planStepLimit; }
 	public static int getTaskRetryLimit() { ensureLoaded(); return taskRetryLimit; }
 	public static int getMaxConcurrentRequests() { ensureLoaded(); return maxConcurrentRequests; }
@@ -484,6 +493,7 @@ public final class CobbieConfig {
 			root.addProperty("api_key", persistedApiKey);
 			root.addProperty("temperature", temperature);
 			root.addProperty("max_tokens", maxTokens);
+			root.addProperty("initiative_allowed", initiativeAllowed);
 			root.addProperty("connect_timeout", connectTimeoutSeconds);
 			root.addProperty("read_timeout", readTimeoutSeconds);
 			root.addProperty("max_retries", maxRetries);
