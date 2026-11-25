@@ -12,6 +12,7 @@ import com.rishi.cobbie.station.Brewing;
 import com.rishi.cobbie.station.Containers;
 import com.rishi.cobbie.station.Smithing;
 import com.rishi.cobbie.net.CobbiePanelPayload;
+import com.rishi.cobbie.presence.FollowSight;
 import com.rishi.cobbie.presence.Narrator;
 import com.rishi.cobbie.presence.Sight;
 import com.rishi.cobbie.task.TaskPlan;
@@ -275,6 +276,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private int recallSampleTick;
 	/** Consecutive far re-paths the pathfinder refused; each one shortens the next step. */
 	private int followMisses;
+	/** What following does while the owner's chunk is not loaded: one line, a deadline, then idle. */
+	private final FollowSight followSight = new FollowSight();
 	/** True once he has told the owner he cannot find a portal, so he says it once, not every tick. */
 	private boolean portalNoticeShown;
 
@@ -839,9 +842,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 * Is this objective already true in the world? Asked by the planner when a plan starts, so a project
 	 * that went stale while it queued is reported as finished instead of being walked into.
 	 *
-	 * <p>Deliberately narrow — the three verbs whose goal is a world state that can be read back. A step
-	 * that needs an item moved, a mob killed or a menu opened is never "already done" here, because
-	 * nothing in the world says so.
+	 * <p><b>The rule: yes only where satisfaction is observable and specific</b> — the block that was to be
+	 * removed is gone; the block that was to be placed is standing there; the place he was to walk to is a
+	 * place a body fits. Everything else is <b>unknown</b>, which means the step runs and fails with its own
+	 * reason. A step that needs an item moved, a mob killed or a menu opened has no such predicate, so it is
+	 * never "already done" here: saying yes about work nothing in the world can confirm is a false
+	 * completion claim, and a wrong "no" only costs a walk.
 	 */
 	@Override
 	public boolean alreadySatisfied(ActionIntent intent) {
@@ -856,7 +862,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				BlockState wanted = resolveState(intent.target(), pos);
 				yield wanted != null && level().getBlockState(pos).is(wanted.getBlock());
 			}
-			case ActionVocabulary.WALK_TO -> this.blockPosition().closerThan(pos, 1.5);
+			// Being near a spot is not standing in it. A destination he could never occupy is not satisfied by
+			// distance — without the fit test this answered yes for a walk aimed at solid stone, which became
+			// "nothing left to do — the world had already done that" about a place he cannot stand.
+			case ActionVocabulary.WALK_TO -> BodySpace.fits(this::solidAt, pos.getX(), pos.getY(), pos.getZ())
+					&& this.blockPosition().closerThan(pos, 1.5);
 			default -> false;
 		};
 	}
@@ -1297,6 +1307,19 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			return;
 		}
 
+		// Out of sight is a state with an end, not a tick that returns early: one line the first time, a deadline,
+		// then he stops trying instead of asking the pathfinder for a chunk that is not there. See FollowSight.
+		switch (followSight.onTick(level().isLoaded(owner.blockPosition()), this.tickCount)) {
+			case SPEAK -> {
+				sayToOwner(FollowSight.UNSEEN_LINE);
+				return;
+			}
+			case WAITING, GAVE_UP -> {
+				return;
+			}
+			case VISIBLE -> { }
+		}
+
 		double follow = Math.max(1.0, CobbieConfig.getFollowDistance());
 		double distSq = this.distanceToSqr(owner);
 		if (distSq <= follow * follow) {
@@ -1310,7 +1333,6 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		if (this.tickCount - followRepathTick < FOLLOW_REPATH_INTERVAL) return;
 		followRepathTick = this.tickCount;
-		if (!level().isLoaded(owner.blockPosition())) return;
 
 		// You are above him: the pathfinder cannot plan up a ladder, so aim at the ladder itself and let
 		// the climb assist do the rest. Without this the follow loop keeps asking for the top of a wall
@@ -1346,6 +1368,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 */
 	private double followStepLength() {
 		return Math.max(6.0, FOLLOW_STEP / (1.0 + followMisses * 0.5));
+	}
+
+	/** The out-of-sight state, so a caller that has to report it can. */
+	public FollowSight.Step followSight() {
+		return followSight.last();
 	}
 
 	/**
