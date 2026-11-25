@@ -1375,6 +1375,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			case ActionVocabulary.MAP -> mapFromBag(intent);
 			case ActionVocabulary.FARM -> farmAround(intent);
 			case ActionVocabulary.BREED -> breedNearby(intent);
+			case ActionVocabulary.TRADE -> tradeWithVillager(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.COLLECT -> startCollect(intent);
@@ -3108,6 +3109,119 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			level().addFreshEntity(pile);
 		}
 		return ActionOutcome.ok("map", "worked the map with " + itemId(addition));
+	}
+
+	/**
+	 * Buy something from a villager, paying out of his own bag.
+	 *
+	 * <p>A probe settled the mechanism: {@code MerchantMenu} does build against the fake actor and fills
+	 * its result slot, and — more usefully — {@code Merchant.notifyTrade} runs with **no trading player
+	 * at all** (uses 0 → 1, +5 villager xp). So no menu is needed. The villager's own bookkeeping counts
+	 * the use, pays its xp and drives its restock; this only spends what the offer asks for and hands
+	 * over what it gives.
+	 *
+	 * <p>The owner's constraint, in code: nothing is spent until the price has been read off the offer
+	 * and counted against his bag, and a refusal says what it would have cost. A trade the villager will
+	 * not take is refused naming the half that failed — the price, the stock, or the item not being sold
+	 * at all — never retried.
+	 */
+	private ActionOutcome tradeWithVillager(ActionIntent intent) {
+		if (!CobbieConfig.permits("trade")) {
+			return ActionOutcome.fail("trade", "I am not allowed to use villagers — /cobbie permit containers on");
+		}
+		net.minecraft.world.item.trading.Merchant merchant = null;
+		for (net.minecraft.world.entity.Entity e : level().getEntitiesOfClass(
+				net.minecraft.world.entity.Entity.class, this.getBoundingBox().inflate(BREED_RADIUS),
+				e -> e instanceof net.minecraft.world.item.trading.Merchant)) {
+			merchant = (net.minecraft.world.item.trading.Merchant) e;
+			break;
+		}
+		if (merchant == null) return ActionOutcome.fail("trade", "there is no villager near me to trade with");
+
+		String wanted = intent.target() == null || intent.target().isBlank() ? null : resolveItemId(intent.target());
+		if (wanted == null) {
+			return ActionOutcome.fail("trade", "the villager offers: " + offersText(merchant));
+		}
+
+		net.minecraft.world.item.trading.MerchantOffer chosen = null;
+		boolean soldOut = false;
+		for (net.minecraft.world.item.trading.MerchantOffer offer : merchant.getOffers()) {
+			if (!wanted.equals(itemId(offer.getResult()))) continue;
+			if (offer.getUses() >= offer.getMaxUses()) {
+				soldOut = true;
+				continue;
+			}
+			chosen = offer;
+			break;
+		}
+		if (chosen == null) {
+			return ActionOutcome.fail("trade", soldOut
+					? "the villager has sold out of " + wanted + " for now"
+					: "the villager does not sell " + wanted + " — it offers: " + offersText(merchant));
+		}
+
+		// What one trade costs, read from the offer itself so a discounted price is the price.
+		ItemStack costA = chosen.getCostA();
+		ItemStack costB = chosen.getCostB();
+		int haveA = countItem(itemId(costA));
+		int haveB = costB.isEmpty() ? Integer.MAX_VALUE : countItem(itemId(costB));
+		if (haveA < costA.getCount() || haveB < costB.getCount()) {
+			return ActionOutcome.fail("trade", "that costs " + describeCost(costA, costB)
+					+ " and I have " + haveA + " " + itemId(costA)
+					+ (costB.isEmpty() ? "" : " and " + haveB + " " + itemId(costB)));
+		}
+
+		// One trade at a time, and only as many as the stock allows: the villager's own counter is the
+		// authority on how many are left, so it is re-read rather than assumed.
+		int trades = Math.min(intent.data() == null ? 1 : Math.max(1, craftQuantity(intent.data())),
+				chosen.getMaxUses() - chosen.getUses());
+		int bought = 0;
+		ItemStack last = ItemStack.EMPTY;
+		for (int i = 0; i < trades; i++) {
+			ItemStack priceA = chosen.getCostA();
+			ItemStack priceB = chosen.getCostB();
+			if (countItem(itemId(priceA)) < priceA.getCount()
+					|| (!priceB.isEmpty() && countItem(itemId(priceB)) < priceB.getCount())) {
+				break;
+			}
+			consumeItem(itemId(priceA), priceA.getCount());
+			if (!priceB.isEmpty()) consumeItem(itemId(priceB), priceB.getCount());
+			ItemStack result = chosen.getResult().copy();
+			last = result;
+			if (!add(result, inventory)) {
+				ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), result);
+				pile.setDefaultPickUpDelay();
+				level().addFreshEntity(pile);
+			}
+			merchant.notifyTrade(chosen);
+			bought += chosen.getResult().getCount();
+		}
+		if (bought == 0) return ActionOutcome.fail("trade", "the villager would not complete that trade");
+		return ActionOutcome.ok("trade", "bought " + bought + " " + itemId(last) + " for "
+				+ describeCost(chosen.getCostA(), chosen.getCostB()));
+	}
+
+	/** "1 emerald" or "1 emerald and 2 wheat", for a price that has to be named. */
+	private static String describeCost(ItemStack a, ItemStack b) {
+		StringBuilder sb = new StringBuilder(a.getCount() + " "
+				+ BuiltInRegistries.ITEM.getKey(a.getItem()).getPath());
+		if (b != null && !b.isEmpty()) {
+			sb.append(" and ").append(b.getCount()).append(' ')
+					.append(BuiltInRegistries.ITEM.getKey(b.getItem()).getPath());
+		}
+		return sb.toString();
+	}
+
+	/** What a villager sells, in one line, so a refusal is useful rather than a dead end. */
+	private static String offersText(net.minecraft.world.item.trading.Merchant merchant) {
+		StringBuilder sb = new StringBuilder();
+		for (net.minecraft.world.item.trading.MerchantOffer offer : merchant.getOffers()) {
+			if (sb.length() > 0) sb.append(", ");
+			sb.append(offer.getResult().getCount()).append(' ')
+					.append(BuiltInRegistries.ITEM.getKey(offer.getResult().getItem()).getPath())
+					.append(" for ").append(describeCost(offer.getCostA(), offer.getCostB()));
+		}
+		return sb.length() == 0 ? "nothing" : sb.toString();
 	}
 
 	/**
