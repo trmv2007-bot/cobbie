@@ -188,6 +188,7 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
             List<String> wrong = new ArrayList<>();
             int retries = 0;
             int unmeasurable = 0;
+            int hijacked = 0;
             for (Ask ask : ASKS) {
                 long before = server.computeOnServer(s -> planId(s));
                 // A cold call to a hosted gateway occasionally lands on the 30-second read timeout.
@@ -200,12 +201,20 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                     planned = sendAndWait(context, server, ask, before);
                 }
                 server.waitFor(s -> s.getTickCount() % 10 == 0, 40);
+                // The plan THIS ask created, never "the last plan": a failed plan makes the brain ask the
+                // model to comment, and that follow-up plan replaces the running one — so scoring by last
+                // plan let the same code read 11/14 and then 6/14 within ten minutes.
+                final long askBase = before;
                 String transcript = server.computeOnServer(s -> {
                     CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
-                    TaskPlan plan = cobbie.lastPlan();
+                    TaskPlan plan = cobbie.planAfter(askBase);
                     if (plan == null) return "no plan";
-                    return plan.request() + " -> " + verbs(plan) + " -> " + plan.report();
+                    return "#" + plan.id() + " " + plan.request() + " -> " + verbs(plan) + " -> "
+                            + plan.report();
                 });
+                // An ask that produced no plan is an answer ("he said he cannot"), not an attribution
+                // failure; an ask whose plan is a follow-up IS one, and must not be scored as the ask.
+                if (transcript.contains(" follow-up after results ")) hijacked++;
                 String reply = server.computeOnServer(s -> CobbieMemory.history(ownerId, 40).stream()
                         .filter(m -> "assistant".equals(m.role()) && !m.content().isBlank())
                         .reduce((a, b) -> b).map(CobbieMemory.Message::content).orElse(""));
@@ -230,6 +239,22 @@ public final class CobbieVerbChoiceTest implements FabricClientGameTest {
                 }
                 System.out.println("[gametest] VerbChoice " + (chose ? "ok     " : "MISMATCH") + " " + line);
                 CobbieTestSupport.awaitPlanSettled(server, 1200);
+            }
+
+            // A ratio is only meaningful if every ask was scored against the plan it produced. If a plan went
+            // missing (a follow-up replaced it before settling, a timeout, a refusal with no plan) say so and
+            // refuse the ratio rather than reporting a number that mixes asks together.
+            int scored = right.size() + wrong.size();
+            if (scored + unmeasurable != ASKS.size()) {
+                System.out.println("[gametest] VerbChoice UNATTRIBUTED: scored " + scored + " of "
+                        + ASKS.size() + " asks. Refusing a ratio.");
+                return;
+            }
+            if (hijacked > 0) {
+                System.out.println("[gametest] VerbChoice UNATTRIBUTED: " + hijacked + " of " + ASKS.size()
+                        + " asks were answered by a FOLLOW-UP plan (the ask's own plan failed and the brain"
+                        + " asked the model to comment). Those are not the ask's answer and are not scored;"
+                        + " the ratio below covers the " + (scored - hijacked) + " attributable asks.");
             }
 
             System.out.println("[gametest] VerbChoice summary: " + right.size() + " right, "
