@@ -25,6 +25,7 @@ import java.util.stream.Collectors;
 public final class CobbieGameTests implements FabricClientGameTest {
 
     private static final List<FabricClientGameTest> ALL = List.of(
+            new CobbieWorldChangeTest(),
             new CobbieRideTest(),
             new CobbieCapabilityTest(),
             new CobbieAbilitiesTest(),
