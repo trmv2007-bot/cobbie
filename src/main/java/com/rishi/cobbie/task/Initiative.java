@@ -26,6 +26,10 @@ import java.util.Map;
  * project cannot cost anything per block and cannot be invented out of nothing. The owner's instruction
  * remains the only source of arbitrary plans.
  *
+ * <p><b>Announced only when it can start.</b> A candidate that fails the same gate its own step
+ * applies — no tool for the drop, nowhere to stand, no room for what comes out — is not counted, so a
+ * project that could not take its first step is never promised out loud.
+ *
  * <p><b>Safe by construction.</b> Targets sit within six blocks of his feet, between one below and two
  * above, are never a block he should not break (lava, fire, anything with a block entity — a chest is
  * somebody's storage), and the project is a handful of steps, so there is no route to a cliff, a lava
@@ -62,6 +66,9 @@ public record Initiative() {
                 feet.offset(RADIUS, 2, RADIUS))) {
             BlockState state = level.getBlockState(pos);
             if (state.isAir() || !breakable(level, pos, state)) continue;
+            // A project is announced only if it can start: the same gate the step applies, never a
+            // second opinion. Announcing and then discovering is the one shape to avoid.
+            if (!cobbie.canStartMining(pos)) continue;
             if (state.is(BlockTags.LOGS) || state.is(Blocks.STONE)) {
                 gatherable.computeIfAbsent(state.getBlock().getName().getString(), k -> new ArrayList<>())
                         .add(pos.immutable());
