@@ -702,7 +702,8 @@ public final class CobbieBrain {
 		if (worldSteps < 2 || steps.size() < 2) return;
 
 		String name = skillNameFor(plan.request());
-		if (SkillRegistry.saveSkill(name, "learned from: " + shorten(plan.request(), 90), steps)) {
+		if (SkillRegistry.saveSkill(name, "learned from: " + shorten(plan.request(), 90), steps,
+				worldName(cobbie))) {
 			Cobbie.LOGGER.info("Cobbie learned the skill \"{}\" from: {}", name, report);
 			ServerPlayer owner = cobbie.owner();
 			if (owner != null) {
@@ -713,6 +714,14 @@ public final class CobbieBrain {
 				CobbieMemory.addSkill(cobbie.getOwner(), name);
 			}
 		}
+	}
+
+	/** The human name of the world a skill came from, for the owner's list — never a filter. */
+	private static String worldName(CobbieEntity cobbie) {
+		if (cobbie != null && cobbie.level() != null && cobbie.level().getServer() != null) {
+			return cobbie.level().getServer().getWorldData().getLevelName();
+		}
+		return "";
 	}
 
 	private static String skillNameFor(String request) {
