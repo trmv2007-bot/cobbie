@@ -3754,10 +3754,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			}
 			return useOnEntity(other, held);
 		}
-		if (held.isEmpty()) {
-			return ActionOutcome.fail("use", emptyTarget
-					? "I am not holding anything to use"
-					: "I have no " + intent.target() + " to use");
+		// A bare hand on a block is a real gesture — a lever, a button, a door, a bed — so the empty hand is
+		// only a refusal when the intent named an item he does not have. Refusing every empty-handed block
+		// use here is what turned a lever into "I am not holding anything to use".
+		if (held.isEmpty() && !emptyTarget) {
+			return ActionOutcome.fail("use", "I have no " + intent.target() + " to use");
 		}
 		return useAt(pos, atBlock, intent);
 	}

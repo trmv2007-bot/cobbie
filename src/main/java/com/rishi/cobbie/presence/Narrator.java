@@ -35,7 +35,13 @@ public final class Narrator {
 			java.util.regex.Pattern.compile("-?\\d+\\s+-?\\d+(\\s+-?\\d+)?|\\bat\\s+-?\\d|\\[\\s*-?\\d+.*?]");
 
 	private String pending;
-	private long lastSpokeAt;
+	/**
+	 * When he last spoke. "Never" is {@link Long#MIN_VALUE} rather than 0: 0 is a real timestamp, so using it
+	 * as the sentinel let a call at epoch zero past the gap — which the cadence test caught by starting its
+	 * clock at zero instead of at the wall clock.
+	 */
+	private long lastSpokeAt = Long.MIN_VALUE;
+	private static final long NEVER = Long.MIN_VALUE;
 
 	/** Offer a line. The newest one wins; an older unsaid line is dropped rather than queued up. */
 	public synchronized void offer(String line) {
@@ -50,7 +56,7 @@ public final class Narrator {
 	 */
 	public synchronized String next(long nowMillis, int minGapMillis) {
 		if (pending == null) return null;
-		if (lastSpokeAt != 0 && nowMillis - lastSpokeAt < Math.max(0, minGapMillis)) return null;
+		if (lastSpokeAt != NEVER && nowMillis - lastSpokeAt < Math.max(0, minGapMillis)) return null;
 		String line = pending;
 		pending = null;
 		lastSpokeAt = nowMillis;
