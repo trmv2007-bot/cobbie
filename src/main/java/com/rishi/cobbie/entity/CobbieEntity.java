@@ -3177,6 +3177,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				chosen.getMaxUses() - chosen.getUses());
 		int bought = 0;
 		ItemStack last = ItemStack.EMPTY;
+		// Named before it is stored: add() empties the stack, and "bought 4 minecraft:air" is what
+		// reading the id afterwards produces.
+		String resultName = null;
 		for (int i = 0; i < trades; i++) {
 			ItemStack priceA = chosen.getCostA();
 			ItemStack priceB = chosen.getCostB();
@@ -3188,6 +3191,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			if (!priceB.isEmpty()) consumeItem(itemId(priceB), priceB.getCount());
 			ItemStack result = chosen.getResult().copy();
 			last = result;
+			resultName = itemId(result);
 			if (!add(result, inventory)) {
 				ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), result);
 				pile.setDefaultPickUpDelay();
@@ -3197,8 +3201,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			bought += chosen.getResult().getCount();
 		}
 		if (bought == 0) return ActionOutcome.fail("trade", "the villager would not complete that trade");
-		return ActionOutcome.ok("trade", "bought " + bought + " " + itemId(last) + " for "
-				+ describeCost(chosen.getCostA(), chosen.getCostB()));
+		return ActionOutcome.ok("trade", "bought " + bought + " " + (resultName == null ? "it" : resultName)
+				+ " for " + describeCost(chosen.getCostA(), chosen.getCostB()));
 	}
 
 	/** "1 emerald" or "1 emerald and 2 wheat", for a price that has to be named. */

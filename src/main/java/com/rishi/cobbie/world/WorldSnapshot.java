@@ -53,7 +53,14 @@ public record WorldSnapshot(
 	public record BlockNote(String id, int x, int y, int z, double distance, boolean solid) {}
 
 	public record EntityNote(String id, double x, double y, double z, double distance,
-			boolean hostile, double health, boolean isOwner) {}
+			boolean hostile, double health, boolean isOwner, String detail) {
+
+		/** Most things need no detail line; only what changes what can be done with them earns one. */
+		public EntityNote(String id, double x, double y, double z, double distance, boolean hostile,
+				double health, boolean isOwner) {
+			this(id, x, y, z, distance, hostile, health, isOwner, "");
+		}
+	}
 
 	public WorldSnapshot {
 		if (nearbyBlocks == null) nearbyBlocks = List.of();
@@ -135,6 +142,9 @@ public record WorldSnapshot(
 			if (e.health() >= 0) sb.append(" hp").append(num(e.health()));
 			if (e.hostile()) sb.append(" HOSTILE");
 			if (e.isOwner()) sb.append(" (owner)");
+			// What it sells, if it sells anything: a villager he cannot read is a villager he cannot
+			// ask to trade with — the 0.42.0 harness caught him declining for exactly that reason.
+			if (e.detail() != null && !e.detail().isBlank()) sb.append(' ').append(e.detail());
 			out.add(sb.toString());
 		}
 		return out;
