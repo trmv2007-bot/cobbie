@@ -225,6 +225,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private int recallSampleTick;
 	/** Consecutive far re-paths the pathfinder refused; each one shortens the next step. */
 	private int followMisses;
+	/** True once he has told the owner he cannot find a portal, so he says it once, not every tick. */
+	private boolean portalNoticeShown;
 
 	// ---- experience: his own, earned and kept ----
 	private int experienceLevel;
@@ -458,6 +460,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return found instanceof ServerPlayer sp ? sp : null;
 	}
 
+	/** The owner wherever they are, including another dimension. Null while offline. */
+	public ServerPlayer ownerAnywhere() {
+		if (ownerUuid == null || level() == null || level().getServer() == null) return null;
+		return level().getServer().getPlayerList().getPlayer(ownerUuid);
+	}
+
 	public void startFollowing() {
 		this.following = true;
 	}
@@ -612,6 +620,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		spillOverflow();
 		absorbExperience();
+		// Keeps him findable by the server tick if his chunk ever stops ticking.
+		CrossDimensionFollow.remember(this);
 		updateNameplate();
 		followOwnerTick();
 		swimTick();
@@ -890,7 +900,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		// other kind of plan (talking, waving, a queued single step) must not freeze his feet.
 		if (navigatingForAction) return;
 		ServerPlayer owner = owner();
-		if (owner == null) return; // offline or in another dimension: wait where he is
+		// `getPlayerByUUID` can answer with a player who is in another dimension, and distance to them
+		// is then meaningless — that is the portal case, not a reason to stand still.
+		if (owner == null || owner.level() != this.level()) {
+			followThroughPortal();
+			return;
+		}
 
 		double follow = Math.max(1.0, CobbieConfig.getFollowDistance());
 		double distSq = this.distanceToSqr(owner);
@@ -941,6 +956,67 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 */
 	private double followStepLength() {
 		return Math.max(6.0, FOLLOW_STEP / (1.0 + followMisses * 0.5));
+	}
+
+	/**
+	 * You are in another dimension: find a portal and walk into it.
+	 *
+	 * <p>He is not teleported — the game's own portal timing carries him, the arrival is the game's, and
+	 * the nether's hazards apply to him because he is really there. If there is no portal within reach he
+	 * says so once rather than pacing at nothing in silence.
+	 */
+	private void followThroughPortal() {
+		ServerPlayer away = ownerAnywhere();
+		if (away == null) return;                                    // offline: wait where he is
+		if (away.level() == this.level()) return;                    // same world after all
+		if (this.isOnPortalCooldown() || this.isPassenger()) return;
+
+		BlockPos portal = nearestPortal();
+		if (portal == null) {
+			if (!portalNoticeShown) {
+				portalNoticeShown = true;
+				away.sendSystemMessage(Component.literal("§e[Cobbie] §fI cannot find a portal to follow"
+						+ " you through — come back, or leave one open where I can reach it."));
+			}
+			return;
+		}
+		portalNoticeShown = false;
+		// A portal block is not a node the pathfinder will plan to, so aim at the floor in front of it
+		// and then step in — the game takes over once he is inside the frame.
+		if (this.blockPosition().distSqr(portal) <= 6) {
+			Vec3 motion = this.getDeltaMovement();
+			double dx = portal.getX() + 0.5 - this.getX();
+			double dz = portal.getZ() + 0.5 - this.getZ();
+			double length = Math.sqrt(dx * dx + dz * dz);
+			if (length > 0.05) {
+				this.setDeltaMovement(dx / length * 0.14, motion.y, dz / length * 0.14);
+			}
+			return;
+		}
+		if (this.tickCount - followRepathTick < FOLLOW_REPATH_INTERVAL) return;
+		followRepathTick = this.tickCount;
+		int towardX = Integer.signum(this.blockPosition().getX() - portal.getX());
+		int towardZ = Integer.signum(this.blockPosition().getZ() - portal.getZ());
+		BlockPos approach = portal.offset(towardX, 0, towardZ);
+		if (!level().getBlockState(approach).isAir()) approach = portal;
+		getNavigation().moveTo(approach.getX() + 0.5, approach.getY(), approach.getZ() + 0.5, 1.0);
+	}
+
+	/** The nearest portal block within a short walk, or null. */
+	private BlockPos nearestPortal() {
+		BlockPos base = this.blockPosition();
+		BlockPos best = null;
+		double bestDist = Double.MAX_VALUE;
+		for (BlockPos probe : BlockPos.betweenClosed(base.offset(-24, -8, -24), base.offset(24, 8, 24))) {
+			if (!level().isLoaded(probe)) continue;
+			if (!level().getBlockState(probe).is(Blocks.NETHER_PORTAL)) continue;
+			double d = this.distanceToSqr(probe.getX() + 0.5, probe.getY(), probe.getZ() + 0.5);
+			if (d < bestDist) {
+				bestDist = d;
+				best = probe.immutable();
+			}
+		}
+		return best;
 	}
 
 	/**
