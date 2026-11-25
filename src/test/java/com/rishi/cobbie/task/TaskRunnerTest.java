@@ -27,8 +27,15 @@ class TaskRunnerTest {
 	private static final class Fake implements TaskRunner.Executor {
 		final List<ActionIntent> begun = new ArrayList<>();
 		final Deque<ActionOutcome> script = new ArrayDeque<>();
+		/** Objectives this fake world already holds, by verb — the stale-project case. */
+		final java.util.Set<String> alreadyThere = new java.util.HashSet<>();
 		boolean async;
 		int interrupts;
+
+		@Override
+		public boolean alreadySatisfied(ActionIntent intent) {
+			return alreadyThere.contains(intent.action());
+		}
 
 		Fake answering(ActionOutcome... outcomes) {
 			for (ActionOutcome o : outcomes) script.add(o);
@@ -81,6 +88,45 @@ class TaskRunnerTest {
 		assertNotNull(report);
 		assertTrue(report.startsWith("completed"), report);
 		assertNull(runner.takeReport(), "the completion report must only be delivered once");
+	}
+
+	@Test
+	void anObjectiveTheWorldAlreadyHoldsIsNotWalkedInto() {
+		Fake exec = new Fake();
+		exec.alreadyThere.add(ActionVocabulary.MINE);
+		TaskRunner runner = new TaskRunner(exec, 6, 1, 60_000);
+
+		assertNull(runner.start("clear the log and mark the spot",
+				List.of(intent(ActionVocabulary.MINE), intent(ActionVocabulary.WALK_TO))));
+		runner.tick(System.currentTimeMillis());
+
+		assertEquals(1, exec.begun.size(), "the objective the world already held was still attempted");
+		assertEquals(ActionVocabulary.WALK_TO, exec.begun.get(0).action());
+		TaskPlan plan = runner.plan();
+		assertEquals(TaskPlan.Status.COMPLETED, plan.status());
+		assertEquals(1, plan.alreadyDoneCount());
+		assertTrue(plan.report().contains("already done"), plan.report());
+		assertFalse(runner.hasActiveTask());
+	}
+
+	/**
+	 * The rule is honoured once, when the plan starts — not per step. A target that disappears after that
+	 * is an impossible step and must still be attempted and fail, which is what makes the stale-project
+	 * case and the impossible-project case different tests rather than the same one twice.
+	 */
+	@Test
+	void whatGoesStaleAfterThePlanStartsIsStillAttempted() {
+		Fake exec = new Fake();
+		TaskRunner runner = new TaskRunner(exec, 6, 0, 60_000);
+		runner.start("mine that far log", List.of(intent(ActionVocabulary.MINE)));
+
+		exec.alreadyThere.add(ActionVocabulary.MINE);   // the world clears it a moment too late
+		exec.answering(ActionOutcome.fail("mine", "there is nothing at 1 2 3"));
+		runner.tick(System.currentTimeMillis());
+
+		assertEquals(1, exec.begun.size(), "a step stale after adoption was quietly skipped");
+		assertEquals(0, runner.plan().alreadyDoneCount());
+		assertEquals(TaskPlan.Status.FAILED, runner.plan().status());
 	}
 
 	@Test

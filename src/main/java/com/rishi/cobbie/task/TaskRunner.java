@@ -43,6 +43,17 @@ public final class TaskRunner {
 
 		/** Abort whatever is in flight (used on cancel / despawn). */
 		void interrupt();
+
+		/**
+		 * Is this objective already true in the world — nothing left for the step to do?
+		 *
+		 * <p>Asked once, when a plan starts, so a project that went stale while it waited its turn is
+		 * reported as finished rather than walked into. A default of {@code false} keeps every caller that
+		 * cannot answer the question exactly as it was.
+		 */
+		default boolean alreadySatisfied(ActionIntent intent) {
+			return false;
+		}
 	}
 
 	/**
@@ -234,6 +245,32 @@ public final class TaskRunner {
 		this.plan = next;
 		this.pendingReport = null;
 		this.reported = false;
+		skipWhatTheWorldAlreadyDid(next);
+	}
+
+	/**
+	 * An objective the world already satisfies is not work.
+	 *
+	 * <p>This is the stale project: the plan was offered while something else was running, the world
+	 * finished the job in the meantime, and the plan starts against a world that has moved on. Asking at
+	 * adoption — once, before the first step — is the only moment the answer is unambiguous: a target that
+	 * never existed at the start of a step is still an impossible step and still fails, which is what
+	 * {@code CobbieLifecycleTest} holds. Here the plan was validated against a world where the target was
+	 * there, so its absence now is the world having done the work.
+	 */
+	private void skipWhatTheWorldAlreadyDid(TaskPlan next) {
+		for (TaskStep step : next.steps()) {
+			if (!step.isPending()) continue;
+			boolean satisfied;
+			try {
+				satisfied = executor.alreadySatisfied(step.intent());
+			} catch (Exception e) {
+				satisfied = false; // a world that cannot answer is not a world that has finished the job
+			}
+			if (!satisfied) continue;
+			step.markDone("already done — nothing left to do");
+			next.recordAlreadyDone(step.intent().action());
+		}
 	}
 
 	private void adoptNext() {

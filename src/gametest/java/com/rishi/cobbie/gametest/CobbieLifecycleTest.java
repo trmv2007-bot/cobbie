@@ -144,6 +144,106 @@ public final class CobbieLifecycleTest implements FabricClientGameTest {
             System.out.println("[lifecycle] impossible: " + impossibleState + " — " + impossibleReport
                     + " (and it did not re-announce)");
 
+            // --- 3. A project that goes stale while it waits: the world does the work first. ---
+            //
+            // The sixth failure is quieter than the other five: the plan was right when it was made and
+            // the world moved on before it started. Here a first project holds the queue while the second
+            // is offered, and the world then finishes the second one's first objective — so by the time it
+            // starts, there is nothing left for it to do. The honest ending is COMPLETED with a line that
+            // says so; the defect is swinging at air, and the worse defect is reporting that as a job he
+            // could not manage. The plan is not asserted to have steps: zero work is the correct amount.
+            long beforeStale = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .latestPlanId());
+            // His own initiative would race the assertions below for "the last plan", and it is not what
+            // this scenario is about, so it is switched off for it.
+            CobbieTestSupport.command(server, "cobbie autonomy assistive");
+            BlockPos[] targets = new BlockPos[2];
+            server.computeOnServer(s -> {
+                CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
+                // Something to keep him busy, so the project below is offered while he is working — the
+                // case the rule is about, and the reason the world can change before it starts.
+                BlockPos rise = cobbie.blockPosition().offset(-7, 0, -7);
+                cobbie.offerPlan("walk over to the rise", List.of(new ActionIntent(
+                        ActionVocabulary.WALK_TO, "", rise.getX(), rise.getY(), rise.getZ(), "")));
+                // Two objectives in reach: a log to break, and a post that is already standing where the
+                // second objective would put one.
+                BlockPos wasLog = cobbie.blockPosition().offset(3, 0, 4);
+                BlockPos alreadyThere = cobbie.blockPosition().offset(4, 0, 4);
+                targets[0] = wasLog;
+                targets[1] = alreadyThere;
+                CobbieTestSupport.command(s, "setblock " + wasLog.getX() + " " + wasLog.getY() + " "
+                        + wasLog.getZ() + " minecraft:oak_log");
+                CobbieTestSupport.command(s, "setblock " + alreadyThere.getX() + " " + alreadyThere.getY() + " "
+                        + alreadyThere.getZ() + " minecraft:oak_log");
+                cobbie.offerPlan("get the log and the post sorted", List.of(
+                        new ActionIntent(ActionVocabulary.MINE, "minecraft:oak_log", wasLog.getX(),
+                                wasLog.getY(), wasLog.getZ(), ""),
+                        new ActionIntent(ActionVocabulary.PLACE, "minecraft:oak_log", alreadyThere.getX(),
+                                alreadyThere.getY(), alreadyThere.getZ(), "")));
+                // The world achieves the first objective before he starts it.
+                CobbieTestSupport.command(s, "setblock " + wasLog.getX() + " " + wasLog.getY() + " "
+                        + wasLog.getZ() + " minecraft:air");
+                return null;
+            });
+            BlockPos wasLog = targets[0];
+            BlockPos alreadyThere = targets[1];
+            try {
+                server.waitFor(s -> CobbieTestSupport.cobbie(s).map(c -> c.lastPlan() != null
+                        && c.lastPlan().request().startsWith("get the log")
+                        && c.lastPlan().isFinished()).orElse(false), 1600);
+            } catch (Throwable t) {
+                throw new AssertionError("The stale project never settled; the last plan is "
+                        + server.computeOnServer(s -> CobbieTestSupport.cobbie(s)
+                        .map(c -> c.lastPlan() == null ? "none" : c.planRecord(c.lastPlan().id()))
+                        .orElse("no companion")), t);
+            }
+            // (a) It reached a terminal state — and it is COMPLETED, because the world had done the work.
+            // A FAILED here would be the defect wearing the right word: "I couldn't manage" about a job
+            // nobody had left to do.
+            TaskPlan stale = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow().lastPlan());
+            if (stale == null || !stale.isFinished()) {
+                throw new AssertionError("The stale project is not in a terminal state");
+            }
+            if (stale.status() != TaskPlan.Status.COMPLETED) {
+                throw new AssertionError("A project with nothing left to do ended as " + stale.status()
+                        + ": " + stale.report());
+            }
+            long afterStale = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .latestPlanId());
+            if (afterStale <= beforeStale) {
+                throw new AssertionError("No plan was created for the stale project, so nothing was tested");
+            }
+            // (b) The line he says names it: the world had already done it.
+            String staleLine;
+            try {
+                server.waitFor(s -> CobbieTestSupport.cobbie(s).map(c -> c.lastSpokenLine()
+                        .toLowerCase(java.util.Locale.ROOT).contains("nothing left to do")).orElse(false), 200);
+                staleLine = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                        .lastSpokenLine());
+            } catch (Throwable t) {
+                throw new AssertionError("He never said the work was already done; the last line was \""
+                        + server.computeOnServer(s -> CobbieTestSupport.cobbie(s)
+                        .map(CobbieEntity::lastSpokenLine).orElse("nothing"))
+                        + "\" and the plan reads " + stale.report(), t);
+            }
+            // The world is the assertion, not the sentence: the log the world removed is still gone, and
+            // the post he was asked to place is exactly the block it was — he touched neither.
+            boolean logGone = server.computeOnServer(s -> s.overworld().getBlockState(wasLog).isAir());
+            boolean postIntact = server.computeOnServer(s -> s.overworld().getBlockState(alreadyThere)
+                    .is(Blocks.OAK_LOG));
+            if (!logGone) {
+                throw new AssertionError("The world's own work was undone: " + wasLog.toShortString()
+                        + " holds a block again");
+            }
+            if (!postIntact) {
+                throw new AssertionError("The post at " + alreadyThere.toShortString()
+                        + " is no longer an oak log: " + server.computeOnServer(
+                        s -> s.overworld().getBlockState(alreadyThere).toString()));
+            }
+            System.out.println("[lifecycle] stale: " + stale.status() + " — \"" + staleLine + "\" ("
+                    + stale.alreadyDoneCount() + " of " + stale.steps().size()
+                    + " objectives were already done, " + stale.failedCount() + " failed)");
+
             System.out.println("[lifecycle] done");
         }
     }

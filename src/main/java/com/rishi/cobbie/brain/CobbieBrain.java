@@ -676,7 +676,7 @@ public final class CobbieBrain {
 				// report still goes to memory below, where detail is worth having.
 				TaskPlan finished = cobbie.lastPlan();
 				String line = Narrator.jobLine(finished);
-				owner.sendSystemMessage(cobbieSays(cobbie, line == null ? "done" : line));
+				cobbie.sayToOwner(line == null ? "done" : line);
 				cobbie.noteSpokenNow();
 				ActionTiming.resultSpoken(System.currentTimeMillis());
 			}
@@ -709,6 +709,10 @@ public final class CobbieBrain {
 	private static void learnFromPlan(CobbieEntity cobbie, String report) {
 		TaskPlan plan = cobbie.lastPlan();
 		if (plan == null || plan.status() != TaskPlan.Status.COMPLETED) return;
+		// A plan the world had already done demonstrated nothing. Recording it would teach the owner's next
+		// replay to swing at a block that is not there, or to "place" one that is — a skill made of steps
+		// nobody performed.
+		if (plan.alreadyDoneCount() > 0) return;
 		BlockPos origin = cobbie.planOrigin();
 		if (origin == null || plan.request().startsWith(SkillExecutor.REQUEST_PREFIX)) return;
 
@@ -876,7 +880,7 @@ public final class CobbieBrain {
 	}
 
 	/** His own lines carry his own name: a prefix that says Cobbie while the nameplate does not is the bug. */
-	private static Component cobbieSays(CobbieEntity cobbie, String text) {
+	public static Component cobbieSays(CobbieEntity cobbie, String text) {
 		if (cobbie != null) return cobbie.says(text);
 		return Component.literal("§e[" + com.rishi.cobbie.identity.CompanionName.DEFAULT + "] §f"
 				+ (text == null ? "..." : text));
