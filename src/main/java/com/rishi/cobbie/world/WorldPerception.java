@@ -49,6 +49,9 @@ public final class WorldPerception {
 	private static final double ENTITY_RANGE = 12.0;
 	private static final double PLAYER_RANGE = 24.0;
 	private static final int MAX_STACK_LINES = 16;
+	/** How many merchants get their offers listed, and how many offers each. Both on purpose small. */
+	private static final int MAX_DETAILED_MERCHANTS = 2;
+	private static final int MAX_OFFERS_PER_MERCHANT = 3;
 	/** How much of a custom item name survives into the prompt line. */
 	private static final int MAX_NAME_CHARS = 24;
 
@@ -114,6 +117,7 @@ public final class WorldPerception {
 	private static List<EntityNote> entityNotes(CobbieEntity cobbie, List<Entity> seen) {
 		List<EntityNote> out = new ArrayList<>();
 		UUID owner = cobbie.getOwner();
+		int villagersDetailed = 0;
 		for (Entity e : seen) {
 			if (e instanceof Player) continue;
 			if (out.size() >= WorldSnapshot.MAX_ENTITIES) break;
@@ -122,9 +126,50 @@ public final class WorldPerception {
 			boolean hostile = e instanceof Enemy || (e instanceof Mob m && m.getTarget() == cobbie);
 			double hp = e instanceof LivingEntity le ? le.getHealth() : -1.0;
 			out.add(new EntityNote(typeId(e), e.getX(), e.getY(), e.getZ(), dist, hostile, hp,
-					owner != null && owner.equals(e.getUUID())));
+					owner != null && owner.equals(e.getUUID()), merchantDetail(e, villagersDetailed)));
+			if (e instanceof net.minecraft.world.item.trading.Merchant) villagersDetailed++;
+		}
+		if (villagersDetailed > MAX_DETAILED_MERCHANTS) {
+			// A village of ten must not fill the prompt with eight more price lists.
+			out.add(new EntityNote("+" + (villagersDetailed - MAX_DETAILED_MERCHANTS) + " more villager(s)",
+					0, 0, 0, 0, false, -1, false, ""));
 		}
 		return out;
+	}
+
+	/**
+	 * What a merchant sells, in the shape a person would say it.
+	 *
+	 * <p>{@code minecraft:villager@2.0} says there is a villager and nothing about whether the pumpkin
+	 * pie is on offer; the 0.42.0 verb-choice run caught him declining a buy for exactly that reason
+	 * ("I don't see that trade available") while the verb behind it worked.
+	 *
+	 * <p>Capped hard on purpose: three offers, the price of the cheap half only, and only for the two
+	 * nearest merchants. A prompt that lists everything stops being read.
+	 */
+	private static String merchantDetail(Entity e, int alreadyDetailed) {
+		if (!(e instanceof net.minecraft.world.item.trading.Merchant merchant)) return "";
+		if (alreadyDetailed >= MAX_DETAILED_MERCHANTS) return "";
+		var offers = merchant.getOffers();
+		if (offers == null || offers.isEmpty()) return "";
+		StringBuilder sb = new StringBuilder("sells ");
+		int shown = 0;
+		for (var offer : offers) {
+			if (shown >= MAX_OFFERS_PER_MERCHANT) break;
+			if (offer.getUses() >= offer.getMaxUses()) continue;
+			if (shown > 0) sb.append(", ");
+			ItemStack result = offer.getResult();
+			sb.append(result.getCount()).append(' ')
+					.append(BuiltInRegistries.ITEM.getKey(result.getItem()).getPath())
+					.append(" for ").append(offer.getCostA().getCount()).append(' ')
+					.append(BuiltInRegistries.ITEM.getKey(offer.getCostA().getItem()).getPath());
+			if (!offer.getCostB().isEmpty()) {
+				sb.append(" + ").append(offer.getCostB().getCount()).append(' ')
+						.append(BuiltInRegistries.ITEM.getKey(offer.getCostB().getItem()).getPath());
+			}
+			shown++;
+		}
+		return shown == 0 ? "" : sb.toString();
 	}
 
 	private static List<String> playerNames(List<Entity> seen) {
