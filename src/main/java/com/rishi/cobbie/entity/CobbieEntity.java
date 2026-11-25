@@ -604,11 +604,37 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	public String renameTo(String raw) {
 		var check = com.rishi.cobbie.identity.CompanionName.check(raw);
 		if (!check.ok()) return check.refusal();
+		if (!check.name().equals(companionName())) {
+			// His history still holds lines in the old name. Without a note the next prompt shows one name
+			// while the transcript says another, and the likely symptom is him denying his own words.
+			renameNote = "The owner has renamed you to " + check.name()
+					+ "; any earlier lines of yours under a different name are still yours.";
+		}
 		this.entityData.set(DATA_NAME, check.name());
 		// Rebuilt from the new name immediately: the nameplate is cached text and would otherwise keep
 		// the old name until its next tick.
 		showNameplate("§e" + check.name() + " §8· §7" + statusWord());
 		return null;
+	}
+
+	/** Set by a rename, read once by the next prompt. Not saved: it is about one turn, not the world. */
+	private String renameNote = "";
+
+	/** The pending rename note, consumed by whoever builds the next prompt. */
+	public String takeRenameNote() {
+		String note = renameNote;
+		renameNote = "";
+		return note == null ? "" : note;
+	}
+
+	/**
+	 * Renaming is an identity change, not a cosmetic one — his chat lines, his prompt and his memory all
+	 * speak in that name — so it belongs to the owner. In single-player that is the same person; on a LAN
+	 * it is the difference between "my companion" and "ours".
+	 */
+	public String renameBy(net.minecraft.world.entity.player.Player actor, String raw) {
+		if (actor == null || !isOwner(actor)) return "only my owner can name me";
+		return renameTo(raw);
 	}
 
 	/** Nameplate text that is not a name: connecting, offline, and the status line itself. */

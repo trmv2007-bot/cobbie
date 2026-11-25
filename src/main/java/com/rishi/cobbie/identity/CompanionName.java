@@ -40,6 +40,10 @@ public final class CompanionName {
             if (c == '\u00a7') {
                 return new Check(null, "no colour codes (§) in a name — it is already coloured");
             }
+            if (c == '[' || c == ']') {
+                // His chat lines are "§e[<name>] §f", so a bracket in the name reads as corruption.
+                return new Check(null, "no square brackets in a name — they are the brackets around it");
+            }
             if (Character.isISOControl(c)) {
                 return new Check(null, "no control characters in a name");
             }

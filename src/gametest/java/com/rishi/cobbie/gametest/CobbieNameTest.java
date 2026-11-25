@@ -83,7 +83,7 @@ public final class CobbieNameTest implements FabricClientGameTest {
             }
 
             String prompt = server.computeOnServer(s -> CobbiePrompt.systemPrompt(
-                    CobbieTestSupport.cobbie(s).orElseThrow().companionName(), null, "", "", ""));
+                    CobbieTestSupport.cobbie(s).orElseThrow().companionName(), null, "", "", "", ""));
             if (!prompt.contains("You are " + NAME)) {
                 throw new AssertionError("His prompt still does not know his name: it says \""
                         + prompt.substring(0, Math.min(80, prompt.length())) + "...\"");
@@ -102,6 +102,43 @@ public final class CobbieNameTest implements FabricClientGameTest {
                 throw new AssertionError("Renaming changed his owner (" + owner + " -> " + ownerAfter
                         + ") or his level (" + level + " -> " + levelAfter + "); memory and skills are keyed"
                         + " by owner and must not move");
+            }
+            server.computeOnServer(s -> {
+                CobbieTestSupport.cobbie(s).orElseThrow().renameTo(NAME);
+                return null;
+            });
+
+            // --- renaming belongs to the owner, and the next prompt explains the change ---
+            String note = server.computeOnServer(s -> {
+                CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
+                cobbie.renameTo("Mallow");
+                return cobbie.takeRenameNote();
+            });
+            if (!note.contains("renamed you to Mallow") || !note.contains("still yours")) {
+                throw new AssertionError("After a rename the next prompt carries no note, so his history"
+                        + " speaks in one name and his prompt in another: \"" + note + "\"");
+            }
+            String consumed = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .takeRenameNote());
+            if (!consumed.isBlank()) {
+                throw new AssertionError("The rename note is replayed every turn instead of once: \""
+                        + consumed + "\"");
+            }
+            String strangerRefusal = server.computeOnServer(s -> {
+                CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
+                String realOwner = cobbie.getOwner().toString();
+                cobbie.setOwner(java.util.UUID.randomUUID());
+                String refusal = cobbie.renameBy(CobbieTestSupport.owner(s), "Not Mine");
+                cobbie.setOwner(java.util.UUID.fromString(realOwner));
+                return refusal;
+            });
+            if (strangerRefusal == null) {
+                throw new AssertionError("Somebody who is not his owner renamed him");
+            }
+            String after = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
+                    .companionName());
+            if (!"Mallow".equals(after)) {
+                throw new AssertionError("A refused rename still changed his name to \"" + after + "\"");
             }
             server.computeOnServer(s -> {
                 CobbieTestSupport.cobbie(s).orElseThrow().renameTo(NAME);
