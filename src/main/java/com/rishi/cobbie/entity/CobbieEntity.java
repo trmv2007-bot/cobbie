@@ -226,6 +226,13 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private int lastObservationTick;
 	/** Where he stood when the current plan started — the origin skill steps are stored relative to. */
 	private BlockPos planOrigin;
+
+	/**
+	 * What the owner calls him, synchronized: the nameplate is drawn on the client, so a name that lives
+	 * only in server memory looks like a rename that worked on the server and failed on screen.
+	 */
+	private static final EntityDataAccessor<String> DATA_NAME =
+			SynchedEntityData.defineId(CobbieEntity.class, EntityDataSerializers.STRING);
 	/** Items he already failed to take, so he does not claw at them every tick. */
 	private final Set<UUID> skippedItems = new HashSet<>();
 
@@ -442,6 +449,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	protected void defineSynchedData(SynchedEntityData.Builder builder) {
 		super.defineSynchedData(builder);
 		builder.define(DATA_WAVING, false);
+		builder.define(DATA_NAME, com.rishi.cobbie.identity.CompanionName.DEFAULT);
 	}
 
 	public boolean isWaving() {
@@ -576,6 +584,56 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	/** The plan he is running, or the one that most recently finished (for reporting / learning). */
 	public com.rishi.cobbie.task.TaskPlan lastPlan() {
 		return tasks.plan();
+	}
+
+	public String companionName() {
+		return com.rishi.cobbie.identity.CompanionName.orDefault(this.entityData.get(DATA_NAME));
+	}
+
+	/** One of his own chat lines, prefixed with his own name. */
+	public net.minecraft.network.chat.Component says(String text) {
+		return net.minecraft.network.chat.Component
+				.literal("§e[" + companionName() + "] §f" + (text == null ? "..." : text));
+	}
+
+	/**
+	 * Rename him. The name lives here, is saved with him, and reaches the nameplate, his panel, his chat
+	 * lines and his own prompt — a nameplate that disagrees with what he calls himself is the one bug
+	 * this is built to avoid. Memory, skills and levels are keyed by owner, so nothing is orphaned.
+	 */
+	public String renameTo(String raw) {
+		var check = com.rishi.cobbie.identity.CompanionName.check(raw);
+		if (!check.ok()) return check.refusal();
+		this.entityData.set(DATA_NAME, check.name());
+		// Rebuilt from the new name immediately: the nameplate is cached text and would otherwise keep
+		// the old name until its next tick.
+		showNameplate("§e" + check.name() + " §8· §7" + statusWord());
+		return null;
+	}
+
+	/** Nameplate text that is not a name: connecting, offline, and the status line itself. */
+	public void showNameplate(String text) {
+		super.setCustomName(net.minecraft.network.chat.Component.literal(text));
+		this.setCustomNameVisible(true);
+	}
+
+	/**
+	 * A vanilla name tag arrives here. It lands in the same field as /cobbie name, so a player who uses a
+	 * tag gets a companion whose panel and prompt agree with the plate — and a tag carrying formatting is
+	 * refused by the same rules rather than silently rendering as colour.
+	 */
+	@Override
+	public void setCustomName(net.minecraft.network.chat.Component name) {
+		String text = name == null ? "" : name.getString();
+		// Our own plate, in its own format — including the copy vanilla reads back from a save, which
+		// arrives before the name field is populated and must not be mistaken for a name tag.
+		if (text.startsWith("§e") && text.contains(" §8· §7")) {
+			super.setCustomName(name);
+			return;
+		}
+		if (renameTo(text) != null) {
+			showNameplate("§e" + companionName() + " §8· §7" + statusWord());
+		}
 	}
 
 	public BlockPos planOrigin() {
@@ -798,11 +856,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (this.tickCount % 10 != 0 || level() == null || level().isClientSide()) return;
 		Component current = this.getCustomName();
 		String text = current == null ? "" : current.getString();
-		if (!text.startsWith("§eCobbie")) return;
-		String target = "§eCobbie §8· §7" + statusWord();
+		String prefix = "§e" + companionName() + " §8· §7";
+		if (!text.startsWith("§e" + companionName())) return;
+		String target = prefix + statusWord();
 		if (!target.equals(text)) {
-			this.setCustomName(Component.literal(target));
-			this.setCustomNameVisible(true);
+			showNameplate(target);
 		}
 	}
 
@@ -868,7 +926,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				heldIndex = items.size() - 1;
 			}
 		}
-		return new CobbiePanelPayload(this.getId(), "Cobbie", statusWord(), job, steps, states, items, heldIndex,
+		return new CobbiePanelPayload(this.getId(), companionName(), statusWord(), job, steps, states, items,
+				heldIndex,
 				experienceLevel, Math.round(experienceProgress), experienceNeeded());
 	}
 
@@ -4502,6 +4561,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	protected void addAdditionalSaveData(ValueOutput out) {
 		super.addAdditionalSaveData(out);
 		out.putBoolean("CobbieFollowing", following);
+		out.putString("CobbieName", companionName());
 		out.putInt("CobbieXpLevel", experienceLevel);
 		out.putFloat("CobbieXpProgress", experienceProgress);
 		if (ownerUuid != null) {
@@ -4523,6 +4583,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	protected void readAdditionalSaveData(ValueInput in) {
 		super.readAdditionalSaveData(in);
 		following = in.getBooleanOr("CobbieFollowing", true);
+		this.entityData.set(DATA_NAME, com.rishi.cobbie.identity.CompanionName
+				.orDefault(in.getStringOr("CobbieName", com.rishi.cobbie.identity.CompanionName.DEFAULT)));
+		// The plate is rebuilt from the name that was just restored, so the visible plate, the panel and
+		// the prompt cannot disagree after a load regardless of the order vanilla reads CustomName in.
+		this.setCustomName(net.minecraft.network.chat.Component
+				.literal("§e" + companionName() + " §8· §7" + statusWord()));
 		// A level he earned is his: death does not take it back, unlike a player's.
 		experienceLevel = Math.max(0, in.getIntOr("CobbieXpLevel", 0));
 		experienceProgress = Math.max(0.0f, in.getFloatOr("CobbieXpProgress", 0.0f));

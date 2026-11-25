@@ -183,11 +183,11 @@ public final class CobbieBrain {
 		// 3. Which companion may this player talk to?
 		final CobbieEntity body = companionOf(sender);
 		if (body == null) {
-			if (mentioned) sender.sendSystemMessage(cobbieSays("spawn me with /spawncobbie first"));
+			if (mentioned) sender.sendSystemMessage(cobbieSays(body, "spawn me with /spawncobbie first"));
 			return;
 		}
 		if (client == null) {
-			sender.sendSystemMessage(cobbieSays("my brain is not configured - check config/cobbie.json"));
+			sender.sendSystemMessage(cobbieSays(body, "my brain is not configured - check config/cobbie.json"));
 			return;
 		}
 
@@ -205,7 +205,7 @@ public final class CobbieBrain {
 		long cooldown = Math.max(200, CobbieConfig.getChatCooldownMs());
 		Long last = lastChatAt.get(speakerId);
 		if (last != null && now - last < cooldown) {
-			if (mentioned) sender.sendSystemMessage(cobbieSays("hold on, still thinking about the last thing"));
+			if (mentioned) sender.sendSystemMessage(cobbieSays(body, "hold on, still thinking about the last thing"));
 			return;
 		}
 
@@ -272,7 +272,7 @@ public final class CobbieBrain {
 		final WorldSnapshotHolder snapshot = new WorldSnapshotHolder(body.perceive());
 		final MinecraftServer server = sender.level() instanceof ServerLevel sl ? sl.getServer() : null;
 		final List<LlmClient.Msg> turns = conversationTurns(speakerId);
-		final String system = CobbiePrompt.systemPrompt(snapshot.value,
+		final String system = CobbiePrompt.systemPrompt(body.companionName(), snapshot.value,
 				CobbieConfig.isMemoryEnabled() ? CobbieMemory.longTermSummary(speakerId) : "",
 				CobbieConfig.isMemoryEnabled() ? CobbieMemory.currentObjective(speakerId) : "",
 				SkillRegistry.describeForPrompt(4));
@@ -296,7 +296,7 @@ public final class CobbieBrain {
 				// Nothing is stored: a failed request is not a conversation turn.
 				server.execute(() -> {
 					sender.sendSystemMessage(
-							cobbieSays(result == null ? "the AI did not answer" : result.friendlyError()));
+							cobbieSays(body, result == null ? "the AI did not answer" : result.friendlyError()));
 					ActionTiming.resultSpoken(System.currentTimeMillis());
 				});
 				return;
@@ -333,7 +333,7 @@ public final class CobbieBrain {
 			Cobbie.LOGGER.warn("Cobbie request blew up: {}", cause.toString());
 			if (server != null) {
 				server.execute(() -> sender.sendSystemMessage(
-						cobbieSays("something went wrong in my head there")));
+						cobbieSays(body, "something went wrong in my head there")));
 			}
 			return null;
 		});
@@ -415,12 +415,12 @@ public final class CobbieBrain {
 		boolean acting = plan.hasWorldAction();
 		String spoken = acting ? Narrator.firstSentence(plan.answer()) : plan.answer();
 		if (spoken == null || spoken.isBlank()) spoken = plan.answer();
-		player.sendSystemMessage(cobbieSays(spoken));
+		player.sendSystemMessage(cobbieSays(body, spoken));
 		UUID ownerId = body.getOwner();
 		if (ownerId != null && !ownerId.equals(speakerId)) {
 			ServerPlayer owner = body.owner();
 			if (owner != null) {
-				owner.sendSystemMessage(cobbieSays("(to " + speakerName + ") " + spoken));
+				owner.sendSystemMessage(cobbieSays(body, "(to " + speakerName + ") " + spoken));
 			}
 		}
 		if (acting) {
@@ -444,7 +444,7 @@ public final class CobbieBrain {
 					MinecraftServer server = player.level().getServer();
 					if (server != null) {
 						server.execute(() -> {
-							player.sendSystemMessage(cobbieSays(answer));
+							player.sendSystemMessage(cobbieSays(body, answer));
 							if (CobbieConfig.isMemoryEnabled()) {
 								CobbieMemory.addTurn(speakerId, "look up " + intent.target(), answer);
 							}
@@ -469,7 +469,7 @@ public final class CobbieBrain {
 			}
 		}
 		if (!blocked.isEmpty()) {
-			player.sendSystemMessage(cobbieSays("I cannot do: " + String.join(", ", blocked)));
+			player.sendSystemMessage(cobbieSays(body, "I cannot do: " + String.join(", ", blocked)));
 		}
 		if (allowed.isEmpty()) return;
 
@@ -479,7 +479,7 @@ public final class CobbieBrain {
 				? body.offerAddition(said, allowed)
 				: body.offerPlan(said, allowed);
 		if (refusal != null) {
-			player.sendSystemMessage(cobbieSays(refusal));
+			player.sendSystemMessage(cobbieSays(body, refusal));
 		} else if (CobbieConfig.isMemoryEnabled() && ownerId != null) {
 			CobbieMemory.setCurrentObjective(ownerId, refusal == null ? said : "");
 		}
@@ -512,7 +512,7 @@ public final class CobbieBrain {
 		String t = text.toLowerCase(Locale.ROOT).trim();
 		CobbieEntity body = companionOf(sender);
 		if (body == null) {
-			sender.sendSystemMessage(cobbieSays("spawn me with /spawncobbie first"));
+			sender.sendSystemMessage(cobbieSays(body, "spawn me with /spawncobbie first"));
 			return;
 		}
 		UUID speakerId = sender.getUUID();
@@ -521,7 +521,7 @@ public final class CobbieBrain {
 		if (t.startsWith("cobbie cancel") || t.startsWith("cobbie stop")) {
 			int dropped = cancelRequestsFor(sender.getUUID());
 			boolean stopped = body.cancelTask("owner said stop");
-			sender.sendSystemMessage(cobbieSays(stopped || dropped > 0
+			sender.sendSystemMessage(cobbieSays(body, stopped || dropped > 0
 					? "stopped (" + dropped + " pending thought(s) dropped)"
 					: "I was not doing anything"));
 			return;
@@ -529,32 +529,32 @@ public final class CobbieBrain {
 		if (t.startsWith("cobbie follow") || t.startsWith("cobbie come")) {
 			body.startFollowing();
 			body.enqueue(new ActionIntent(ActionVocabulary.FOLLOW, "", 0, 0, 0, ""));
-			sender.sendSystemMessage(cobbieSays("following you"));
+			sender.sendSystemMessage(cobbieSays(body, "following you"));
 			return;
 		}
 		if (t.startsWith("cobbie stay") || t.startsWith("cobbie wait")) {
 			body.stopFollowing();
 			body.cancelTask("owner asked me to stay");
 			body.enqueue(new ActionIntent(ActionVocabulary.STAY, "", 0, 0, 0, ""));
-			sender.sendSystemMessage(cobbieSays("staying here"));
+			sender.sendSystemMessage(cobbieSays(body, "staying here"));
 			return;
 		}
 		if (t.startsWith("cobbie inventory") || t.startsWith("cobbie bag")) {
-			sender.sendSystemMessage(cobbieSays("I am carrying: " + body.describeInventory()));
+			sender.sendSystemMessage(cobbieSays(body, "I am carrying: " + body.describeInventory()));
 			return;
 		}
 		if (t.startsWith("cobbie skills")) {
-			sender.sendSystemMessage(cobbieSays("skills I know:\n" + SkillExecutor.describeAll()));
+			sender.sendSystemMessage(cobbieSays(body, "skills I know:\n" + SkillExecutor.describeAll()));
 			return;
 		}
 		if (t.startsWith("cobbie do ") && owner) {
 			String skill = text.trim().substring("cobbie do ".length()).trim();
 			SkillExecutor.Outcome outcome = SkillExecutor.run(body, skill);
-			sender.sendSystemMessage(cobbieSays(outcome.message()));
+			sender.sendSystemMessage(cobbieSays(body, outcome.message()));
 			return;
 		}
 		if (t.startsWith("cobbie do ")) {
-			sender.sendSystemMessage(cobbieSays("only my owner can tell me to run a saved skill"));
+			sender.sendSystemMessage(cobbieSays(body, "only my owner can tell me to run a saved skill"));
 		}
 	}
 
@@ -591,20 +591,20 @@ public final class CobbieBrain {
 				body.say("staying here");
 			}
 			case "collect" -> body.enqueue(new ActionIntent(ActionVocabulary.COLLECT, "", 0, 0, 0, ""));
-			case "bag" -> sender.sendSystemMessage(cobbieSays("I am carrying: " + body.describeInventory()));
+			case "bag" -> sender.sendSystemMessage(cobbieSays(body, "I am carrying: " + body.describeInventory()));
 			case "drop" -> {
 				// Urgent: whatever he was doing is parked and resumes afterwards, not thrown away.
 				String refusal = body.offerUrgentPlan("drop " + hit.target(),
 						List.of(new ActionIntent(ActionVocabulary.DROP, hit.target(), 0, 0, 0, "all")));
-				if (refusal != null) sender.sendSystemMessage(cobbieSays(refusal));
+				if (refusal != null) sender.sendSystemMessage(cobbieSays(body, refusal));
 			}
 			case "lookup" -> {
-				sender.sendSystemMessage(cobbieSays("looking that up..."));
+				sender.sendSystemMessage(cobbieSays(body, "looking that up..."));
 				WebLookup.search(hit.target()).thenAccept(answer -> {
 					MinecraftServer server = sender.level().getServer();
 					if (server != null) {
 						server.execute(() -> {
-							sender.sendSystemMessage(cobbieSays(answer));
+							sender.sendSystemMessage(cobbieSays(body, answer));
 							if (CobbieConfig.isMemoryEnabled()) {
 								CobbieMemory.addTurn(sender.getUUID(), "look up " + hit.target(), answer);
 							}
@@ -637,7 +637,7 @@ public final class CobbieBrain {
 				// report still goes to memory below, where detail is worth having.
 				TaskPlan finished = cobbie.lastPlan();
 				String line = Narrator.jobLine(finished);
-				owner.sendSystemMessage(cobbieSays(line == null ? "done" : line));
+				owner.sendSystemMessage(cobbieSays(cobbie, line == null ? "done" : line));
 				cobbie.noteSpokenNow();
 				ActionTiming.resultSpoken(System.currentTimeMillis());
 			}
@@ -707,7 +707,7 @@ public final class CobbieBrain {
 			Cobbie.LOGGER.info("Cobbie learned the skill \"{}\" from: {}", name, report);
 			ServerPlayer owner = cobbie.owner();
 			if (owner != null) {
-				owner.sendSystemMessage(cobbieSays("I learned how to do that - saved as \"" + name
+				owner.sendSystemMessage(cobbieSays(cobbie, "I learned how to do that - saved as \"" + name
 						+ "\" (cobbie do " + name + ")"));
 			}
 			if (CobbieConfig.isMemoryEnabled()) {
@@ -746,7 +746,7 @@ public final class CobbieBrain {
 		inFlight.incrementAndGet();
 		ActionTiming.extraModelCall();
 
-		final String system = CobbiePrompt.systemPrompt(cobbie.perceive(),
+		final String system = CobbiePrompt.systemPrompt(cobbie.companionName(), cobbie.perceive(),
 				CobbieConfig.isMemoryEnabled() ? CobbieMemory.longTermSummary(ownerId) : "",
 				"", SkillRegistry.describeForPrompt(4));
 
@@ -756,7 +756,7 @@ public final class CobbieBrain {
 			final ActionParser.ActionPlan plan = ActionParser.parse(result.content());
 			server.execute(() -> {
 				if (cobbie.isRemoved()) return;
-				listener.sendSystemMessage(cobbieSays(shorten(plan.answer(), 300)));
+				listener.sendSystemMessage(cobbieSays(cobbie, shorten(plan.answer(), 300)));
 				if (plan.hasWorldAction() && !cobbie.isBusy()) {
 					List<ActionIntent> allowed = new ArrayList<>();
 					for (ActionIntent intent : plan.actions()) {
@@ -833,7 +833,14 @@ public final class CobbieBrain {
 	}
 
 	private static Component cobbieSays(String text) {
-		return Component.literal("§e[Cobbie] §f" + (text == null ? "..." : text));
+		return cobbieSays(null, text);
+	}
+
+	/** His own lines carry his own name: a prefix that says Cobbie while the nameplate does not is the bug. */
+	private static Component cobbieSays(CobbieEntity cobbie, String text) {
+		if (cobbie != null) return cobbie.says(text);
+		return Component.literal("§e[" + com.rishi.cobbie.identity.CompanionName.DEFAULT + "] §f"
+				+ (text == null ? "..." : text));
 	}
 
 	private static String shorten(String s, int max) {
