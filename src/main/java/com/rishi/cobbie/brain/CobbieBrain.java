@@ -343,10 +343,18 @@ public final class CobbieBrain {
 	private static final boolean REPAIR_ENABLED =
 			!"off".equalsIgnoreCase(System.getProperty("cobbie.repair", "on"));
 
-	/** Words that claim he is doing something. Kept short on purpose: the repair below costs a call. */
+	/**
+	 * Words that claim he is doing something.
+	 *
+	 * <p>This was a hand-written verb list — zooming, weaving, brewing, grinding, stripping — and it missed the
+	 * words the model actually reached for: *"Equipping my worst pickaxe — the worn one — now"*, *"Switching to
+	 * your worn pickaxe now"* and *"Applying that sharpness book to your best sword"* all escaped the honesty check
+	 * and were delivered as if the work had been queued. A list of verbs cannot keep up with a model's phrasing, so
+	 * the gerund rule carries the weight and the list is only an extra signal: any "-ing" word in a reply is a claim
+	 * worth one repair call, and the repair is bounded to exactly one.
+	 */
 	private static final java.util.regex.Pattern PROMISE = java.util.regex.Pattern.compile(
-			"\\b(i'?ll|i will|i'm going|on it|heading|going to|let me|zooming|weaving|brewing|grinding|"
-					+ "stripping|adding|taking|working on|walking over)\\b",
+			"\\b(i'?ll|i will|i'm going|on it|heading|going to|let me|\\w+ing)\\b",
 			java.util.regex.Pattern.CASE_INSENSITIVE);
 
 	/**
@@ -391,7 +399,11 @@ public final class CobbieBrain {
 							deliver(sender, body, speakerId, name, said,
 									new ActionParser.ActionPlan(original.answer(), repaired.actions(), List.of()));
 						} else {
+							// He said he was doing something and no step came of it, twice. Delivering the claim
+							// unchanged is the silence this project exists to avoid, so he says what happened.
 							deliver(sender, body, speakerId, name, said, original);
+							sender.sendSystemMessage(cobbieSays(body,
+									"I could not turn that into a step — ask me again and I will try."));
 						}
 					});
 				}).exceptionally(ex -> {
