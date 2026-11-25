@@ -445,6 +445,8 @@ public final class CobbieConfig {
 			// Block use - planting, bone meal, levers, buttons - sits under building rather than
 			// inventing a switch per verb: it is all "change the world with your hands".
 			case "place", "light", "use" -> buildingAllowed;
+			// Farming is block work with his hands, so it sits under the same switch as planting.
+			case "farm" -> buildingAllowed;
 			case "attack" -> combatAllowed;
 			case "explore" -> explorationAllowed && autonomyMode != AutonomyMode.OFF;
 			case "collect" -> collectionAllowed;
