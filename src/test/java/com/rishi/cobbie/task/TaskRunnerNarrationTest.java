@@ -163,4 +163,25 @@ class TaskRunnerNarrationTest {
 		assertTrue(cancelRunner.cancel("owner said stop"), "the job was still running");
 		assertEquals("stopped, like you asked", Narrator.jobLine(cancelRunner.plan()));
 	}
+
+	@Test
+	void theClosingLineOfAFailedJobNamesWhatStoppedIt() {
+		// The narrator is paced and drops a line offered inside its cooldown, and a retried step offers
+		// two failures a tick apart — so the per-step line with the reason is exactly the line a player
+		// is most likely to miss. The closing line goes out on its own path, so the reason has to be in it.
+		Fake body = new Fake().answering(ActionOutcome.fail(ActionVocabulary.ENCHANT,
+				"I need an enchanting table and there is none near me"));
+		TaskRunner runner = new TaskRunner(body, 6, 0, 60_000L);
+		runner.start("enchant my sword", List.of(
+				new ActionIntent(ActionVocabulary.ENCHANT, "minecraft:diamond_sword", 4, 64, 4, "")));
+		runner.tick(1_000L);
+
+		TaskPlan plan = runner.plan();
+		assertEquals(TaskPlan.Status.FAILED, plan.status());
+		String line = Narrator.jobLine(plan);
+		assertNotNull(line, "a failed job must still close with a line");
+		assertTrue(line.toLowerCase(java.util.Locale.ROOT).contains("enchanting table"),
+				"the closing line does not say what stopped him: \"" + line + "\"");
+		assertFalse(Narrator.mentionsCoordinates(line), "a spoken line carries no coordinates: " + line);
+	}
 }

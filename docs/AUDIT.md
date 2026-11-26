@@ -174,3 +174,195 @@ travel and movement belong to another thread in this file, so it is named here r
   than off an interaction result.
 - `tools/audit-bug-families.py` — the scanner, kept because re-running it before a slice is cheaper than
   rediscovering a family by shipping it again.
+
+# The endings inventory — 0.79.0
+
+Nine slices have each fixed one verb's honest ending, and every one of them was found by a probe or a run.
+Nothing had asked the whole question at once: **for every verb he can execute, what exactly does he claim,
+and what is that claim checked against?** Two defects were sitting in the answer, and both were of the shape
+this file keeps rediscovering — a success claimed off an intermediate answer rather than off the world.
+
+The count, which is the spine of this section:
+
+| | verbs |
+|---|---|
+| registered in `ActionVocabulary` | **36** |
+| that make no claim about the world (`answer`, `chat`, `wave`, `follow`, `stay`, `explore`, `wait`, `lookup`) | 8 |
+| that change or read the world | **28** |
+| whose success is read back **off the world** after the change | **17** |
+| whose success is taken from **a call's own return value** and never re-read | **11** |
+
+Seventeen and eleven, not twenty-eight and zero. The eleven are not dishonest — the game's own transaction
+answering "yes" is real evidence — but they are a *different grade* of evidence, and the difference is what
+decides which verb is the next false success. A station's menu returning a result is a fact about that menu;
+the bag afterwards is a fact about him.
+
+## The table
+
+`done means` is the objective in the owner's words. `claimed from` is what the code actually reads before it
+says OK. **W** = re-read off the world after the change; **C** = a returned value, never re-observed;
+**N** = no claim about the world at all.
+
+| verb | done means | claimed from | |
+|---|---|---|---|
+| `walk-to` | he is standing at the square | `blockPosition().closerThan(target)` | W |
+| `mine` | the block is air and the drop is his | block state re-read, `destroyBlock` accepted | W |
+| `place` | the block is there and one left his bag | `setBlock` returned true **and** state re-read | W |
+| `light` | a torch is at the square | same path as `place` (the verb is rewritten to it) | W |
+| `write` | the sign holds his words | the sign's own text re-read after setting it | W |
+| `take` | what moved is in his bag | bag grew by exactly what left the container | W |
+| `put` | what left his bag is in the container | bag shrank by exactly what moved | W |
+| `drop` | the stack is on the ground, not in the bag | bag count delta **and** `addFreshEntity` | W |
+| `equip` | the thing is in the equipment slot | slot re-read, and put back if it is not | W |
+| `craft` | the bag gained what the chain said | bag delta versus the recipes' own expected count | W |
+| `smelt` | the bag gained what the furnace made | same `finishWork` accounting as `craft` | W |
+| `use` | the block or the held item changed | both re-read, compared with before | W |
+| `collect` | the pile is in his bag | per-stack `add` outcome, the world stack shrunk to match | W |
+| `attack` | the target is dead | `target.isAlive()` after the swing | W |
+| `farm` | N crops left the world | `destroyBlock` returned true, counted (fixed in 0.79.0) | W |
+| `breed` | a young one exists | calf count before versus after | W |
+| `board` | he is one of its passengers | `craft.getPassengers().contains(this)` | W |
+| `give` | the stack is in the owner's inventory | `owner.getInventory().add(gift)` returned true | C |
+| `repair` | two became one | the grid's own result, computed before the inputs are spent | C |
+| `dye` | the thing took the colour | the dye grid's own result | C |
+| `enchant` | it is enchanted and he was charged | the menu's `EnchantOutcome` (level after, progress, remaining) | C |
+| `anvil` | the book went on | the result slot after a real click on it | C |
+| `brew` | N potions came out | `Containers.extract` returned N | C |
+| `smith` | the upgrade happened | the smithing table's result slot | C |
+| `grind` | the enchantments are off | the grindstone's result, checked to be unenchanted | C |
+| `weave` | the banner carries the pattern | the loom's result, checked to be patterned | C |
+| `map` | the map was worked | the cartography table's result slot | C |
+| `trade` | N results were bought | the trade loop counted its own results | C |
+| `chat` `answer` `wave` `follow` `stay` `explore` `wait` `lookup` | he spoke / waved / is following / stayed / is wandering / is waiting / the brain answered | the flag or the line he just emitted | N |
+
+## The two defects the table found
+
+Both were the same mistake at a different distance from the world: **a successful intermediate answer
+promoted to the answer.**
+
+**`write` reported success having written nothing.** `startWrite` walks him into range when the sign is
+further than his arm, and the hand-over (`performNow`) had no case for the verb — so the walked write fell
+through to a `default` arm that answered `ok("write", "arrived")`. Arriving is where a verb *starts*. The
+plan completed, `Narrator` said "all done", and the sign was blank. The fix is a `WRITE` case that re-reads
+the sign and writes it, and a `default` arm that **fails** — `"i got there but do not know how to write"` —
+because a verb that walks to its work with no arm here is a verb whose work nobody wrote, and the old default
+turned that gap into a success.
+
+**`farm` counted a crop it had not removed.** `harvested++` sat directly after `destroyBlock(...)`, whose
+boolean was discarded: a world that refused the break still incremented the count, so the report said
+"harvested 2" over two crops still standing. It now continues on a false return, and counts a replant only
+when the young crop is really in the world.
+
+A third, smaller one came out of asking the same question of the *closing* line rather than of a verb: **a
+failed job's last word was "partly done — 1 I couldn't manage"**, with no reason in it. The reason existed —
+the narrator had it — but the narrator is paced and drops anything offered inside its cooldown, and a retried
+step offers two failures a tick apart, so the second is always dropped. The line that is guaranteed to be
+heard now carries the reason (`Narrator.jobLine`), scrubbed of coordinates like every other spoken line. The
+endings test is what found it: eight refusals in a row, and only the first one's reason survived to the chat.
+
+## The guarantee is still a convention, and that is the next slice
+
+`TaskRunner.settle()` marks any outcome whose `success()` is true as DONE (`TaskRunner.java:509`). "The world
+agrees" is therefore a property each handler keeps by hand, not one the executor enforces — which is why two
+of the defects above were possible: `write` answered `ok("write", "arrived")` and `farm` answered `ok("farm",
+"harvested 2")`, and nothing in the runner could tell either from a real completion.
+
+Making it structural means an `ActionOutcome` that cannot be built without saying what its claim rests on,
+which is a change at every one of its 254 construction sites plus a per-family answer to "what counts as
+evidence here" — a slice of its own, not an appendix to this one. Doing it halfway would give two definitions
+of success, which is the shape this file spends its first section warning about.
+
+## Bounds: one place, one number, and the reset that was not one
+
+Every retry in this mod is a count. `TaskRunner` bounds a step at `maxRetriesPerStep` (+1 attempt), a place
+at one re-plan (`TaskStep.replanned`), a plan at `planStepLimit` steps and a wall-clock deadline, and its own
+tick loop at `steps × (retries + 2) + 8`. A walk is bounded at three re-hands to the navigator.
+
+The exception was the climb assist: when the navigator came back empty with a climbable beside him and the
+goal above, it **reset `walkRepaths` to zero**, so the same three tries were handed out again, for ever —
+bounded only by the 60-second step deadline. A bound that resets itself when it is used is not a bound, and
+from the outside it looks exactly like one. It now has its own budget (`MAX_CLIMB_ASSISTS`), and the failure
+line says when the climb is what it could not do.
+
+Every one of those numbers is now asserted rather than described:
+
+- `BoundsTest` (unit, 7 tests): a forever-failing step is handed to the world exactly `budget + 1` times; a
+  budget of zero is still one attempt; three failing steps get 3 × (2 + 1) and no more; **a re-plan does not
+  hand the step a fresh retry budget**; a step the world calls broken is never handed over at all; a negative
+  budget clamps to none; a step the world never answers ends at the deadline with the step interrupted.
+- `CobbieEndingsTest` asserts the same count where it is observable in a real world: a `place` with no
+  material in his bag is tried **exactly twice** against a budget of one, and the square is still empty.
+
+## Induced failure, per verb
+
+`CobbieEndingsTest` (registry entry 66) drives one deliberate failure per verb and accepts exactly three
+endings: **it succeeded anyway** (checked against the world, never against the report), **it recovered once
+and succeeded** (proven in `CobbieStalePlanTest` case 3, not duplicated here), or **it stopped and named what
+stopped it** — the reason in the plan record *and* in what he actually said. The fourth ending, success over
+work the world does not have, throws.
+
+| group | verbs | induced failure |
+|---|---|---|
+| the station he has not got | `enchant` `anvil` `smith` `grind` `weave` `map` `brew` `smelt` | everything switched on, nothing built |
+| the item he is not carrying | `drop` `give` `equip` `dye` `repair` `use` | one stick in the bag, nothing else |
+| the thing that is not there | `take` `put` `board` `trade` `breed` `collect` `farm` `attack` | an empty world: no chest, no boat, no villager, no animal, no pile, no crop, no mob |
+| the instruction no recipe can satisfy | `craft` | wool and no planks, no logs |
+| an objective that already holds | `mine` | the square is already air |
+| the write | `write` | a sign eight blocks away; then the same sign broken mid-walk |
+| the count | `place` | every attempt fails the same way |
+
+That is **26 of the 28 world verbs driven in this class**. The remaining two are named rather than omitted:
+`walk-to` is driven by `CobbieStalePlanTest` case 1 (destination filled in before the step), and `light` is
+the `place` path with the block rewritten to a torch, driven by that same class's case 3. The eight verbs
+that make no world claim are not applicable: there is no world fact for them to disagree with.
+
+**What cannot be driven in the harness, and why.** Two induced failures exist only in the code:
+
+- the `farm` false-return path — `destroyBlock` answering false needs a world that refuses the break, and a
+  vanilla flat test world has no protection system, so the fix is covered by reading it and by the reported
+  count matching the world, not by inducing the refusal;
+- the climb-assist bound — it needs a navigator to fail repeatedly beside a climbable with the goal above,
+  which a flat test world does not produce. `BoundsTest` covers the same rule where it can be observed (the
+  runner's retry budget); the entity's own `MAX_CLIMB_ASSISTS` is a count in the source and is asserted by
+  nothing that runs. That is a gap, and it is written down here instead of being left to look tested.
+
+## A second opinion's five findings, verified against the code
+
+A model read the public repository at 0.78.0 and returned five ranked findings. Each was a claim to check,
+not a work order. Two of them are the defects above; the other three are below, with what the code actually
+said.
+
+| # | finding | verdict | where |
+|---|---|---|---|
+| 1 | remote write false success | **real** — the defect at the top of this section | `performNow()` had no `WRITE` arm |
+| 2 | farm false accounting | **real** — `harvested` incremented over a discarded boolean | `farmAround()` |
+| 3 | exception cleanup leaves him unusable | **real** | `begin()` answers `"still busy with " + active.action()` while `active != null`, and a handler that throws never clears it |
+| 4 | unverified output delivery loses items | **real, and narrower than stated** | ten `level().addFreshEntity(pile)` calls whose answer was discarded |
+| 5 | weak item identity maps a description to the wrong item | **half right, wrong consequence** | `slotOf()` searched bag slots only and matched three of six identity fields |
+
+**On 3.** `TaskRunner.tick` catches whatever `tickUnsafe` throws and fails the plan, so the *plan* always
+ended. The entity's in-flight state was a different matter: `active`, `activeTarget`, `workTarget` and the
+walk counters are cleared by `interrupt()` and by nothing else. A handler that threw inside `begin()` thus
+left `active` set for ever, and every later instruction answered "still busy with <verb>" until a reload —
+a companion that is present, alive, and cannot be asked to do anything. Fixed at both entry points: the verb
+table is `dispatch()`, wrapped so a throw interrupts and reports
+`something went wrong on my side (<class>)`; `driveActiveStep()` wraps `driveStep()` the same way.
+
+**On 4.** The claim was item loss through an unverified store. Ten sites — repair, dye, enchant, anvil,
+brew, smith, grind, weave, map, trade — tried his bag and then dropped what would not fit, discarding
+whether the drop landed. A world that refused the entity meant the stack existed nowhere while the sentence
+still said "mended two swords into one". `craft`'s own `storeOrDrop` already checked, which is why this was
+ten sites and not eleven. One helper, `stored()`, answers "in his bag or on the ground", and a false answer
+ends the verb as `lostIt()` rather than as a success.
+
+**On 5, the correction.** The stated consequence — "he can equip or use a different item from the one
+described" — is not what the code did. `slotOf()` searched `inventory` only, so a description naming the
+thing already **in his hand** returned -1 and `equip`/`use` refused with *"I lost track of my sword"* about
+the sword in his hand: a wrong sentence, not a wrong item. The real hazard is the other half of the same
+method, and it is worth stating precisely because it is the stronger one: `slotOf` matched on **id, count
+and damage**, so two diamond swords of the same count and damage answered to each other's description — the
+one with Sharpness I could be taken for "my sharpest sword" when the other carried Sharpness V. Both halves
+are fixed: the match is the whole six-field identity (`candidateOf(stack).equals(chosen)`), and the hand is
+treated as a known place rather than an unknown one, in `equip` (already holding it is the answer) and in
+`use` (it is the item to use).
+

@@ -196,12 +196,32 @@ public final class Narrator {
 					: done <= 1 ? "all done" : "all done — " + done + " things sorted";
 			case CANCELLED -> "stopped, like you asked";
 			case EXPIRED -> "gave up on that one, it was taking too long";
-			case FAILED -> failed == 0
-					? "that did not come together"
-					: "partly done — " + (done > 0 ? done + " done, " : "") + failed
-							+ (failed == 1 ? " I couldn't manage" : " I couldn't manage");
+			case FAILED -> {
+				// The reason, in the closing line, because this is the one line guaranteed to be heard:
+				// the narrator is paced and drops anything offered inside its cooldown, and a step that is
+				// retried offers two failures a tick apart — the second is always dropped. Without this the
+				// owner's last word on a job that failed is "I couldn't manage", which names nothing. When
+				// the plan stopped because the world changed, that sentence has already been said on its
+				// own, so it is not repeated here.
+				String why = plan.abortReason() == null || plan.abortReason().isBlank()
+						? firstFailureReason(plan) : null;
+				String base = failed == 0
+						? "that did not come together"
+						: "partly done — " + (done > 0 ? done + " done, " : "") + failed + " I couldn't manage";
+				yield why == null ? base : base + " — " + why;
+			}
 			default -> "done";
 		};
+	}
+
+	/** Why the job failed, scrubbed and clamped like any other spoken reason, or null when none says. */
+	private static String firstFailureReason(TaskPlan plan) {
+		for (TaskStep step : plan.steps()) {
+			if (step.status() != TaskStep.Status.FAILED) continue;
+			String why = reason(step.result());
+			if (why != null && !why.isBlank()) return why;
+		}
+		return null;
 	}
 
 	/**
