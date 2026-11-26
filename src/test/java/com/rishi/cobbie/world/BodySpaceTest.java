@@ -83,4 +83,36 @@ class BodySpaceTest {
 		BodySpace.Solid farGap = (x, y, z) -> !(x == 9 && (y == 5 || y == 6));
 		assertNull(BodySpace.nearestFree(farGap, 0, 5, 0, 4));
 	}
+
+	// ---- the escape from something that hurts ----
+
+	@Test
+	void theEscapeStepsPastASquareThatIsOnFire() {
+		// Open floor everywhere; the square he is in and the one beside it are burning.
+		BodySpace.Solid floor = (x, y, z) -> y <= 4;
+		BodySpace.Safe notOnFire = (x, y, z) -> !(y == 5 && x <= 1);
+		assertArrayEquals(new int[] {2, 5, 0}, BodySpace.nearestSafe(floor, notOnFire, 0, 5, 0, 4));
+	}
+
+	@Test
+	void theEscapeRefusesASquareWhoseFloorIsWhatHurts() {
+		// The square itself is free air, but its floor is the hazard: standing there costs health.
+		BodySpace.Solid floor = (x, y, z) -> y <= 4;
+		BodySpace.Safe coolFloor = (x, y, z) -> !(y == 4 && x <= 1);
+		assertArrayEquals(new int[] {2, 5, 0}, BodySpace.nearestSafe(floor, coolFloor, 0, 5, 0, 4));
+	}
+
+	@Test
+	void theEscapeReturnsNothingWhenEverySquareWithinReachHurts() {
+		BodySpace.Solid floor = (x, y, z) -> y <= 4;
+		BodySpace.Safe allOnFire = (x, y, z) -> false;
+		assertNull(BodySpace.nearestSafe(floor, allOnFire, 0, 5, 0, 3));
+	}
+
+	@Test
+	void thePlainRescueIsTheSameSearchWithNothingExcluded() {
+		BodySpace.Solid floor = (x, y, z) -> y <= 4;
+		assertArrayEquals(BodySpace.nearestFree(floor, 0, 5, 0, 4),
+				BodySpace.nearestSafe(floor, (x, y, z) -> true, 0, 5, 0, 4));
+	}
 }

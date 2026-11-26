@@ -548,3 +548,82 @@ keeping: the owner sets it or nobody does.
 world: `stone_pickaxe` with damage 1 while iron and diamond read 0; `iron_pickaxe` with damage 2 and the diamond
 left at `maxDamage - 1`, with the remark said exactly once; and obsidian refused with the wooden pickaxe still
 unworn. `ToolChoiceTest` (unit, 10 tests) settles the ordering arithmetic.
+
+# Survival instincts — 0.82.0
+
+Every slice before this one was about what he *claims*. This one is about the body making the claim: he has 20
+health, and until now nothing in the mod made him look after it. Combat exists, and the pathfinder prices lava
+and fire as though they were walls, but nothing stopped a plan from walking him into a fire, digging the block
+he was standing on, or standing in melee at three health until he died.
+
+Four behaviours, and one rule about where each of them lives:
+
+| behaviour | where it is decided | what it reads off the world |
+|---|---|---|
+| get out of fire, lava or a cactus | the tick, beside the wall rescue | the block his **bounding box** overlaps |
+| never dig the block under his feet when the drop is fatal | `mineBlock`, at the swing | the column below, and `calculateFallDamage` |
+| break off when badly hurt | the tick, before the runner advances | `getHealth()`, and a hostile whose `getTarget()` is him |
+| never path down a fall that costs more than he has | `getMaxFallDistance()` | the same damage arithmetic |
+
+## The two numbers are the game's
+
+`world/Falls` is pure, and both behaviours that turn on a drop ask it. The damage function is the game's own
+`LivingEntity.calculateFallDamage` — fall distance, jump boost and the fall-damage-immune tag all inside it —
+handed in as a function so the unit tier can pin the boundary with its own:
+
+- **the drop under a break** is measured to the top of whatever he would land on, because that is where his feet
+  stop; water ends it without damage; lava and the void need no arithmetic.
+- **fatality** is `damage >= health`. A fall costing exactly his health is fatal: the game applies damage at zero
+  health, and dead is dead.
+- **the deepest safe drop** is the largest whole number whose damage is still under his health.
+
+The last one is now what `getMaxFallDistance()` answers, and that is the defect worth recording. The game's own
+answer is `getComfortableFallDistance(health)` = `floor(health + 3)`, which by the game's own arithmetic is a fall
+costing **exactly his health**: at 20 health the pathfinder will cheerfully plan a 23-block drop worth 20 damage.
+The comfort rule is off by one in the direction that kills, and every Mob in the game inherits it.
+
+```
+health 20:  deepest drop he will path down 22   (a 23-block drop costs 20 = his whole bar)
+health  8:  deepest drop he will path down 10   (an 11-block drop costs 8)
+```
+
+## Where each refusal is, and why not somewhere else
+
+- The **hazard escape** is on the tick and not in a verb: a body can be pushed into fire by a piston, a creeper,
+  a teleport or the walk it was given, and the walk it was given is exactly the plan that must not be obeyed. The
+  plan in flight is cancelled with a reason, so the sentence names both the hazard and the stopped work. It is
+  asked of the **bounding box**: his body is 0.6 wide, so standing a block away from a cactus is genuinely not
+  touching it, and the first version of this bug was a rule that teleported him away from a cactus he was never
+  hurting on.
+- The **dig refusal** is in `mineBlock`, the one place both the walked and the in-reach path end. `canStartMining`
+  asks the same question, so a project is never announced that cannot take its first step.
+- The **retreat** is a bounded state (`RETREAT_TICKS` = 160, forty ticks of cooldown after) rather than a verb,
+  because what it interrupts is a step, not a plan. It is also a *setting*: `retreat_health_fraction`, default
+  0.35, and `0` turns the instinct off. The melee goal and the defence goal both stand down while
+  `isRetreating()`, which is the half that keeps a retreat from becoming a fight he turns back into.
+- The **fall limit** is the pathfinder's own hook, so it applies to following, wandering and every walk a plan
+  builds, not only to the verb someone remembered to guard.
+
+## Evidence, per behaviour
+
+| test | class | what it reads off the world |
+|---|---|---|
+| fire, lava, cactus | `CobbieHazardEscapeTest` | his bounding box no longer intersects the hazard block, he is alive at 12/20, and the line names the hazard |
+| the fatal dig | `CobbieFatalDigTest` | the block is **still stone** over lava; at 20 health the same nine-block drop is dug and cost him six; at 4 health it is refused with the drop and his health in the reason |
+| the fatal walk | `CobbieFatalDropTest` | the limit is 22 at 20 health and 10 at 8; a 23-block walk fails naming the drop and the price; he never left the top and never took the damage |
+| disengage | `CobbieDisengageTest` | the same wound and zombie twice: switched off he loses health standing still (6 -> 3); at 0.5 he says he is falling back, keeps 9, and ends beside his owner |
+
+## What could not be built honestly here, and what stands in for it
+
+- **A cliff over lava** — the dig test builds the shaft (solid platform, six blocks of air, lava) rather than a
+  natural cliff, because a flat harness world has no cliffs and building one by hand would be a sculpture of a
+  cliff, not a cliff. The question the code asks is the same either way: what is in the column below.
+- **The control run in `CobbieDisengageTest` needs the zombie re-pointed every tick.** A zombie's own targeting
+  goal prefers players, and the owner is standing right there, so the engagement the test sets up is replaced a
+  few ticks later and the "fight" becomes a zombie walking at a resident player. The re-point does not stage the
+  damage — the walking and the swinging are the zombie's — but it is rigging of the scenario, and it is named
+  here rather than hidden.
+- **His health after a retreat cannot go *up*.** No mob regenerates in vanilla, so "higher after than before" is
+  not a fact this world can produce. The assertion is the pair instead: with the instinct he finishes on the
+  health he started the retreat with, and without it he does not — which is the same claim measured against the
+  world that exists.

@@ -124,6 +124,13 @@ public final class CobbieConfig {
 	/** An explicit last resort, off by default: teleport to the owner when this far away and making
 	 *  no progress. 0 disables it. Never the normal way he travels. */
 	private static int recallDistance = 0;
+	/**
+	 * The fraction of his health below which a hostile engaging him makes him fall back to his owner.
+	 * A cautious default on purpose — a companion who breaks off a fight at the first scratch is one you
+	 * cannot send into a cave — and 0 turns the instinct off entirely, for owners who would rather he
+	 * stood his ground.
+	 */
+	private static double retreatHealthFraction = 0.35;
 
 	// ---- Permissions (re-checked at execution time, never only at parse time) ----
 	private static boolean miningAllowed = false;
@@ -241,6 +248,7 @@ public final class CobbieConfig {
 		interactionReach = dbl(root, "interaction_reach", interactionReach, 1.0, 16.0);
 		explorationRadius = integer(root, "exploration_radius", explorationRadius, 8, 256);
 		recallDistance = integer(root, "recall_distance", recallDistance, 0, 4096);
+		retreatHealthFraction = dbl(root, "retreat_health_fraction", retreatHealthFraction, 0.0, 1.0);
 
 		miningAllowed = bool(root, "mining_allowed", miningAllowed);
 		buildingAllowed = bool(root, "building_allowed", buildingAllowed);
@@ -409,6 +417,9 @@ public final class CobbieConfig {
 	public static int getExplorationRadius() { ensureLoaded(); return explorationRadius; }
 	public static int getRecallDistance() { ensureLoaded(); return recallDistance; }
 
+	/** Below this fraction of his health, a hostile engaging him makes him fall back. 0 disables it. */
+	public static double getRetreatHealthFraction() { ensureLoaded(); return retreatHealthFraction; }
+
 	public static boolean isMiningAllowed() { ensureLoaded(); return miningAllowed; }
 	public static boolean isBuildingAllowed() { ensureLoaded(); return buildingAllowed; }
 	public static boolean isCombatAllowed() { ensureLoaded(); return combatAllowed; }
@@ -539,6 +550,7 @@ public final class CobbieConfig {
 			root.addProperty("interaction_reach", interactionReach);
 			root.addProperty("exploration_radius", explorationRadius);
 			root.addProperty("recall_distance", recallDistance);
+			root.addProperty("retreat_health_fraction", retreatHealthFraction);
 
 			root.addProperty("mining_allowed", miningAllowed);
 			root.addProperty("building_allowed", buildingAllowed);
@@ -636,6 +648,7 @@ public final class CobbieConfig {
 				+ " containers=" + containersAllowed + " enderChest=" + enderChestAllowed
 				+ "\nfollow=" + followDistance + " nav=" + navigationRange + " reach=" + interactionReach
 				+ " exploreRadius=" + explorationRadius + " recall=" + (recallDistance <= 0 ? "off" : recallDistance)
+				+ " retreat=" + (retreatHealthFraction <= 0 ? "off" : retreatHealthFraction)
 				+ "\nsteps=" + planStepLimit + " retries=" + taskRetryLimit
 				+ " history=" + maxChatHistory + " slots=" + inventorySize;
 	}
