@@ -130,10 +130,22 @@ the budget, and the plan settling inside a tick bound — a loop never settles),
 FAILED, and nothing after the causal line says "all done"), and **silent stop** (the reason is in the
 `RecentLines` window, not only in a field). His health is printed at every stage, as the terrain course does.
 
+The rescue's new line, from the same run:
+
+```
+Cobbie wall rescue #1: inside a block at 2 -60 2 (no plan in flight); recovery destination 1 -60 2
+```
+
 ## Arithmetic versus observed
 
 - **Arithmetic:** unit tier `cleanTest test` — 259 tests, 0 failed, 6 skipped, 30 classes (252 before this slice,
-  +7 in `StaleStepTest`). In-game registry: 65 classes, counted in `CobbieGameTests`.
+  +7 in `StaleStepTest`). In-game registry, whole run, `--no-build-cache --rerun-tasks` — **63 passed, 2 failed of
+  65**, the two being `CobbieSmokeTest` and `CobbieChatTest`. 65 is the registry count in `CobbieGameTests`: 64
+  before this slice plus `CobbieStalePlanTest`.
 - **Observed:** every `[stale]` and `[lifecycle]` line above is copied from a run log.
 - **Not verified:** the two brain-gated classes (`Smoke`, `Chat`) need a model and are red in every run tonight;
   nothing in this slice touches them.
+- **Partly verified:** the wall-rescue line printed for real this run —
+  `Cobbie wall rescue #1: inside a block at 2 -60 2 (no plan in flight); recovery destination 1 -60 2` — so the
+  position, the count and the destination are observed. The plan fields read `no plan in flight` because
+  `CobbieWallRescueTest` seals him with nothing running; they have not yet been seen populated under a live plan.
