@@ -126,6 +126,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private static final double ARRIVE_RADIUS = 1.5;      // "I have walked there", not "I can touch it"
 	private static final int WALK_GRACE_TICKS = 10;       // let the navigator compute before judging it
 	private static final int MAX_WALK_REPATHS = 3;         // then repair a dropped path, a few times
+	/** How many times a walk may be re-handed to the navigator because a climb might get him higher. */
+	private static final int MAX_CLIMB_ASSISTS = 3;
 	private static final int FOLLOW_REPATH_INTERVAL = 12; // the pathfinder is not free
 	private static final int PICKUP_INTERVAL = 20;
 	/** Ticks inside a solid block before he gives up on what he was doing and gets himself out. */
@@ -232,6 +234,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private double arriveRadiusSq;   // how close counts as "arrived" for the action in flight
 	private int walkStartTick;       // the tick the current walk was handed to the navigator
 	private int walkRepaths;         // how many times this walk has been re-handed to it
+	private int climbAssists;        // how many of those were forgiven for being beside a climbable
 	private int pickupReportTick;    // last time a pickup was folded into what he tells the model
 	private int pickedUpSinceReport;
 	private final Set<String> pickedUpIds = new HashSet<>();
@@ -1936,6 +1939,21 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			com.rishi.cobbie.presence.ActionTiming.firstStep(System.currentTimeMillis());
 		}
 
+		try {
+			return dispatch(verb, intent);
+		} catch (RuntimeException e) {
+			// A handler that throws must not leave a step in flight. `active` staying set is how a companion
+			// becomes unusable: every later instruction answers "still busy with <verb>" for ever, and the
+			// only cure is a reload. The class name is said instead of the message because an exception's
+			// message is not a sentence he can say.
+			interrupt();
+			Cobbie.LOGGER.warn("Cobbie {} threw while starting: {}", verb, e.toString());
+			return ActionOutcome.fail(verb, "something went wrong on my side (" + e.getClass().getSimpleName() + ")");
+		}
+	}
+
+	/** The verb table, in one place. Any handler in here may throw; the caller turns that into a failure. */
+	private ActionOutcome dispatch(String verb, ActionIntent intent) {
 		return switch (verb) {
 			case ActionVocabulary.ANSWER, ActionVocabulary.WAIT -> ActionOutcome.ok(verb, "nothing to do");
 			case ActionVocabulary.CHAT -> speak(intent.target());
@@ -2014,10 +2032,26 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		}
 	}
 
-	/** Advance the in-flight step. Non-null return means "this step has settled". */
+	/**
+	 * Advance the in-flight step. Non-null return means "this step has settled".
+	 *
+	 * <p>A throw from any handler ends the step that threw and nothing else: the in-flight state is cleared
+	 * and the failure is reported in words. Without this the step stays active for ever and he answers
+	 * "still busy" to every instruction afterwards.
+	 */
 	private ActionOutcome driveActiveStep() {
 		if (active == null) return null;
 		String verb = active.action();
+		try {
+			return driveStep(verb);
+		} catch (RuntimeException e) {
+			interrupt();
+			Cobbie.LOGGER.warn("Cobbie {} threw while running: {}", verb, e.toString());
+			return ActionOutcome.fail(verb, "something went wrong on my side (" + e.getClass().getSimpleName() + ")");
+		}
+	}
+
+	private ActionOutcome driveStep(String verb) {
 
 		if (this.tickCount > activeDeadlineTick) {
 			interrupt();
@@ -2064,14 +2098,21 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				// A target above a ladder is not unreachable — the pathfinder simply cannot plan the
 				// climb. If he is beside a climbable and the goal is above him, let the climb assist
 				// work and try the path again once he is higher.
-				if (climbableNextTo() != null && activeTarget.getY() > this.blockPosition().getY() + 0.9) {
+				//
+				// Counted, because this used to clear the repath budget and hand the loop a fresh three
+				// tries every time it came back empty: the only thing between it and forever was the
+				// step deadline. A bound that resets is not a bound.
+				if (climbableNextTo() != null && activeTarget.getY() > this.blockPosition().getY() + 0.9
+						&& climbAssists < MAX_CLIMB_ASSISTS) {
+					climbAssists++;
 					walkStartTick = this.tickCount;
 					walkRepaths = 0;
 					return null;
 				}
 				// Read the target before interrupt(): interrupt() clears it, and the failure line then
 				// said "could not get close enough to ?" — a sentence that names nothing.
-				String unreachable = describe(activeTarget) + " from " + describe(this.blockPosition());
+				String unreachable = describe(activeTarget) + " from " + describe(this.blockPosition())
+						+ (climbAssists >= MAX_CLIMB_ASSISTS ? " (and it is too high to climb to)" : "");
 				interrupt();
 				return ActionOutcome.fail(verb, "could not get close enough to " + unreachable);
 			}
@@ -2126,9 +2167,21 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				clearActive();
 				yield outcome;
 			}
+			// The write itself, not the arrival. Until 0.79.0 there was no case here, so a "write" to a
+			// sign further away than his arm walked there and then fell through the default, which
+			// answered "arrived" as a success — a plan completed over a sign with nothing written on it.
+			// Arriving is where a verb starts, never what it claims to have done.
+			case ActionVocabulary.WRITE -> {
+				ActionOutcome outcome = writeAt(work, active.target());
+				clearActive();
+				yield outcome;
+			}
+			// Loud, not quiet. A verb that walks to its work and has no case here is a verb whose work
+			// nobody wrote; answering "arrived" turns that gap into a success, which is the one lie this
+			// file exists to prevent.
 			default -> {
 				clearActive();
-				yield ActionOutcome.ok(verb, "arrived");
+				yield ActionOutcome.fail(verb, "i got there but do not know how to " + verb);
 			}
 		};
 	}
@@ -2168,6 +2221,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		activeDeadlineTick = this.tickCount + STEP_DEADLINE_TICKS;
 		walkStartTick = this.tickCount;
 		walkRepaths = 0;
+		climbAssists = 0;
 		getNavigation().moveTo(standAt.getX(), standAt.getY(), standAt.getZ(), 0.9);
 	}
 
@@ -2522,15 +2576,37 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return com.rishi.cobbie.action.ItemQuery.resolve(description, candidates);
 	}
 
+	/**
+	 * Is this stack in one of the two places a thing he made can be: his bag, or the ground at his feet?
+	 *
+	 * <p>Ten call sites used to answer this by trying the bag and then discarding the answer of
+	 * {@code addFreshEntity}, so a world that refused the drop meant the item existed nowhere and the
+	 * sentence still said "mended", "brewed", "bought". A stack that is nowhere is not a success with a
+	 * footnote; it is the one failure a player notices immediately.
+	 */
+	private boolean stored(ItemStack made) {
+		if (made == null || made.isEmpty()) return true;
+		if (add(made, inventory)) return true;
+		ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), made);
+		pile.setDefaultPickUpDelay();
+		return level().addFreshEntity(pile);
+	}
+
+	/** The honest ending when something he made exists in no place at all. */
+	private ActionOutcome lostIt(String verb, ItemStack made) {
+		return ActionOutcome.fail(verb,
+				"I made " + itemId(made) + " and then lost it — the world would not take it");
+	}
+
 	/** The slot holding the item a description resolved to, or -1 when the bag moved under us. */
 	private int slotOf(com.rishi.cobbie.action.ItemQuery.Candidate chosen) {
 		for (int i = 0; i < inventory.getContainerSize(); i++) {
 			ItemStack stack = inventory.getItem(i);
 			if (stack.isEmpty()) continue;
-			if (itemId(stack).equals(chosen.id()) && stack.getCount() == chosen.count()
-					&& stack.getDamageValue() == chosen.damage()) {
-				return i;
-			}
+			// The whole identity, not three of its six fields. Matching on id, count and damage alone
+			// meant two swords that share those and differ in their enchantments answered to each other's
+			// description, so "wield my sharpest sword" could pick up the wrong one.
+			if (candidateOf(stack).equals(chosen)) return i;
 		}
 		return -1;
 	}
@@ -2547,8 +2623,18 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			return ActionOutcome.fail("equip", wanted.isEmpty() ? "I have nothing to put on" : resolved.refusal());
 		}
 		int chosenSlot = slotOf(resolved.chosen());
-		if (chosenSlot < 0) return ActionOutcome.fail("equip", "I lost track of the " + wanted);
-		chosen = inventory.getItem(chosenSlot);
+		// A description can name the thing already in his hand. It is not in the bag, so a slot search can
+		// never find it — and "I lost track of my pickaxe" about the pickaxe he is holding is a lie about
+		// his own hand. What is in the hand is a known place; it just is not a bag slot.
+		boolean fromHand = chosenSlot < 0;
+		if (fromHand) {
+			if (!candidateOf(this.getMainHandItem()).equals(resolved.chosen())) {
+				return ActionOutcome.fail("equip", "I lost track of the " + wanted);
+			}
+			chosen = this.getMainHandItem();
+		} else {
+			chosen = inventory.getItem(chosenSlot);
+		}
 
 		EquipmentSlot slot = EquipmentSlot.MAINHAND;
 		var equippable = chosen.get(net.minecraft.core.component.DataComponents.EQUIPPABLE);
@@ -2558,7 +2644,15 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		ItemStack toWear = chosen.copyWithCount(1);
 		ItemStack previous = this.getItemBySlot(slot).copy();
 
-		if (!consumeItem(id, 1)) return ActionOutcome.fail("equip", "I could not take the " + id + " out of my bag");
+		if (fromHand && slot == EquipmentSlot.MAINHAND) {
+			// Already where it needs to be. Moving it to itself would report a change that did not happen.
+			return ActionOutcome.ok("equip", "i am already holding the " + id);
+		}
+		if (fromHand) {
+			this.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+		} else if (!consumeItem(id, 1)) {
+			return ActionOutcome.fail("equip", "I could not take the " + id + " out of my bag");
+		}
 		this.setItemSlot(slot, toWear);
 		if (!previous.isEmpty()) addItem(previous);
 
@@ -3228,11 +3322,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		inventory.setItem(first, ItemStack.EMPTY);
 		inventory.setItem(second, ItemStack.EMPTY);
 		ItemStack leftover = result.copy();
-		if (!add(leftover, inventory)) {
-			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
-			pile.setDefaultPickUpDelay();
-			level().addFreshEntity(pile);
-		}
+		if (!stored(leftover)) return lostIt("repair", leftover);
 		return ActionOutcome.ok("repair", "mended two " + itemId(a) + " into one");
 	}
 
@@ -3275,11 +3365,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		inventory.setItem(dyeSlot, ItemStack.EMPTY);
 		inventory.setItem(targetSlot, ItemStack.EMPTY);
 		ItemStack leftover = result.copy();
-		if (!add(leftover, inventory)) {
-			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
-			pile.setDefaultPickUpDelay();
-			level().addFreshEntity(pile);
-		}
+		if (!stored(leftover)) return lostIt("dye", leftover);
 		return ActionOutcome.ok("dye", "dyed " + itemId(target) + " with " + dyeId);
 	}
 
@@ -3333,11 +3419,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		consumeItem("minecraft:lapis_lazuli", lapisNeeded);
 		inventory.setItem(slot, ItemStack.EMPTY);
 		ItemStack leftover = used.remaining();
-		if (!add(leftover, inventory)) {
-			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
-			pile.setDefaultPickUpDelay();
-			level().addFreshEntity(pile);
-		}
+		if (!stored(leftover)) return lostIt("enchant", leftover);
 		String name = used.remaining().isEmpty() ? "it" : itemId(used.remaining());
 		return ActionOutcome.ok("enchant", "enchanted " + name + " for " + used.levelsSpent()
 				+ " level(s) and " + lapisNeeded + " lapis");
@@ -3422,11 +3504,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		inventory.setItem(itemSlot, ItemStack.EMPTY);
 		inventory.setItem(bookSlot, ItemStack.EMPTY);
 		ItemStack leftover = used.remaining();
-		if (!add(leftover, inventory)) {
-			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
-			pile.setDefaultPickUpDelay();
-			level().addFreshEntity(pile);
-		}
+		if (!stored(leftover)) return lostIt("anvil", leftover);
 		// Success is read off what he now carries, not off the actor's return value: the anvil's output is taken
 		// from the menu after it has been cleared, so "remaining" can be air on a run that worked perfectly.
 		// The same lesson as the item frame — the receipt is the world, never the interaction's answer.
@@ -3717,11 +3795,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			ItemStack copy = made.copy();
 			stand.setItem(slot, ItemStack.EMPTY);
 			taken += copy.getCount();
-			if (!add(copy, inventory)) {
-				ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), copy);
-				pile.setDefaultPickUpDelay();
-				level().addFreshEntity(pile);
-			}
+			if (!stored(copy)) return lostIt("brew", copy);
 		}
 		stand.setChanged();
 		if (taken == 0) return endBrew(ActionOutcome.fail("brew", "nothing came out of the stand"));
@@ -3835,11 +3909,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		shrinkSlot(templateSlot, 1);
 		shrinkSlot(additionSlot, 1);
 		ItemStack leftover = made.copy();
-		if (!add(leftover, inventory)) {
-			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
-			pile.setDefaultPickUpDelay();
-			level().addFreshEntity(pile);
-		}
+		if (!stored(leftover)) return lostIt("smith", leftover);
 		String did = Smithing.isUpgrade(recipe) ? "upgraded " + itemId(base) + " into " : "put a trim on ";
 		return ActionOutcome.ok("smith", did + itemId(made));
 	}
@@ -3899,11 +3969,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		shrinkSlot(slot, 1);
 		ItemStack leftover = used.remaining().copy();
-		if (!add(leftover, inventory)) {
-			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
-			pile.setDefaultPickUpDelay();
-			level().addFreshEntity(pile);
-		}
+		if (!stored(leftover)) return lostIt("grind", leftover);
 		return ActionOutcome.ok("grind", "took the enchantments off " + itemName);
 	}
 
@@ -3983,11 +4049,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		shrinkSlot(dyeSlot, 1);
 		shrinkSlot(patternSlot, 1);
 		ItemStack leftover = made.result().copy();
-		if (!add(leftover, inventory)) {
-			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
-			pile.setDefaultPickUpDelay();
-			level().addFreshEntity(pile);
-		}
+		if (!stored(leftover)) return lostIt("weave", leftover);
 		return ActionOutcome.ok("weave", "wove " + patternName);
 	}
 
@@ -4037,11 +4099,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		shrinkSlot(mapSlot, 1);
 		shrinkSlot(additionSlot, 1);
 		ItemStack leftover = made.result().copy();
-		if (!add(leftover, inventory)) {
-			ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), leftover);
-			pile.setDefaultPickUpDelay();
-			level().addFreshEntity(pile);
-		}
+		if (!stored(leftover)) return lostIt("map", leftover);
 		return ActionOutcome.ok("map", "worked the map with " + itemId(addition));
 	}
 
@@ -4126,11 +4184,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			ItemStack result = chosen.getResult().copy();
 			last = result;
 			resultName = itemId(result);
-			if (!add(result, inventory)) {
-				ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), result);
-				pile.setDefaultPickUpDelay();
-				level().addFreshEntity(pile);
-			}
+			if (!stored(result)) return lostIt("trade", result);
 			merchant.notifyTrade(chosen);
 			bought += chosen.getResult().getCount();
 		}
@@ -4188,14 +4242,22 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		// The adults worth pairing, and the food he has for them. isFood is the animal's own answer.
 		ItemStack food = ItemStack.EMPTY;
-		String kind = null;
+		// Named from the request before anything is looked at, so "I cannot see any cow" can say *cow*
+		// even in an empty field. It used to be filled only from an animal he had already found, which
+		// is exactly the case where the refusal most needs to name one.
+		String kind = typeId == null ? null : typeId.getPath();
 		List<net.minecraft.world.entity.animal.Animal> adults = new ArrayList<>();
 		List<net.minecraft.world.entity.animal.Animal> babies = new ArrayList<>();
+		// Counted separately from the two lists, because an animal he can see but cannot use is still an
+		// animal he can see: "I cannot see any cow" over two cows standing in front of him would be its
+		// own kind of lie. Only what the loop actually looked at counts here.
+		int seen = 0;
 		boolean coolingDown = false;
 		for (net.minecraft.world.entity.Entity e : level().getEntitiesOfClass(
 				net.minecraft.world.entity.animal.Animal.class, this.getBoundingBox().inflate(BREED_RADIUS))) {
 			if (typeId != null && !BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).equals(typeId)) continue;
 			net.minecraft.world.entity.animal.Animal animal = (net.minecraft.world.entity.animal.Animal) e;
+			seen++;
 			if (animal.isBaby()) {
 				babies.add(animal);
 				continue;
@@ -4213,6 +4275,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		}
 
 		if (adults.size() < 2) {
+			if (seen == 0) {
+				return ActionOutcome.fail("breed", "I cannot see any "
+						+ (kind == null ? "animals" : kind) + " to breed");
+			}
 			if (food.isEmpty()) {
 				return ActionOutcome.fail("breed", "I have nothing here that a "
 						+ (kind == null ? "animal" : kind) + " would eat");
@@ -4326,11 +4392,15 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			boolean replant = seedId != null && countItem(seedId) > 0;
 			// Drops, not a silent removal: what a crop gives is the game's business (and it varies with
 			// the tool), so it drops and he picks it up the way he collects anything else.
-			level().destroyBlock(pos, true, this);
+			//
+			// Counted off the world, not off the call: destroyBlock answers whether it actually removed
+			// the block, and a crop still standing is not a crop harvested. Before 0.79.0 the counter went
+			// up regardless, so a refusal from the world read as "harvested 2".
+			if (!level().destroyBlock(pos, true, this)) continue;
 			harvested++;
-			if (replant && level().getBlockState(pos).isAir() && consumeItem(seedId, 1)) {
+			if (replant && consumeItem(seedId, 1)) {
 				level().setBlock(pos, crop.getStateForAge(0), 3);
-				replanted++;
+				if (level().getBlockState(pos).getBlock() == crop) replanted++;
 			}
 		}
 		collectWithinReach();
@@ -4448,13 +4518,20 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				return ActionOutcome.fail("use", resolved.refusal());
 			}
 			int slot = slotOf(resolved.chosen());
-			if (slot < 0) return ActionOutcome.fail("use", "I lost track of the " + intent.target().trim());
-			held = inventory.getItem(slot);
-			if (held != this.getMainHandItem()) {
-				ItemStack hand = this.getMainHandItem();
-				if (!hand.isEmpty()) add(hand.copy(), inventory);
-				inventory.setItem(slot, ItemStack.EMPTY);
-				this.setItemInHand(InteractionHand.MAIN_HAND, held);
+			if (slot < 0) {
+				// The thing described may be the thing in his hand already, which no bag slot can hold.
+				if (!candidateOf(this.getMainHandItem()).equals(resolved.chosen())) {
+					return ActionOutcome.fail("use", "I lost track of the " + intent.target().trim());
+				}
+				held = this.getMainHandItem();
+			} else {
+				held = inventory.getItem(slot);
+				if (held != this.getMainHandItem()) {
+					ItemStack hand = this.getMainHandItem();
+					if (!hand.isEmpty()) add(hand.copy(), inventory);
+					inventory.setItem(slot, ItemStack.EMPTY);
+					this.setItemInHand(InteractionHand.MAIN_HAND, held);
+				}
 			}
 		}
 		// An empty hand is a legitimate request on a hanging thing — it is how an item comes back out of
@@ -4793,7 +4870,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private ActionOutcome startWrite(ActionIntent intent) {
 		BlockPos pos = new BlockPos(intent.x(), intent.y(), intent.z());
 		if (!level().isLoaded(pos)) return ActionOutcome.fail("write", "that area is not loaded");
-		if (!(level().getBlockEntity(pos) instanceof net.minecraft.world.level.block.entity.SignBlockEntity sign)) {
+		if (!(level().getBlockEntity(pos) instanceof net.minecraft.world.level.block.entity.SignBlockEntity)) {
 			return ActionOutcome.fail("write", "there is no sign at " + describe(pos));
 		}
 		if (this.blockPosition().distSqr(pos) > reachSquared()) {
@@ -4802,7 +4879,21 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			beginWalking(intent, stand, pos);
 			return null;
 		}
-		return writeSign(sign, intent.target(), pos);
+		return writeAt(pos, intent.target());
+	}
+
+	/**
+	 * Write to the sign standing at that square, read now.
+	 *
+	 * <p>One path for the sign at arm's length and the sign he walked to, so "there is no sign there"
+	 * is asked again at the moment of writing. A walked step that never re-read its target is exactly
+	 * how a write reported success over a sign somebody else had broken.
+	 */
+	private ActionOutcome writeAt(BlockPos pos, String text) {
+		if (!(level().getBlockEntity(pos) instanceof net.minecraft.world.level.block.entity.SignBlockEntity sign)) {
+			return ActionOutcome.fail("write", "the sign at " + describe(pos) + " is gone now");
+		}
+		return writeSign(sign, text, pos);
 	}
 
 	/** Vanilla's limit per line, and the number of lines a sign has. */
