@@ -1,6 +1,7 @@
 package com.rishi.cobbie.task;
 
 import com.rishi.cobbie.action.ActionIntent;
+import com.rishi.cobbie.action.ActionEvidence;
 import com.rishi.cobbie.action.ActionOutcome;
 import com.rishi.cobbie.action.ActionVocabulary;
 import org.junit.jupiter.api.Test;
@@ -52,7 +53,8 @@ class TaskRunnerTest {
 		public ActionOutcome begin(ActionIntent intent) {
 			begun.add(intent);
 			if (async) return null;
-			return script.isEmpty() ? ActionOutcome.ok(intent.action(), "fine") : script.poll();
+			return script.isEmpty() ? ActionOutcome.ok(intent.action(), "fine", ActionEvidence.world("the world agreed"))
+					: script.poll();
 		}
 
 		@Override
@@ -147,7 +149,7 @@ class TaskRunnerTest {
 		assertEquals(1, exec.begun.size());
 		assertTrue(runner.hasActiveTask(), "still walking");
 
-		exec.script.add(ActionOutcome.ok("walk-to", "arrived at 1 2 3"));
+		exec.script.add(ActionOutcome.ok("walk-to", "arrived at 1 2 3", ActionEvidence.world("i am at 1 2 3")));
 		runner.tick(System.currentTimeMillis());
 		assertFalse(runner.hasActiveTask());
 		assertTrue(runner.takeReport().contains("arrived"));
@@ -282,9 +284,9 @@ class TaskRunnerTest {
 		assertNull(runner.append("also coal", List.of(intent(ActionVocabulary.MINE),
 				intent(ActionVocabulary.MINE))));
 
-		exec.script.add(ActionOutcome.ok("mine", "1"));
-		exec.script.add(ActionOutcome.ok("mine", "2"));
-		exec.script.add(ActionOutcome.ok("mine", "3"));
+		exec.script.add(ActionOutcome.ok("mine", "1", ActionEvidence.world("1 2 3 is air")));
+		exec.script.add(ActionOutcome.ok("mine", "2", ActionEvidence.world("4 5 6 is air")));
+		exec.script.add(ActionOutcome.ok("mine", "3", ActionEvidence.world("7 8 9 is air")));
 		for (int i = 0; i < 12; i++) runner.tick(System.currentTimeMillis());
 
 		long mines = exec.begun.stream().filter(i -> ActionVocabulary.MINE.equals(i.action())).count();
@@ -300,13 +302,13 @@ class TaskRunnerTest {
 
 		// Typed command mid-walk: it must interrupt, and the walk must come back afterwards.
 		runner.start("wave", List.of(intent(ActionVocabulary.WAVE)), true);
-		exec.script.add(ActionOutcome.ok("wave", "waved"));
+		exec.script.add(ActionOutcome.ok("wave", "waved", ActionEvidence.ownAct("i waved")));
 		for (int i = 0; i < 4; i++) runner.tick(System.currentTimeMillis());
 		assertTrue(exec.begun.stream().anyMatch(i -> ActionVocabulary.WAVE.equals(i.action())),
 				"the urgent order must run first: " + exec.begun);
 
 		// Finish the wave, then the parked walk is picked up again and its step re-begun.
-		exec.script.add(ActionOutcome.ok("walk-to", "arrived"));
+		exec.script.add(ActionOutcome.ok("walk-to", "arrived", ActionEvidence.world("i am standing there")));
 		for (int i = 0; i < 8; i++) runner.tick(System.currentTimeMillis());
 		long walks = exec.begun.stream().filter(i -> ActionVocabulary.WALK_TO.equals(i.action())).count();
 		assertTrue(walks >= 2, "the interrupted job must resume: " + exec.begun);
@@ -322,7 +324,7 @@ class TaskRunnerTest {
 		runner.start("second", List.of(intent(ActionVocabulary.MINE)), false);
 
 		runner.cancel("owner said stop");
-		exec.script.add(ActionOutcome.ok("mine", "fine"));
+		exec.script.add(ActionOutcome.ok("mine", "fine", ActionEvidence.world("the square is air")));
 		for (int i = 0; i < 8; i++) runner.tick(System.currentTimeMillis());
 
 		assertTrue(exec.begun.stream().noneMatch(i -> ActionVocabulary.MINE.equals(i.action())),
@@ -340,7 +342,7 @@ class TaskRunnerTest {
 		// a companion that silently ignores you is the failure this test exists to prevent.
 		assertNull(runner.start("second", List.of(intent(ActionVocabulary.WAVE))), "second must be queued");
 
-		exec.script.add(ActionOutcome.ok("walk-to", "arrived"));
+		exec.script.add(ActionOutcome.ok("walk-to", "arrived", ActionEvidence.world("i am standing there")));
 		for (int i = 0; i < 8; i++) runner.tick(System.currentTimeMillis());
 
 		assertTrue(exec.begun.stream().anyMatch(i -> ActionVocabulary.WAVE.equals(i.action())),

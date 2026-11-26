@@ -2,6 +2,7 @@ package com.rishi.cobbie.entity;
 
 import com.mojang.serialization.Codec;
 import com.rishi.cobbie.Cobbie;
+import com.rishi.cobbie.action.ActionEvidence;
 import com.rishi.cobbie.action.ActionIntent;
 import com.rishi.cobbie.action.ActionOutcome;
 import com.rishi.cobbie.action.ActionVocabulary;
@@ -250,6 +251,13 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private int followRepathTick;
 	private int lastPickupTick;
 	private int attackCooldownUntil;
+	/**
+	 * What he is fighting, by identity rather than by the entity handle: a target that dies or walks out of
+	 * a loaded chunk leaves {@code getTarget()} null, and "nothing left to fight" then has to be able to say
+	 * which thing is gone and whether it is dead or simply not there.
+	 */
+	private UUID hunted;
+	private String huntedName;
 	private String lastActionResult = "nothing yet";
 	/** The last thing he said out loud, so a test can check the words and not just the effect. */
 	private String lastSpokenLine = "";
@@ -1955,23 +1963,24 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	/** The verb table, in one place. Any handler in here may throw; the caller turns that into a failure. */
 	private ActionOutcome dispatch(String verb, ActionIntent intent) {
 		return switch (verb) {
-			case ActionVocabulary.ANSWER, ActionVocabulary.WAIT -> ActionOutcome.ok(verb, "nothing to do");
+			case ActionVocabulary.ANSWER, ActionVocabulary.WAIT ->
+					ActionOutcome.ok(verb, "nothing to do", ActionEvidence.ownAct("nothing asked of the world"));
 			case ActionVocabulary.CHAT -> speak(intent.target());
 			case ActionVocabulary.WAVE -> {
 				wave();
-				yield ActionOutcome.ok(verb, "waved hello");
+				yield ActionOutcome.ok(verb, "waved hello", ActionEvidence.ownAct("i waved, and nothing in the world had to change"));
 			}
 			case ActionVocabulary.FOLLOW -> {
 				startFollowing();
-				yield ActionOutcome.ok(verb, "following you again");
+				yield ActionOutcome.ok(verb, "following you again", ActionEvidence.ownAct("i set off after you"));
 			}
 			case ActionVocabulary.STAY -> {
 				stopFollowing();
-				yield ActionOutcome.ok(verb, "staying put");
+				yield ActionOutcome.ok(verb, "staying put", ActionEvidence.ownAct("i stopped where i was"));
 			}
 			case ActionVocabulary.EXPLORE -> {
 				exploreSomewhereNearby();
-				yield ActionOutcome.ok(verb, "wandering a little");
+				yield ActionOutcome.ok(verb, "wandering a little", ActionEvidence.ownAct("i picked somewhere to wander"));
 			}
 			case ActionVocabulary.WALK_TO -> startWalk(intent);
 			case ActionVocabulary.LIGHT -> startPlace(new ActionIntent(ActionVocabulary.PLACE,
@@ -2020,6 +2029,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	@Override
 	public void interrupt() {
 		narrator.clear();
+		hunted = null;
+		huntedName = null;
 		active = null;
 		brew = null;
 		activeTarget = null;
@@ -2124,8 +2135,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (ActionVocabulary.CRAFT.equals(verb) || ActionVocabulary.SMELT.equals(verb)) return workTick();
 		if (ActionVocabulary.BREW.equals(verb)) return brewTick();
 
+		// Loud, for the same reason performNow's default is: something is in flight and nobody wrote down what
+		// finishing it looks like. Answering "done" here is the tail of the same lie as answering "arrived" —
+		// a step that has no way to be finished cannot be finished.
 		interrupt();
-		return ActionOutcome.ok(verb, "done");
+		return ActionOutcome.fail(verb, "i have no way to finish " + verb + " a bit at a time");
 	}
 
 	/** Reached the target position: do the thing we walked there for. */
@@ -2135,7 +2149,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return switch (verb) {
 			case ActionVocabulary.WALK_TO -> {
 				clearActive();
-				yield ActionOutcome.ok(verb, "arrived at " + describe(work));
+				double stood = Math.sqrt(this.blockPosition().distSqr(work));
+				yield ActionOutcome.ok(verb, "arrived at " + describe(work),
+						ActionEvidence.world("i am standing " + oneDecimal(stood) + " block(s) from "
+								+ describe(work)));
 			}
 			case ActionVocabulary.MINE -> {
 				ActionOutcome outcome = mineBlock(work);
@@ -2232,7 +2249,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		String line = text.length() > 200 ? text.substring(0, 200) : text;
 		speakNearby(line);
 		narrator.noteSpokenAt(System.currentTimeMillis());
-		return ActionOutcome.ok("chat", "said: " + line);
+		return ActionOutcome.ok("chat", "said: " + line, ActionEvidence.ownAct("i said it: " + line));
 	}
 
 	/** In-world speech: heard by whoever is standing nearby, never a dimension-wide broadcast. */
@@ -2310,7 +2327,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 					+ (int) navLimit + " blocks)");
 		}
 		if (this.blockPosition().closerThan(target, 1.5)) {
-			return ActionOutcome.ok("walk-to", "already at " + describe(target));
+			return ActionOutcome.ok("walk-to", "already at " + describe(target),
+					ActionEvidence.world("i am standing " + oneDecimal(Math.sqrt(this.blockPosition().distSqr(target)))
+							+ " block(s) from " + describe(target)));
 		}
 		beginWalking(intent, target, target);
 		return null; // asynchronous: arrival is verified in poll()
@@ -2368,10 +2387,19 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		// Loot comes from the game with the tool actually in hand. Never fabricated.
 		List<ItemStack> drops = Block.getDrops(state, serverLevel, pos, null, this, tool);
 
-		if (fitsInInventory(drops)) {
-			if (!serverLevel.destroyBlock(pos, false, this, 3)) {
-				return ActionOutcome.fail("mine", "could not break " + id);
-			}
+		boolean fits = fitsInInventory(drops);
+		if (!serverLevel.destroyBlock(pos, !fits, this, 3)) {
+			return ActionOutcome.fail("mine", "could not break " + id);
+		}
+		wearTool(tool);
+		// The square is read back on both paths, not just the one that keeps the drops. Until 0.80.0 the
+		// full-bag path took destroyBlock's answer as the fact of the break, so the one branch that cannot
+		// check its own loot was also the one that never looked at the world.
+		if (!serverLevel.getBlockState(pos).isAir()) {
+			return ActionOutcome.fail("mine", id + " is still standing at " + describe(pos));
+		}
+
+		if (fits) {
 			int stored = 0;
 			for (ItemStack drop : drops) {
 				if (!drop.isEmpty()) stored += drop.getCount();
@@ -2379,21 +2407,18 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			for (ItemStack drop : drops) {
 				add(drop.copy(), inventory);
 			}
-			wearTool(tool);
-			if (!serverLevel.getBlockState(pos).isAir()) {
-				return ActionOutcome.fail("mine", id + " is still standing at " + describe(pos));
-			}
 			return ActionOutcome.ok("mine", "mined " + id + " at " + describe(pos)
-					+ (stored > 0 ? ", stored " + stored + " item(s)" : " (nothing dropped)"));
+					+ (stored > 0 ? ", stored " + stored + " item(s)" : " (nothing dropped)"),
+					ActionEvidence.world(describe(pos) + " is air now" + (stored > 0
+							? ", and " + stored + " item(s) of it went into my bag"
+							: ", and it dropped nothing")));
 		}
 
 		// Not enough room: drop them where they fall rather than deleting the player's goods.
-		if (!serverLevel.destroyBlock(pos, true, this, 3)) {
-			return ActionOutcome.fail("mine", "could not break " + id);
-		}
-		wearTool(tool);
 		return ActionOutcome.ok("mine", "broke " + id + " at " + describe(pos)
-				+ ", but my bag is full so the items are on the ground");
+				+ ", but my bag is full so the items are on the ground",
+				ActionEvidence.world(describe(pos) + " is air now, and my bag was full so its drops are"
+						+ " on the ground beside me"));
 	}
 
 	/**
@@ -2584,12 +2609,44 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 * sentence still said "mended", "brewed", "bought". A stack that is nowhere is not a success with a
 	 * footnote; it is the one failure a player notices immediately.
 	 */
-	private boolean stored(ItemStack made) {
-		if (made == null || made.isEmpty()) return true;
-		if (add(made, inventory)) return true;
+	private Stored store(ItemStack made) {
+		if (made == null || made.isEmpty()) return Stored.NOWHERE;
+		if (add(made, inventory)) return Stored.BAG;
 		ItemEntity pile = new ItemEntity(level(), getX(), getY() + 0.4, getZ(), made);
 		pile.setDefaultPickUpDelay();
-		return level().addFreshEntity(pile);
+		if (level().addFreshEntity(pile)) return Stored.GROUND;
+		return Stored.NOWHERE;
+	}
+
+	/**
+	 * Where a thing he made ended up. Three answers rather than a boolean, because the success message and
+	 * the evidence sentence are both written from it: "mended two into one, and the mended one is on the
+	 * ground at my feet" is a report about the world, and a boolean could only ever say "true".
+	 */
+	private enum Stored {
+		BAG("in my bag"),
+		GROUND("on the ground at my feet"),
+		NOWHERE("nowhere");
+
+		private final String where;
+
+		Stored(String where) {
+			this.where = where;
+		}
+
+		String describe() {
+			return where;
+		}
+	}
+
+	/** How many of this item another player is carrying, read off their inventory rather than a call's answer. */
+	private static int carrying(Player who, net.minecraft.world.item.Item what) {
+		int total = 0;
+		for (int i = 0; i < who.getInventory().getContainerSize(); i++) {
+			ItemStack stack = who.getInventory().getItem(i);
+			if (!stack.isEmpty() && stack.is(what)) total += stack.getCount();
+		}
+		return total;
 	}
 
 	/** The honest ending when something he made exists in no place at all. */
@@ -2646,7 +2703,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		if (fromHand && slot == EquipmentSlot.MAINHAND) {
 			// Already where it needs to be. Moving it to itself would report a change that did not happen.
-			return ActionOutcome.ok("equip", "i am already holding the " + id);
+			return ActionOutcome.ok("equip", "i am already holding the " + id,
+					ActionEvidence.world("my main hand is holding " + id));
 		}
 		if (fromHand) {
 			this.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, ItemStack.EMPTY);
@@ -2663,7 +2721,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			this.setItemSlot(slot, previous);
 			return ActionOutcome.fail("equip", "the game would not let me wear the " + id);
 		}
-		return ActionOutcome.ok("equip", "equipped " + id + " in " + slot.getName() + ", verified");
+		return ActionOutcome.ok("equip", "equipped " + id + " in " + slot.getName() + ", verified",
+				ActionEvidence.world("my " + slot.getName() + " slot holds " + itemId(now)));
 	}
 
 	/**
@@ -2713,7 +2772,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			return ActionOutcome.fail("drop", "my bag says " + heldAfter + " " + id
 					+ " but it should say " + (heldBefore - count));
 		}
-		return ActionOutcome.ok("drop", "dropped " + count + " " + id + " at " + describe(at));
+		return ActionOutcome.ok("drop", "dropped " + count + " " + id + " at " + describe(at),
+				ActionEvidence.world("my bag went from " + heldBefore + " to " + heldAfter + " " + id
+						+ ", and the pile is on the ground at " + describe(at)));
 	}
 
 	/**
@@ -2739,12 +2800,26 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		}
 
 		String id = itemId(gift);
+		// Named before the hand-over: add() empties the stack it is given, and a count taken afterwards
+		// asks about minecraft:air and reads zero every time — which failed a give that had worked.
+		net.minecraft.world.item.Item given = gift.getItem();
+		int yoursBefore = carrying(owner, given);
 		if (!consumeItem(id, 1)) return ActionOutcome.fail("give", "I could not let go of the " + id);
 		if (!owner.getInventory().add(gift)) {
 			addItem(gift);
 			return ActionOutcome.fail("give", "your bag is full, so I kept the " + id);
 		}
-		return ActionOutcome.ok("give", "gave you 1 " + id);
+		// The hand-over is read off your bag, not off add()'s answer: until 0.80.0 "the inventory took it"
+		// was the whole proof, and a gift that merged into nothing would still have been reported given.
+		int yoursNow = carrying(owner, given);
+		if (yoursNow != yoursBefore + 1) {
+			// Not a failure of the hand-over so much as a count he cannot reconcile — and a gift he cannot
+			// confirm is not a gift he reports as given.
+			return ActionOutcome.fail("give", "your bag should hold " + (yoursBefore + 1) + " " + id
+					+ " now and it says " + yoursNow);
+		}
+		return ActionOutcome.ok("give", "gave you 1 " + id,
+				ActionEvidence.world("your bag went from " + yoursBefore + " to " + yoursNow + " " + id));
 	}
 
 	/**
@@ -2873,7 +2948,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		CraftChain.Plan plan = CraftChain.plan(wanted, quantity, book, carriedByItem(), CRAFT_CHAIN_DEPTH);
 		if (!plan.possible()) return ActionOutcome.fail(verb, plan.failure());
 		if (plan.steps().isEmpty()) {
-			return ActionOutcome.ok(verb, "I already have " + countItem(wanted) + " " + wanted);
+			int already = countItem(wanted);
+			return ActionOutcome.ok(verb, "I already have " + already + " " + wanted,
+					ActionEvidence.world("my bag already holds " + already + " " + wanted));
 		}
 
 		Work job = new Work(wanted, plan, countItem(wanted));
@@ -3170,7 +3247,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 					+ " but the recipes should have made " + expected);
 		}
 		ActionOutcome outcome = ActionOutcome.ok("craft", "crafted " + gained + " " + job.wanted
-				+ " (" + job.chain + ")" + (dropped > 0 ? ", " + dropped + " on the ground beside me" : ""));
+				+ " (" + job.chain + ")" + (dropped > 0 ? ", " + dropped + " on the ground beside me" : ""),
+				ActionEvidence.world("my bag gained " + gained + " " + job.wanted
+						+ (dropped > 0 ? " and " + dropped + " more are on the ground beside me" : "")
+						+ ", which is what the recipes said they would make"));
 		this.work = null;
 		clearActive();
 		return outcome;
@@ -3222,7 +3302,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			return ActionOutcome.fail("take", "I moved " + moved + " item(s) but my bag grew by " + gained);
 		}
 		return ActionOutcome.ok("take", "took " + moved + (what.isBlank() ? " item(s)" : " " + what)
-				+ " from the " + Containers.nameOf(serverLevel, pos));
+				+ " from the " + Containers.nameOf(serverLevel, pos),
+				ActionEvidence.world("my bag grew by exactly the " + moved + " that left the "
+						+ Containers.nameOf(serverLevel, pos) + " at " + describe(pos)));
 	}
 
 	private ActionOutcome startPut(ActionIntent intent) {
@@ -3274,7 +3356,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			return ActionOutcome.fail("put", "I moved " + moved + " item(s) but my bag shrank by " + lost);
 		}
 		return ActionOutcome.ok("put", "put " + moved + (what.isBlank() ? " item(s)" : " " + what)
-				+ " in the " + Containers.nameOf(serverLevel, pos));
+				+ " in the " + Containers.nameOf(serverLevel, pos),
+				ActionEvidence.world("my bag shrank by exactly the " + moved + " that went into the "
+						+ Containers.nameOf(serverLevel, pos) + " at " + describe(pos)));
 	}
 
 	/**
@@ -3321,9 +3405,15 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		inventory.setItem(first, ItemStack.EMPTY);
 		inventory.setItem(second, ItemStack.EMPTY);
+		// Named before the bag swallows it: add() empties the stack it is given, and reading the id
+		// afterwards produces "there is one minecraft:air where two damaged ones were".
+		String mended = itemId(a);
 		ItemStack leftover = result.copy();
-		if (!stored(leftover)) return lostIt("repair", leftover);
-		return ActionOutcome.ok("repair", "mended two " + itemId(a) + " into one");
+		Stored kept = store(leftover);
+		if (kept == Stored.NOWHERE) return lostIt("repair", leftover);
+		return ActionOutcome.ok("repair", "mended two " + mended + " into one",
+				ActionEvidence.world("my two damaged " + mended + " are gone and there is one mended "
+						+ mended + " " + kept.describe()));
 	}
 
 	/**
@@ -3364,9 +3454,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		inventory.setItem(dyeSlot, ItemStack.EMPTY);
 		inventory.setItem(targetSlot, ItemStack.EMPTY);
+		String dyed = itemId(target);
 		ItemStack leftover = result.copy();
-		if (!stored(leftover)) return lostIt("dye", leftover);
-		return ActionOutcome.ok("dye", "dyed " + itemId(target) + " with " + dyeId);
+		Stored kept = store(leftover);
+		if (kept == Stored.NOWHERE) return lostIt("dye", leftover);
+		return ActionOutcome.ok("dye", "dyed " + dyed + " with " + dyeId,
+				ActionEvidence.world("the " + dyed + " is " + kept.describe() + ", and it took the " + dyeId));
 	}
 
 	/**
@@ -3419,10 +3512,13 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		consumeItem("minecraft:lapis_lazuli", lapisNeeded);
 		inventory.setItem(slot, ItemStack.EMPTY);
 		ItemStack leftover = used.remaining();
-		if (!stored(leftover)) return lostIt("enchant", leftover);
-		String name = used.remaining().isEmpty() ? "it" : itemId(used.remaining());
+		// Before store(), which empties the stack it is handed: "enchanted it" was this name read late.
+		String name = leftover.isEmpty() ? "it" : itemId(leftover);
+		Stored kept = store(leftover);
+		if (kept == Stored.NOWHERE) return lostIt("enchant", leftover);
 		return ActionOutcome.ok("enchant", "enchanted " + name + " for " + used.levelsSpent()
-				+ " level(s) and " + lapisNeeded + " lapis");
+				+ " level(s) and " + lapisNeeded + " lapis",
+				ActionEvidence.world("the enchanted " + name + " is " + kept.describe()));
 	}
 
 	/**
@@ -3504,7 +3600,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		inventory.setItem(itemSlot, ItemStack.EMPTY);
 		inventory.setItem(bookSlot, ItemStack.EMPTY);
 		ItemStack leftover = used.remaining();
-		if (!stored(leftover)) return lostIt("anvil", leftover);
+		Stored kept = store(leftover);
+		if (kept == Stored.NOWHERE) return lostIt("anvil", leftover);
 		// Success is read off what he now carries, not off the actor's return value: the anvil's output is taken
 		// from the menu after it has been cleared, so "remaining" can be air on a run that worked perfectly.
 		// The same lesson as the item frame — the receipt is the world, never the interaction's answer.
@@ -3513,7 +3610,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			return ActionOutcome.fail("anvil", "the anvil returned nothing enchanted");
 		}
 		return ActionOutcome.ok("anvil", "put an enchantment on " + itemId(finished) + " for "
-				+ used.levelsSpent() + " level(s)");
+				+ used.levelsSpent() + " level(s)",
+				ActionEvidence.world("i am carrying an enchanted " + itemId(finished) + ", "
+						+ kept.describe()));
 	}
 
 	/**
@@ -3526,7 +3625,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private ActionOutcome boardCraft(ActionIntent intent) {
 		if (this.isPassenger()) {
 			Entity riding = this.getVehicle();
-			return ActionOutcome.ok("board", "already in " + (riding == null ? "something" : riding.getName().getString()));
+			return ActionOutcome.ok("board", "already in " + (riding == null ? "something" : riding.getName().getString()),
+					ActionEvidence.world("i am one of the passengers of what i am riding"));
 		}
 		Entity craft = nearestCraft(intent.target());
 		if (craft == null) {
@@ -3540,7 +3640,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			return ActionOutcome.fail("board", "I got in but the " + craft.getName().getString()
 					+ " is not carrying me");
 		}
-		return ActionOutcome.ok("board", "in the " + craft.getName().getString());
+		return ActionOutcome.ok("board", "in the " + craft.getName().getString(),
+				ActionEvidence.world("i am one of the passengers of the " + craft.getName().getString()));
 	}
 
 	/** The nearest boat or minecart, honouring a hint of which kind he was asked for. */
@@ -3788,6 +3889,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			Brew job) {
 		int taken = 0;
 		String potion = null;
+		Stored brewedWhere = Stored.NOWHERE;
 		for (int slot : job.slots) {
 			ItemStack made = stand.getItem(slot);
 			if (made.isEmpty()) continue;
@@ -3795,11 +3897,15 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			ItemStack copy = made.copy();
 			stand.setItem(slot, ItemStack.EMPTY);
 			taken += copy.getCount();
-			if (!stored(copy)) return lostIt("brew", copy);
+			Stored kept = store(copy);
+			if (kept == Stored.NOWHERE) return lostIt("brew", copy);
+			brewedWhere = kept;
 		}
 		stand.setChanged();
 		if (taken == 0) return endBrew(ActionOutcome.fail("brew", "nothing came out of the stand"));
-		return endBrew(ActionOutcome.ok("brew", "brewed " + taken + " " + (potion == null ? "potions" : potion)));
+		return endBrew(ActionOutcome.ok("brew", "brewed " + taken + " " + (potion == null ? "potions" : potion),
+				ActionEvidence.world(taken + " " + (potion == null ? "potion(s)" : potion + "(s)")
+						+ " came off the stand and are " + brewedWhere.describe())));
 	}
 
 	private BlockPos findBrewingStand() {
@@ -3909,9 +4015,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		shrinkSlot(templateSlot, 1);
 		shrinkSlot(additionSlot, 1);
 		ItemStack leftover = made.copy();
-		if (!stored(leftover)) return lostIt("smith", leftover);
+		Stored kept = store(leftover);
+		if (kept == Stored.NOWHERE) return lostIt("smith", leftover);
 		String did = Smithing.isUpgrade(recipe) ? "upgraded " + itemId(base) + " into " : "put a trim on ";
-		return ActionOutcome.ok("smith", did + itemId(made));
+		return ActionOutcome.ok("smith", did + itemId(made),
+				ActionEvidence.world("the table's " + itemId(made) + " is " + kept.describe()));
 	}
 
 	/** Take {@code amount} out of one bag slot, emptying it rather than leaving a zero-count stack. */
@@ -3969,8 +4077,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		shrinkSlot(slot, 1);
 		ItemStack leftover = used.remaining().copy();
-		if (!stored(leftover)) return lostIt("grind", leftover);
-		return ActionOutcome.ok("grind", "took the enchantments off " + itemName);
+		Stored kept = store(leftover);
+		if (kept == Stored.NOWHERE) return lostIt("grind", leftover);
+		return ActionOutcome.ok("grind", "took the enchantments off " + itemName,
+				ActionEvidence.world("the " + itemName + " with nothing on it is " + kept.describe()));
 	}
 
 	/**
@@ -4049,8 +4159,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		shrinkSlot(dyeSlot, 1);
 		shrinkSlot(patternSlot, 1);
 		ItemStack leftover = made.result().copy();
-		if (!stored(leftover)) return lostIt("weave", leftover);
-		return ActionOutcome.ok("weave", "wove " + patternName);
+		Stored kept = store(leftover);
+		if (kept == Stored.NOWHERE) return lostIt("weave", leftover);
+		return ActionOutcome.ok("weave", "wove " + patternName,
+				ActionEvidence.world("the patterned banner is " + kept.describe()));
 	}
 
 	/**
@@ -4096,11 +4208,15 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			return ActionOutcome.fail("map", made == null ? "the table would not take it" : made.reason());
 		}
 
+		// Before the slot is shrunk: the local stack is the slot's own, and a last one leaves it air.
+		String withWhat = itemId(addition);
 		shrinkSlot(mapSlot, 1);
 		shrinkSlot(additionSlot, 1);
 		ItemStack leftover = made.result().copy();
-		if (!stored(leftover)) return lostIt("map", leftover);
-		return ActionOutcome.ok("map", "worked the map with " + itemId(addition));
+		Stored kept = store(leftover);
+		if (kept == Stored.NOWHERE) return lostIt("map", leftover);
+		return ActionOutcome.ok("map", "worked the map with " + withWhat,
+				ActionEvidence.world("the worked map is " + kept.describe()));
 	}
 
 	/**
@@ -4172,6 +4288,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		// Named before it is stored: add() empties the stack, and "bought 4 minecraft:air" is what
 		// reading the id afterwards produces.
 		String resultName = null;
+		Stored boughtWhere = Stored.NOWHERE;
 		for (int i = 0; i < trades; i++) {
 			ItemStack priceA = chosen.getCostA();
 			ItemStack priceB = chosen.getCostB();
@@ -4184,13 +4301,17 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			ItemStack result = chosen.getResult().copy();
 			last = result;
 			resultName = itemId(result);
-			if (!stored(result)) return lostIt("trade", result);
+			Stored kept = store(result);
+			if (kept == Stored.NOWHERE) return lostIt("trade", result);
+			boughtWhere = kept;
 			merchant.notifyTrade(chosen);
 			bought += chosen.getResult().getCount();
 		}
 		if (bought == 0) return ActionOutcome.fail("trade", "the villager would not complete that trade");
 		return ActionOutcome.ok("trade", "bought " + bought + " " + (resultName == null ? "it" : resultName)
-				+ " for " + describeCost(chosen.getCostA(), chosen.getCostB()));
+				+ " for " + describeCost(chosen.getCostA(), chosen.getCostB()),
+				ActionEvidence.world("i paid the villager and there are now " + bought + " "
+						+ (resultName == null ? "of them" : resultName) + " " + boughtWhere.describe()));
 	}
 
 	/** "1 emerald" or "1 emerald and 2 wheat", for a price that has to be named. */
@@ -4323,7 +4444,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 					+ " no young appeared");
 		}
 		consumeItem(foodId, 2);
-		return ActionOutcome.ok("breed", "fed a pair of " + kind + " and a young one was born");
+		return ActionOutcome.ok("breed", "fed a pair of " + kind + " and a young one was born",
+				ActionEvidence.world("there are " + calvesAfter + " young " + kind + " here now, up from "
+						+ calvesBefore));
 	}
 
 	/** The first food in his bag that this animal would eat, or empty. */
@@ -4396,7 +4519,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			// Counted off the world, not off the call: destroyBlock answers whether it actually removed
 			// the block, and a crop still standing is not a crop harvested. Before 0.79.0 the counter went
 			// up regardless, so a refusal from the world read as "harvested 2".
-			if (!level().destroyBlock(pos, true, this)) continue;
+			level().destroyBlock(pos, true, this);
+			// Counted off the square, before anything is put back on it. destroyBlock's answer is a claim
+			// about the call; a crop still standing is not a crop harvested. 0.79.0 stopped discarding that
+			// boolean; 0.80.0 stops asking the call at all, so the number and the world cannot disagree.
+			if (level().getBlockState(pos).getBlock() == crop) continue;
 			harvested++;
 			if (replant && consumeItem(seedId, 1)) {
 				level().setBlock(pos, crop.getStateForAge(0), 3);
@@ -4410,7 +4537,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return ActionOutcome.ok("farm", "harvested " + harvested + " ripe " + name
 				+ (replanted == harvested ? " and replanted them all"
 						: replanted == 0 ? " and had no seed to replant with"
-								: " and replanted " + replanted));
+								: " and replanted " + replanted),
+				ActionEvidence.world(harvested + " of the " + ripe.size() + " ripe " + name
+						+ " are cut, and " + replanted + " of those squares are planted again"));
 	}
 
 	/**
@@ -4662,7 +4791,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				return ActionOutcome.fail("use", "the " + what + " would not give up the " + itemId(before));
 			}
 			collectWithinReach();
-			return ActionOutcome.ok("use", "took " + itemId(before) + " out of the " + what);
+			return ActionOutcome.ok("use", "took " + itemId(before) + " out of the " + what,
+					ActionEvidence.world("the " + what + " is empty now, and " + itemId(before)
+							+ " is not in it any more"));
 		}
 		com.rishi.cobbie.actor.FakeActor.Outcome outcome;
 		try {
@@ -4685,7 +4816,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		collectWithinReach();
 		return ActionOutcome.ok("use", after.isEmpty()
 				? "took " + (before.isEmpty() ? "nothing" : itemId(before)) + " out of the " + what
-				: "put " + itemId(after) + " in the " + what);
+				: "put " + itemId(after) + " in the " + what,
+				ActionEvidence.world("the " + what + " held " + (before.isEmpty() ? "nothing" : itemId(before))
+						+ " and holds " + (after.isEmpty() ? "nothing" : itemId(after)) + " now"));
 	}
 
 	private ActionOutcome useOnEntity(LivingEntity other, ItemStack held) {
@@ -4710,7 +4843,18 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		// Shearing drops wool at the animal's feet rather than into his hand; anything that landed
 		// within reach is his, so a shear is not "I sheared it and left the wool".
 		collectWithinReach();
-		return ActionOutcome.ok("use", "used " + itemId(held) + " on the " + what);
+		ItemStack inHand = this.getMainHandItem();
+		if (ItemStack.isSameItemSameComponents(held, inHand)) {
+			// The game says the interaction was spent and nothing about him moved: the shears did not wear,
+			// the bucket did not fill, the food was not eaten. There is no world fact here to claim, so this
+			// is not a success — it is the same sentence the block path already gives for a wasted click.
+			return ActionOutcome.fail("use", "nothing happened when I used " + itemId(held)
+					+ " on the " + what + " — my hand is exactly as it was");
+		}
+		String inHandName = inHand.isEmpty() ? "an empty hand" : itemId(inHand);
+		return ActionOutcome.ok("use", "used " + itemId(held) + " on the " + what,
+				ActionEvidence.world("my hand went from " + itemId(held) + " to " + inHandName
+						+ " using it on the " + what));
 	}
 
 	/** Tie an animal to himself, with vanilla leash physics, instead of to a player who is not there. */
@@ -4723,7 +4867,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		mob.setLeashedTo(this, true);
 		if (!mob.isLeashed()) return ActionOutcome.fail("use", "the lead would not hold the " + what);
 		consumeItem("minecraft:lead", 1);
-		return ActionOutcome.ok("use", "put a lead on the " + what + " so it follows me");
+		return ActionOutcome.ok("use", "put a lead on the " + what + " so it follows me",
+				ActionEvidence.world("the " + what + " is on my lead now"));
 	}
 
 	/**
@@ -4797,7 +4942,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 					+ (before.isEmpty() ? "my hand" : itemId(before)) + " on that");
 		}
 		String what = before.isEmpty() ? "my hand" : itemId(before);
-		return ActionOutcome.ok("use", "used " + what + (atBlock ? " at " + describe(pos) : ""));
+		String afterName = after.isEmpty() ? "an empty hand" : itemId(after);
+		return ActionOutcome.ok("use", "used " + what + (atBlock ? " at " + describe(pos) : ""),
+				ActionEvidence.world(blockChanged
+						? "the block at " + describe(pos) + " is now " + blockId(level().getBlockState(pos))
+						: "my hand went from " + what + " to " + afterName));
 	}
 
 	/** How many items he is carrying in total, bag and raised hand together. */
@@ -4933,9 +5082,17 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		sign.setText(new net.minecraft.world.level.block.entity.SignText(messages, java.util.List.of(),
 				current.getColor(), current.hasGlowingText()), slot);
 		java.util.List<net.minecraft.network.chat.Component> after = sign.getText(slot).getMessages(false);
-		String landing = after.isEmpty() ? "" : after.get(0).getString();
+		StringBuilder readBack = new StringBuilder();
+		for (net.minecraft.network.chat.Component line : after) {
+			String said = line.getString();
+			if (said.isBlank()) continue;
+			if (readBack.length() > 0) readBack.append(' ');
+			readBack.append(said);
+		}
+		String landing = readBack.toString();
 		if (landing.isBlank()) return ActionOutcome.fail("write", "the sign did not keep the text");
-		return ActionOutcome.ok("write", "wrote \"" + clean + "\" on the sign at " + describe(pos));
+		return ActionOutcome.ok("write", "wrote \"" + clean + "\" on the sign at " + describe(pos),
+				ActionEvidence.world("the sign at " + describe(pos) + " reads \"" + landing + "\""));
 	}
 
 	/** Word wrap at vanilla's line width, breaking a long word rather than losing it. */
@@ -5069,7 +5226,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			return ActionOutcome.fail("place", "the world would not accept " + itemId + " at " + describe(pos));
 		}
 		consumeItem(itemId, 1);
-		return ActionOutcome.ok("place", "placed " + itemId + " at " + describe(pos));
+		int held = countItem(itemId);
+		return ActionOutcome.ok("place", "placed " + itemId + " at " + describe(pos),
+				ActionEvidence.world(itemId + " is at " + describe(pos) + ", and my bag holds " + held
+						+ " of it now"));
 	}
 
 	/** Orientation preserved: a block with a facing points toward Cobbie, as if he placed it. */
@@ -5122,6 +5282,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private ActionOutcome collectAt(BlockPos pos) {
 		List<ItemEntity> items = level().getEntitiesOfClass(ItemEntity.class,
 				new AABB(pos).inflate(2.0), ItemEntity::isAlive);
+		int bagBefore = bagTotal();
 		int stacks = 0;
 		for (ItemEntity item : items) {
 			ItemStack world = item.getItem();
@@ -5139,7 +5300,14 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			}
 		}
 		if (stacks == 0) return ActionOutcome.fail("collect", "my bag has no room at " + describe(pos));
-		return ActionOutcome.ok("collect", "picked up " + stacks + " stack(s) at " + describe(pos));
+		int gained = bagTotal() - bagBefore;
+		if (gained <= 0) {
+			return ActionOutcome.fail("collect", "my bag did not grow at " + describe(pos)
+					+ ", so nothing came off the ground");
+		}
+		return ActionOutcome.ok("collect", "picked up " + stacks + " stack(s) at " + describe(pos),
+				ActionEvidence.world("my bag grew by " + gained + " item(s), and " + stacks
+						+ " stack(s) are gone from the ground at " + describe(pos)));
 	}
 
 	/** What is already within arm's reach. No wandering, no pathfinding, no spamming. */
@@ -5227,6 +5395,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		LivingEntity target = chooseAttackTarget(intent.target());
 		if (target == null) return ActionOutcome.fail("attack", "nothing I am allowed to fight is nearby");
 		this.setTarget(target);
+		hunted = target.getUUID();
+		huntedName = target.getName().getString();
 		active = intent;
 		activeTarget = target.blockPosition();
 		navigatingForAction = false;
@@ -5262,7 +5432,20 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (target == null || !target.isAlive()) {
 			this.setTarget(null);
 			clearActive();
-			return ActionOutcome.ok("attack", "nothing left to fight");
+			// Asked of the world, not of the field: the thing he was fighting either is not alive or is not
+			// there any more, and which of those it is decides what he says he ended.
+			net.minecraft.world.entity.Entity last = hunted == null || !(level() instanceof ServerLevel world)
+					? null : world.getEntity(hunted);
+			String name = target != null ? target.getName().getString()
+					: huntedName == null ? "it" : huntedName;
+			if (last != null && last.isAlive()) {
+				interrupt();
+				return ActionOutcome.fail("attack", "i lost track of the " + name + " — it is still alive");
+			}
+			return ActionOutcome.ok("attack", "nothing left to fight",
+					ActionEvidence.world(last == null
+							? "the " + name + " is not in the world any more"
+							: "the " + name + " is not alive"));
 		}
 		if (!isLegalTarget(target)) {
 			this.setTarget(null);
@@ -5284,7 +5467,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				return null;
 			}
 			ActionOutcome outcome = ActionOutcome.ok("attack", "hit " + target.getName().getString()
-					+ " and finished it off");
+					+ " and finished it off",
+					ActionEvidence.world(target.getName().getString() + " is not alive"));
 			this.setTarget(null);
 			clearActive();
 			return outcome;
@@ -5561,6 +5745,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 	private static String describe(BlockPos pos) {
 		return pos == null ? "?" : (pos.getX() + " " + pos.getY() + " " + pos.getZ());
+	}
+
+	/** A distance for a sentence the owner reads: one decimal, never 3.0000000000000004. */
+	private static String oneDecimal(double value) {
+		return String.format(java.util.Locale.ROOT, "%.1f", value);
 	}
 
 	/** A free block next to the target, with ground under it, that he can stand on and reach. */

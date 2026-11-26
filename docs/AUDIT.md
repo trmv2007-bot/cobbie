@@ -203,6 +203,10 @@ the bag afterwards is a fact about him.
 says OK. **W** = re-read off the world after the change; **C** = a returned value, never re-observed;
 **N** = no claim about the world at all.
 
+**The C column is history as of 0.80.0.** Every verb in it now reads the world before it claims success and
+the bar is enforced by the executor rather than kept by hand — see "The contract that replaced the
+convention" at the end of this file, which lists which read each one gained.
+
 | verb | done means | claimed from | |
 |---|---|---|---|
 | `walk-to` | he is standing at the square | `blockPosition().closerThan(target)` | W |
@@ -366,3 +370,79 @@ are fixed: the match is the whole six-field identity (`candidateOf(stack).equals
 treated as a known place rather than an unknown one, in `equip` (already holding it is the answer) and in
 `use` (it is the item to use).
 
+# The contract that replaced the convention — 0.80.0
+
+The endings inventory ended with the honest sentence this slice begins from: `TaskRunner.settle()` marked any
+outcome whose `success()` was true as DONE, so "the world agrees" was a property every handler kept by hand.
+Two of the three defects in that section were possible for exactly that reason — `write` answered
+`ok("write", "arrived")` and `farm` answered `ok("farm", "harvested 2")`, and nothing in the runner could
+tell either from a real completion.
+
+That is now the executor's rule rather than each handler's habit.
+
+## One type, one check, one table
+
+`ActionOutcome` cannot be built as a success without `ActionEvidence`, and `ActionEvidence` has exactly two
+kinds: `World` (something was read off the world after the change) and `OwnAct` (the verb claims nothing
+about the world — he spoke, waved, waited). A station's menu answering yes, a boolean a method returned, and
+"the step got where it was walking" are none of those; they are the shapes that produced four false successes
+in one week.
+
+`ActionVocabulary.provesWorld(verb)` is the endings inventory's last column turned into code, and it is
+fail-closed: the eight verbs that claim nothing are named, and everything else — including a verb nobody has
+classified, and a null — has to show the world. `settle()` applies it. A success below the bar becomes a
+failure ("i said write was done with only "i got there" to go on, and write has to be read back off the
+world"), takes the same retry budget as any other failure, and is reported rather than promoted.
+
+Two fall-throughs that used to answer `ok(verb, "done")` and `ok(verb, "arrived")` are failures for the same
+reason the `performNow` default already was: a verb whose finishing move nobody wrote is not finished.
+
+## The inventory, re-counted against what the code now reads
+
+| | verbs |
+|---|---|
+| registered in `ActionVocabulary` | 36 |
+| claiming nothing about the world (`NONE`) | 8 |
+| that change or read the world | 28 |
+| whose success is read back off the world **before it is claimed** | **28** |
+
+Seventeen and eleven was the count at 0.79.0. The eleven were not dishonest and the fix was not to relabel
+them: it was to notice that 0.79.0 had already given ten of them a world read in `stored()` — "the thing I
+made is in my bag or on the ground at my feet" — and that the remaining four paths had a read within reach.
+
+| verb or path | what it reads now | was |
+|---|---|---|
+| `give` | the owner's inventory count before and after, not `add()`'s answer | C |
+| `mine`, full-bag path | the square is air, on the path that used to trust `destroyBlock` | C |
+| `collect` | the bag total grew by what came off the ground | C |
+| `farm` | the squares that no longer hold the crop — the count is that read | W by the boolean |
+| `attack`, target gone | the hunted entity by UUID: not alive, or not in the world | C |
+| `use` on an entity | his hand after the use; an unchanged hand is a failure, not a success | C |
+| `anvil`, `brew` | what he carries, and the stand's own contents, already read | C |
+| ten station verbs | `stored()`'s location, now carried into the sentence | C |
+
+`stored()` became `store()`, returning *where* a made thing went — bag, ground, or nowhere — because the
+success message and the evidence sentence are both written from it. A boolean could say `true`; a location
+can say "in my bag".
+
+## What this contract can and cannot do
+
+It makes the *shape* unwritable: a success with nothing observed does not compile, and a claim weaker than
+the verb's bar does not settle. It cannot stop a handler from writing a world sentence it did not read —
+nothing in a type system can — so the four defects are also pinned by tests that check the **world**, not the
+report:
+
+- `CobbieEvidenceTest` (registry entry 67): a walked write whose sign must read his words with the evidence
+  being those words; a farm whose reported count must equal the squares that lost their crop; a repair whose
+  mended pickaxe must be findable in his bag or on the ground *and* named as being there; an equip of
+  "sharpness 5" among two swords that id, count and damage cannot tell apart, which must leave the enchanted
+  one in his hand.
+- `ActionContractTest` (unit, 9 tests): every verb classified with no gap; a success cannot be built without
+  evidence; the four 0.79.0 defect shapes fed to the runner as they were — a claim with only its own act
+  behind it — and refused with the retry budget every failure gets. Proved to bite by disabling the check in
+  `settle()`, which turns two of them red.
+
+One limit, named: the farm case cannot induce a refused break, because a vanilla flat world has no protection
+system. The number is therefore derived from the squares the world reports empty rather than from
+`destroyBlock`'s answer at all, and the test asserts the count against the field — but no run of this suite
+can make a crop refuse to be cut.

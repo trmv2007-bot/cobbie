@@ -1,6 +1,7 @@
 package com.rishi.cobbie.task;
 
 import com.rishi.cobbie.action.ActionIntent;
+import com.rishi.cobbie.action.ActionEvidence;
 import com.rishi.cobbie.action.ActionOutcome;
 import com.rishi.cobbie.action.ActionVocabulary;
 import org.junit.jupiter.api.Test;
@@ -61,7 +62,7 @@ class StaleStepTest {
 		@Override
 		public ActionOutcome begin(ActionIntent intent) {
 			begun.add(intent);
-			return ActionOutcome.ok(intent.action(), "fine");
+			return ActionOutcome.ok(intent.action(), "fine", ActionEvidence.world("the world agreed"));
 		}
 
 		@Override

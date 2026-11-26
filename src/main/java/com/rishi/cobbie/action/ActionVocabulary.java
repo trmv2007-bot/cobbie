@@ -74,6 +74,16 @@ public final class ActionVocabulary {
 			Set.of(MINE, PLACE, WRITE, ATTACK, COLLECT, LIGHT, GIVE, DROP, EQUIP, CRAFT, SMELT, TAKE, PUT, USE,
 					REPAIR, DYE, ENCHANT, ANVIL, BREW, SMITH, GRIND, WEAVE, MAP, FARM, BREED, TRADE);
 
+	/**
+	 * The verbs that claim nothing about the world: he spoke, waved, is following, is waiting, or the brain
+	 * answered. There is no fact for these to disagree with, so there is nothing to read back.
+	 *
+	 * <p>Everything else — the 28 that change or read the world, {@code walk-to} and {@code board} included,
+	 * because arriving somewhere and being carried are facts about his body in the world — has to be able to
+	 * say what it saw. The list is the exception, so a verb nobody classified falls on the strict side.
+	 */
+	private static final Set<String> NO_WORLD_CLAIM = Set.of(ANSWER, CHAT, FOLLOW, STAY, WAVE, EXPLORE, LOOKUP, WAIT);
+
 	private ActionVocabulary() {}
 
 	public static Set<String> allowed() {
@@ -90,6 +100,20 @@ public final class ActionVocabulary {
 
 	public static boolean isWorldChanging(String action) {
 		return action != null && WORLD_CHANGING.contains(action);
+	}
+
+	/**
+	 * What a success from this verb has to rest on: {@code true} means the world was read back, and a claim
+	 * that cannot show one is not a completion.
+	 *
+	 * <p>This is the endings inventory of {@code docs/AUDIT.md} turned into code — the one place that decides
+	 * what grade of evidence each verb owes. It is deliberately fail-closed: a verb nobody listed, or a null,
+	 * has to show the world, because the only safe answer to "what does this verb owe?" from a list that has
+	 * not heard of it is "the strict one". An allowlist that means "not a claim" when it misses is the family
+	 * of defect this file's audit is mostly about.
+	 */
+	public static boolean provesWorld(String action) {
+		return action == null || !NO_WORLD_CLAIM.contains(action.toLowerCase(Locale.ROOT));
 	}
 
 	/** Normalise what the model wrote into a known verb, or return null when it is nonsense. */
