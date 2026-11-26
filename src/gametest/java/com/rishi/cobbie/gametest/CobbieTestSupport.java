@@ -7,15 +7,25 @@ import net.fabricmc.fabric.api.client.gametest.v1.context.ClientGameTestContext;
 import net.fabricmc.fabric.api.client.gametest.v1.context.TestServerContext;
 import net.fabricmc.fabric.api.client.gametest.v1.context.TestSingleplayerContext;
 import net.minecraft.client.gui.screens.worldselection.WorldCreationUiState;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Difficulty;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.presets.WorldPresets;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -185,6 +195,172 @@ final class CobbieTestSupport {
                     + server.computeOnServer(s -> cobbie(s)
                     .map(c -> c.lastPlan() == null ? "none" : c.lastPlan().status().toString())
                     .orElse("no companion")), t);
+        }
+    }
+
+    /**
+     * A square to build in, where the builder stands, and the face a player standing there would click.
+     *
+     * @param square  the square the block has to appear in
+     * @param feet    where the builder's feet are
+     * @param clicked the block the builder clicks
+     * @param face    the face of that block the builder clicks
+     */
+    record Spot(BlockPos square, BlockPos feet, BlockPos clicked, Direction face) {
+
+        /** The same stance and the same click, moved sideways: the square an oracle is placed in. */
+        Spot moved(int dx, int dz) {
+            return new Spot(square.offset(dx, 0, dz), feet.offset(dx, 0, dz), clicked.offset(dx, 0, dz), face);
+        }
+    }
+
+    /**
+     * What the game gives <em>a real player</em>, standing at this spot, who clicks that face with that
+     * item in hand.
+     *
+     * <p>This is the oracle every placement in these tests is measured against, and it is deliberately
+     * the same call the server performs for a client with an item in hand — the owner's own
+     * {@code gameMode.useItemOn}, with the stance and the click named by the test. Nothing of Cobbie's
+     * placement path is on it, so a state that differs from this one is a state the game would not have
+     * produced for a player standing in the same place.
+     */
+    static BlockState playerUseOnBlock(TestServerContext server, Spot where, Item item) {
+        return server.computeOnServer(s -> {
+            ServerPlayer owner = owner(s);
+            ServerLevel level = s.overworld();
+            Vec3 aim = Vec3.atCenterOf(where.square());
+            double dx = aim.x - (where.feet().getX() + 0.5);
+            double dy = aim.y - (where.feet().getY() + 1.62);
+            double dz = aim.z - (where.feet().getZ() + 0.5);
+            double flat = Math.sqrt(dx * dx + dz * dz);
+            float yaw = (float) (Math.atan2(dz, dx) * 180.0 / Math.PI) - 90.0f;
+            float pitch = (float) (-(Math.atan2(dy, flat) * 180.0 / Math.PI));
+            owner.teleportTo(level, where.feet().getX() + 0.5, where.feet().getY(),
+                    where.feet().getZ() + 0.5, Set.of(), yaw, pitch, true);
+            ItemStack stack = new ItemStack(item, 1);
+            owner.setItemInHand(InteractionHand.MAIN_HAND, stack);
+            try {
+                owner.gameMode.useItemOn(owner, level, stack, InteractionHand.MAIN_HAND,
+                        new BlockHitResult(Vec3.atCenterOf(where.clicked()).relative(where.face(), 0.5),
+                                where.face(), where.clicked(), false));
+                return level.getBlockState(where.square());
+            } finally {
+                owner.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+            }
+        });
+    }
+
+    /** Put him on a block, standing still, which is where a placement is made from. */
+    static void stand(TestServerContext server, BlockPos feet) {
+        server.computeOnServer(s -> {
+            CobbieEntity cobbie = cobbie(s).orElseThrow();
+            cobbie.getNavigation().stop();
+            cobbie.teleportTo(s.overworld(), feet.getX() + 0.5, feet.getY(), feet.getZ() + 0.5,
+                    Set.of(), cobbie.getYRot(), 0.0f, true);
+            cobbie.getNavigation().stop();
+            return null;
+        });
+    }
+
+    /** Ask him to put one of these blocks in this square; returns the plan's refusal, or null. */
+    static String offerPlace(TestServerContext server, BlockPos square, Item item) {
+        String blockId = net.minecraft.core.registries.BuiltInRegistries.BLOCK
+                .getKey(net.minecraft.world.level.block.Block.byItem(item)).toString();
+        return server.computeOnServer(s -> cobbie(s).orElseThrow()
+                .offerPlan("place a block of " + blockId + " here",
+                        List.of(new com.rishi.cobbie.action.ActionIntent(
+                                com.rishi.cobbie.action.ActionVocabulary.PLACE, blockId,
+                                square.getX(), square.getY(), square.getZ(), ""))));
+    }
+
+    /** A blockstate as the world holds it: the block's id and every property, for a failure message. */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    static String stateText(BlockState state) {
+        StringBuilder sb = new StringBuilder(
+                net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());
+        var properties = state.getProperties();
+        if (!properties.isEmpty()) {
+            sb.append('[');
+            boolean first = true;
+            for (var property : properties) {
+                if (!first) sb.append(',');
+                first = false;
+                sb.append(property.getName()).append('=')
+                        .append(((net.minecraft.world.level.block.state.properties.Property) property)
+                                .getName(state.getValue(property)));
+            }
+            sb.append(']');
+        }
+        return sb.toString();
+    }
+
+    /** The last plan's report, for a message about a placement that did not happen. */
+    static String lastReport(TestServerContext server) {
+        return server.computeOnServer(s -> cobbie(s).map(CobbieEntity::lastPlan)
+                .map(plan -> plan.status() + " :: " + plan.report()).orElse("no plan"));
+    }
+
+    /** Put a block in the world through the command system, so the arena is exactly what the test means. */
+    static void stoneAt(TestServerContext server, BlockPos pos) {
+        command(server, "setblock " + pos.getX() + " " + pos.getY() + " " + pos.getZ() + " minecraft:stone");
+    }
+
+    /**
+     * The whole claim of a placement, in one place: he builds it, the owner builds the same thing from
+     * the identical stance on an identical square, and the two blockstates have to agree — plus the
+     * properties the test names, so a failure points at {@code half} or {@code facing} rather than at
+     * "the states differ".
+     *
+     * @param blockId the block that must end up in the square
+     * @param named   properties that must read this way; empty means the block carries none
+     */
+    static void placedLikeAPlayer(TestServerContext server, String what, Item item, Spot subject, Spot oracle,
+            String blockId, Map<String, String> named) {
+        BlockState byPlayer = playerUseOnBlock(server, oracle, item);
+        if (byPlayer.isAir()) {
+            throw new AssertionError(what + ": the owner's own right-click placed nothing at "
+                    + oracle.square() + " either, so this case cannot be measured");
+        }
+        server.computeOnServer(s -> {
+            cobbie(s).orElseThrow().addItem(new ItemStack(item, 1));
+            return null;
+        });
+        stand(server, subject.feet());
+        String refusal = offerPlace(server, subject.square(), item);
+        if (refusal != null) throw new AssertionError(what + ": the plan was refused — " + refusal);
+        // Wait for the square itself, not only for the plan: a finished plan from the previous case
+        // would satisfy "settled" before this one has started.
+        try {
+            server.waitFor(s -> !s.overworld().getBlockState(subject.square()).isAir(), 400);
+        } catch (Throwable ignored) {
+            // the assertion below says what the square holds instead, with the plan's report
+        }
+        awaitPlanSettled(server, 400);
+
+        BlockState placed = server.computeOnServer(s -> s.overworld().getBlockState(subject.square()));
+        if (placed.isAir()) {
+            throw new AssertionError(what + ": nothing was placed at " + subject.square() + ". "
+                    + lastReport(server));
+        }
+        if (!placed.equals(byPlayer)) {
+            throw new AssertionError(what + ": a player standing where he stood gets "
+                    + stateText(byPlayer) + ", and he built " + stateText(placed) + ". "
+                    + lastReport(server));
+        }
+        String text = server.computeOnServer(s -> stateText(s.overworld().getBlockState(subject.square())));
+        if (!text.startsWith(blockId)) {
+            throw new AssertionError(what + ": " + subject.square() + " holds " + text + " instead of "
+                    + blockId);
+        }
+        if (named.isEmpty() && text.contains("[")) {
+            throw new AssertionError(what + ": this block should carry no properties, and reads " + text);
+        }
+        for (Map.Entry<String, String> property : new LinkedHashMap<>(named).entrySet()) {
+            String want = property.getKey() + "=" + property.getValue();
+            if (!text.contains(want)) {
+                throw new AssertionError(what + ": " + subject.square() + " should read " + want
+                        + " and reads " + text);
+            }
         }
     }
 

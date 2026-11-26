@@ -69,7 +69,6 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntity;
-import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.pathfinder.PathType;
 import net.minecraft.world.level.storage.ValueInput;
@@ -3666,7 +3665,14 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		BlockPos anvil = findAnvil();
 		if (anvil == null) return ActionOutcome.fail("anvil", "I need an anvil and there is none near me");
 
-		Pick work = pick(intent.target(), stack -> stack.isEnchantable() && !stack.is(Items.ENCHANTED_BOOK),
+		// A book goes on anything the game says books go on — the ENCHANTABLE component, not
+		// `isEnchantable()`, which also demands the item carry no enchantment yet. That second half is
+		// the table's question ("is this worth offering you"), and asking it here meant a second book on
+		// a sword that already had one was refused with "nothing I carry that a book would improve is
+		// called diamond_sword" — a false sentence about a sword the anvil would happily improve.
+		Pick work = pick(intent.target(),
+				stack -> stack.has(net.minecraft.core.component.DataComponents.ENCHANTABLE)
+						&& !stack.is(Items.ENCHANTED_BOOK),
 				intent.target() == null || intent.target().isBlank()
 						? "I have nothing here that a book would improve"
 						: "nothing I carry that a book would improve is called \"" + intent.target().trim() + "\"");
@@ -3803,7 +3809,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		for (BlockPos probe : BlockPos.betweenClosed(
 				base.offset(-FURNACE_SEARCH, -6, -FURNACE_SEARCH),
 				base.offset(FURNACE_SEARCH, 6, FURNACE_SEARCH))) {
-			if (level().getBlockState(probe).is(Blocks.ANVIL)) return probe.immutable();
+			// Every anvil is an anvil: a used one chips and then dents, and asking for minecraft:anvil
+			// by name meant a companion standing at your chipped anvil said "I need an anvil and there
+			// is none near me". The three blocks are one class, which is the question worth asking.
+			if (level().getBlockState(probe).getBlock() instanceof net.minecraft.world.level.block.AnvilBlock) {
+				return probe.immutable();
+			}
 		}
 		return null;
 	}
@@ -5067,6 +5078,16 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		boolean blockChanged = atBlock && stateBefore != null && !level().getBlockState(pos).equals(stateBefore);
 		boolean handChanged = before.getCount() != after.getCount() || !ItemStack.isSameItemSameComponents(before, after);
+		if (!blockChanged && !handChanged && atBlock
+				&& level().getBlockState(pos).getMenuProvider(level(), pos) != null) {
+			// A chest, a furnace, a table, an anvil: what the game does with a right-click on one is open a
+			// screen, and a screen is for a player. The actor opens it into nothing, so "used it" would be
+			// a claim about a menu that never appeared — and the verbs that really do these jobs read and
+			// write the block itself. Name them instead of pretending.
+			return ActionOutcome.fail("use", "a " + blockId(level().getBlockState(pos))
+					+ " only opens a menu, which I cannot read — tell me to take from it, put something in"
+					+ " it, or use the verb that does the job");
+		}
 		if (!outcome.result().consumesAction() && !blockChanged && !handChanged) {
 			return ActionOutcome.fail("use", "nothing happened when I used "
 					+ (before.isEmpty() ? "my hand" : itemId(before)) + " on that");
@@ -5338,46 +5359,66 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return block == null ? 0 : countItem(BuiltInRegistries.BLOCK.getKey(block).toString());
 	}
 
-	/** Place one block. The material is consumed only AFTER the block is verified to be there. */
+	/**
+	 * Place one block the way a player places it: a right-click on a face, with the game deciding the
+	 * blockstate (see {@link com.rishi.cobbie.actor.FakeActor#placeAt}).
+	 *
+	 * <p>What the report rests on is the state read back at the square, properties included. A stair
+	 * that faces the wrong way, a slab on the wrong half and a torch lying on the floor instead of
+	 * hung on the wall are all "the block is there", and only the state tells them apart — so this is
+	 * the one place in the mod where a placement counts itself done by comparing blockstates. The
+	 * material is consumed only AFTER the state is verified.
+	 */
 	private ActionOutcome placeBlock(String blockName, BlockPos pos) {
 		String refusal = placementRefusal(blockName, pos);
 		if (refusal != null) return ActionOutcome.fail("place", refusal);
 
-		BlockState wanted = resolveState(blockName, pos);
-		if (wanted == null) return ActionOutcome.fail("place", "I do not know a block called " + blockName);
+		Block block = resolveBlock(blockName);
+		if (block == null) return ActionOutcome.fail("place", "I do not know a block called " + blockName);
 		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("place", "no server world");
 
-		String itemId = BuiltInRegistries.BLOCK.getKey(wanted.getBlock()).toString();
+		String itemId = BuiltInRegistries.BLOCK.getKey(block).toString();
 		if (countItem(itemId) < 1) return ActionOutcome.fail("place", "I have no " + itemId + " with me");
 
-		boolean placed = serverLevel.setBlock(pos, wanted, 3);
+		BlockState before = serverLevel.getBlockState(pos);
+		com.rishi.cobbie.actor.FakeActor.Placed placed =
+				com.rishi.cobbie.actor.FakeActor.placeAt(this, serverLevel, pos, new ItemStack(block.asItem(), 1));
 		BlockState now = serverLevel.getBlockState(pos);
-		if (!placed || !now.is(wanted.getBlock())) {
-			return ActionOutcome.fail("place", "the world would not accept " + itemId + " at " + describe(pos));
+		if (placed == null || !placed.placed() || now.isAir() || now.equals(before)) {
+			return ActionOutcome.fail("place", "the game would not put " + itemId + " at " + describe(pos)
+					+ " from where I am standing, and " + describe(pos) + " reads " + stateText(now));
 		}
 		consumeItem(itemId, 1);
 		int held = countItem(itemId);
-		return ActionOutcome.ok("place", "placed " + itemId + " at " + describe(pos),
-				ActionEvidence.world(itemId + " is at " + describe(pos) + ", and my bag holds " + held
-						+ " of it now"));
+		return ActionOutcome.ok("place", "placed " + stateText(now) + " at " + describe(pos),
+				ActionEvidence.world("the world reads " + stateText(now) + " at " + describe(pos)
+						+ ", and my bag holds " + held + " of " + itemId + " now"));
 	}
 
-	/** Orientation preserved: a block with a facing points toward Cobbie, as if he placed it. */
+	/** A blockstate as the world holds it: the block's id and every property it carries. */
+	@SuppressWarnings({"unchecked", "rawtypes"})
+	private static String stateText(BlockState state) {
+		StringBuilder sb = new StringBuilder(blockId(state));
+		var properties = state.getProperties();
+		if (!properties.isEmpty()) {
+			sb.append('[');
+			boolean first = true;
+			for (net.minecraft.world.level.block.state.properties.Property<?> property : properties) {
+				if (!first) sb.append(',');
+				first = false;
+				sb.append(property.getName()).append('=')
+						.append(((net.minecraft.world.level.block.state.properties.Property) property)
+								.getName(state.getValue((net.minecraft.world.level.block.state.properties.Property) property)));
+			}
+			sb.append(']');
+		}
+		return sb.toString();
+	}
+
+	/** Orientation is not decided here any more: the game answers it from the click (see {@link #placeBlock}). */
 	private BlockState resolveState(String blockName, BlockPos pos) {
 		Block block = resolveBlock(blockName);
-		if (block == null) return null;
-		BlockState state = block.defaultBlockState();
-		if (state.hasProperty(BlockStateProperties.HORIZONTAL_FACING)) {
-			state = state.setValue(BlockStateProperties.HORIZONTAL_FACING, facingFrom(pos));
-		}
-		return state;
-	}
-
-	private Direction facingFrom(BlockPos pos) {
-		double dx = this.getX() - (pos.getX() + 0.5);
-		double dz = this.getZ() - (pos.getZ() + 0.5);
-		if (Math.abs(dx) > Math.abs(dz)) return dx > 0 ? Direction.EAST : Direction.WEST;
-		return dz > 0 ? Direction.SOUTH : Direction.NORTH;
+		return block == null ? null : block.defaultBlockState();
 	}
 
 	private Block resolveBlock(String blockName) {
