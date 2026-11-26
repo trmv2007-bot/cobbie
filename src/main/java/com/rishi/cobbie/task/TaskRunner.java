@@ -45,14 +45,28 @@ public final class TaskRunner {
 		void interrupt();
 
 		/**
-		 * Is this objective already true in the world — nothing left for the step to do?
+		 * Has the world moved on since this step's plan was made?
 		 *
-		 * <p>Asked once, when a plan starts, so a project that went stale while it waited its turn is
-		 * reported as finished rather than walked into. A default of {@code false} keeps every caller that
-		 * cannot answer the question exactly as it was.
+		 * <p>Asked at two moments and answered by one rule: once when a plan is adopted, so a project
+		 * that went stale while it queued closes as done, and again the moment each step is about to
+		 * run, because the world does not hold still for a plan. A default of
+		 * {@link StepCheck#ready()} keeps every caller that cannot answer the question exactly as it was.
 		 */
-		default boolean alreadySatisfied(ActionIntent intent) {
-			return false;
+		default StepCheck checkStep(ActionIntent intent) {
+			return StepCheck.ready();
+		}
+
+		/**
+		 * Where else this same job could be done, now that the place it named has changed.
+		 *
+		 * <p>An answer may move the coordinates and nothing else: the runner refuses a substitute that
+		 * changes the verb, the target or the quantity, because those are the instruction and the
+		 * coordinates are only where it was going to happen. The verdict comes along because it is what
+		 * says whether the job has moved elsewhere or been done by somebody else. {@code null} means
+		 * there is no honest substitute and the plan should stop and say what changed.
+		 */
+		default ActionIntent replan(ActionIntent broken, StepCheck why) {
+			return null;
 		}
 	}
 
@@ -249,27 +263,41 @@ public final class TaskRunner {
 	}
 
 	/**
-	 * An objective the world already satisfies is not work.
+	 * An objective the world already satisfies when the plan is adopted is not work.
 	 *
 	 * <p>This is the stale project: the plan was offered while something else was running, the world
-	 * finished the job in the meantime, and the plan starts against a world that has moved on. Asking at
-	 * adoption — once, before the first step — is the only moment the answer is unambiguous: a target that
-	 * never existed at the start of a step is still an impossible step and still fails, which is what
-	 * {@code CobbieLifecycleTest} holds. Here the plan was validated against a world where the target was
-	 * there, so its absence now is the world having done the work.
+	 * finished the job in the meantime, and the plan starts against a world that has moved on. Here an
+	 * absence is unambiguous — the plan was validated against a world where the target was there, so its
+	 * absence now is the world having done the work, and the honest ending is COMPLETED with a line that
+	 * says so rather than a swing at air.
+	 *
+	 * <p>The same predicate is asked again for every step the moment it is about to run (see
+	 * {@code tickUnsafe}), because between adoption and a step's turn there is still a walk to make and
+	 * another player can be doing the same job. The <b>reading</b> is different there, and that is the
+	 * point: at adoption "satisfied" means there is nothing to do yet, and at a step's turn it means the
+	 * work went out from under him — a thing to report, not to claim. Both readings live in the one
+	 * predicate, so the question and the answer cannot drift apart.
 	 */
 	private void skipWhatTheWorldAlreadyDid(TaskPlan next) {
 		for (TaskStep step : next.steps()) {
 			if (!step.isPending()) continue;
-			boolean satisfied;
-			try {
-				satisfied = executor.alreadySatisfied(step.intent());
-			} catch (Exception e) {
-				satisfied = false; // a world that cannot answer is not a world that has finished the job
-			}
-			if (!satisfied) continue;
-			step.markDone("already done — nothing left to do");
-			next.recordAlreadyDone(step.intent().action());
+			StepCheck check = checkStep(step.intent());
+			if (!check.isSatisfied()) continue;
+			step.markDone(check.changed().isBlank()
+					? "already done — nothing left to do" : "already done — " + check.changed());
+			next.recordAlreadyDone(step.intent().action(), "when the plan started");
+		}
+	}
+
+	/** What the executor knows about a step's preconditions, with "it could not answer" kept the same. */
+	private StepCheck checkStep(ActionIntent intent) {
+		try {
+			StepCheck check = executor.checkStep(intent);
+			return check == null ? StepCheck.ready() : check;
+		} catch (Exception e) {
+			// A world that cannot answer is not a world that has changed — and it is not a world that has
+			// finished the job either. The step runs and fails with its own reason.
+			return StepCheck.unknown("could not check it: " + e.getClass().getSimpleName());
 		}
 	}
 
@@ -341,6 +369,24 @@ public final class TaskRunner {
 			}
 			plan.setStatus(TaskPlan.Status.EXECUTING);
 
+			// The plan was made against the world as it was, and the world does not hold still: the log he
+			// was sent for can be broken, the chest emptied, the square filled — or the whole job done by
+			// somebody else — by the time his turn comes. Asked here, at the moment the step stands up.
+			//
+			// Both non-ready answers are a change since adoption, including a step that is now *satisfied*:
+			// the plan promised this work and the world did it instead, so the honest report is that it went
+			// rather than "all done". Adoption is where "already done" belongs, and it has already run.
+			StepCheck check = checkStep(next.intent());
+			if (!check.isReady() && !check.isUnknown()) {
+				if (replanOnce(next, check)) continue;   // the substitute goes round this check again
+				abortOnChange(next, check);
+				queueReport();
+				return;
+			}
+			if (check.isUnknown() && next.attempts() == 0 && !check.changed().isBlank()) {
+				plan.note("could not check step " + (next.index() + 1) + ": " + check.changed());
+			}
+
 			if (!ActionVocabulary.isAllowed(next.intent().action())) {
 				next.markFailed("verb not allowed");
 				plan.finishAsFailure("step " + (next.index() + 1) + " used a forbidden verb");
@@ -360,6 +406,77 @@ public final class TaskRunner {
 		// Only reachable if the executor keeps answering instantly past the plan length.
 		plan.finishAsFailure("planner guard tripped");
 		queueReport();
+	}
+
+	/**
+	 * One bounded replan: ask for the same job somewhere else, and take it only if it is the same job.
+	 *
+	 * <p>The allowance is spent before the executor is asked, so a substitute that is itself broken
+	 * cannot start a second one. The substitute is not run from here — the loop sends it back round the
+	 * same check, which is what makes "the new place is checked before he goes" true rather than a
+	 * promise.
+	 *
+	 * @return whether the step now has somewhere else to go
+	 */
+	private boolean replanOnce(TaskStep step, StepCheck check) {
+		if (step.wasReplanned()) return false;
+		step.markReplanned();
+		ActionIntent original = step.intent();
+		ActionIntent substitute;
+		try {
+			substitute = executor.replan(original, check);
+		} catch (Exception e) {
+			return false; // a world that cannot name a new place has not named one
+		}
+		if (substitute == null) {
+			plan.note("no other place to try: " + check.changed());
+			return false;
+		}
+		if (!sameJob(original, substitute)) {
+			// A substitute that changes the instruction is a different job wearing the same step number.
+			plan.note("refused a substitute that changed the job: " + substitute + " for " + original);
+			return false;
+		}
+		step.retarget(substitute);
+		plan.note("replanned to " + describe(substitute) + " because " + check.changed());
+		return true;
+	}
+
+	/** A replan may move the coordinates. It may not change the verb, the target or the quantity. */
+	private static boolean sameJob(ActionIntent original, ActionIntent substitute) {
+		return original != null && substitute != null
+				&& same(original.action(), substitute.action())
+				&& same(original.target(), substitute.target())
+				&& same(original.data(), substitute.data());
+	}
+
+	private static boolean same(String a, String b) {
+		return (a == null ? "" : a.trim()).equals(b == null ? "" : b.trim());
+	}
+
+	/** One intent, readably, for the plan log — the record a reader follows when a plan goes sideways. */
+	private static String describe(ActionIntent intent) {
+		StringBuilder sb = new StringBuilder(intent.action());
+		if (intent.target() != null && !intent.target().isBlank()) sb.append(' ').append(intent.target());
+		return sb.append(" at ").append(intent.x()).append(' ').append(intent.y()).append(' ').append(intent.z())
+				.toString();
+	}
+
+	/**
+	 * End the plan because the world moved on, naming what changed.
+	 *
+	 * <p>Not a retry: retrying an identical step at an identical place is what a companion does when it
+	 * has stopped thinking. The rest of the plan is abandoned with it, because every later step was
+	 * planned against the world that just changed.
+	 */
+	private void abortOnChange(TaskStep step, StepCheck check) {
+		String action = step.intent().action();
+		String why = check.changed();
+		step.markFailed(why);
+		plan.finishAsFailure("step " + (step.index() + 1) + " (" + action + ") " + why);
+		plan.recordAbort("i stopped — " + why);
+		plan.note(action + " stopped: " + why);
+		notifySettled(step, ActionOutcome.fail(action, why));
 	}
 
 	/** A narrator must never be able to stop the work it is describing. */

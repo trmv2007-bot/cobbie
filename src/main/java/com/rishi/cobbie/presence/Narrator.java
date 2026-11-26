@@ -238,8 +238,13 @@ public final class Narrator {
 				|| n.startsWith("u")) ? "an " : "a ";
 	}
 
-	/** "minecraft:oak_log" -> "oak log"; blank and nonsense -> null. */
-	static String shortTarget(String target) {
+	/**
+	 * "minecraft:oak_log" -> "oak log"; blank and nonsense -> null.
+	 *
+	 * <p>Public because the plan layer needs it too: when a step stops because the world changed, the reason
+	 * is said out loud, and "the chest has no minecraft:coal in it now" is not a sentence a person says.
+	 */
+	public static String shortTarget(String target) {
 		if (target == null) return null;
 		String t = target.trim().toLowerCase(Locale.ROOT);
 		if (t.isEmpty()) return null;

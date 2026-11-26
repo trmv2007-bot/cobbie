@@ -128,9 +128,18 @@ public final class CobbieLifecycleTest implements FabricClientGameTest {
                 cobbie.offerPlan(IMPOSSIBLE, List.of(
                         new ActionIntent(ActionVocabulary.MINE, "minecraft:oak_log", base.getX(), base.getY(),
                                 base.getZ(), "")));
-                // The world removes it before he gets there.
+                // The world removes it before he gets there — and every other oak log within reach of a
+                // replan goes with it. Since 0.78 a step whose target vanished is re-planned onto the same
+                // kind of block nearby, which is the better answer when one exists; "impossible" here means
+                // there is nowhere else for it to go, so this scenario has to clear the ground the way a
+                // world with no oak in it would.
                 CobbieTestSupport.command(s, "setblock " + base.getX() + " " + base.getY() + " " + base.getZ()
                         + " minecraft:air");
+                for (BlockPos at : BlockPos.betweenClosed(base.offset(-10, -3, -10), base.offset(10, 3, 10))) {
+                    if (s.overworld().getBlockState(at).is(Blocks.OAK_LOG)) {
+                        s.overworld().setBlock(at, Blocks.AIR.defaultBlockState(), 3);
+                    }
+                }
                 return null;
             });
             awaitPlan(server, before, IMPOSSIBLE, 1200,

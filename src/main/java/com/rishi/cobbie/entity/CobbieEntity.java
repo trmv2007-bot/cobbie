@@ -15,6 +15,7 @@ import com.rishi.cobbie.net.CobbiePanelPayload;
 import com.rishi.cobbie.presence.FollowSight;
 import com.rishi.cobbie.presence.Narrator;
 import com.rishi.cobbie.presence.Sight;
+import com.rishi.cobbie.task.StepCheck;
 import com.rishi.cobbie.task.TaskPlan;
 import com.rishi.cobbie.task.TaskRunner;
 import com.rishi.cobbie.task.TaskStep;
@@ -131,6 +132,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private static final int WALL_RESCUE_TICKS = 10;
 	/** How far the rescue looks for two free blocks with ground under them. */
 	private static final int WALL_RESCUE_RADIUS = 4;
+	/** How far a replanned mine will look for the same block it was sent for, in blocks. */
+	private static final int MINE_REPLAN_RADIUS = 8;
 	/** How often he remarks on what he can see while he has nothing else to do (60s). */
 	private static final int OBSERVE_INTERVAL_TICKS = 1200;
 
@@ -236,6 +239,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	/** Consecutive ticks with his body inside a solid block, and whether he has said so yet. */
 	private int wallTicks;
 	private boolean wallRescued;
+	/** How many times this body has had to be lifted out of a block, for the log that says when it happens. */
+	private int rescues;
 
 	// ---- bookkeeping ----
 	private int waveTicksLeft;
@@ -876,37 +881,154 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	}
 
 	/**
-	 * Is this objective already true in the world? Asked by the planner when a plan starts, so a project
-	 * that went stale while it queued is reported as finished instead of being walked into.
+	 * Has the world moved on since this step's plan was made? Asked at the moment a step is about to run,
+	 * and once at adoption, by one rule.
 	 *
-	 * <p><b>The rule: yes only where satisfaction is observable and specific</b> — the block that was to be
-	 * removed is gone; the block that was to be placed is standing there; the place he was to walk to is a
-	 * place a body fits. Everything else is <b>unknown</b>, which means the step runs and fails with its own
-	 * reason. A step that needs an item moved, a mob killed or a menu opened has no such predicate, so it is
-	 * never "already done" here: saying yes about work nothing in the world can confirm is a false
-	 * completion claim, and a wrong "no" only costs a walk.
+	 * <p><b>The rule: answer only from something he can see, and answer in the direction that cannot
+	 * produce a falsehood.</b> A block that is now air is a step the world has done — that is a
+	 * completion, and saying so is not a claim about work he did. A block that is now stone where the plan
+	 * had a free square is a step whose precondition has changed, and {@link StepCheck#broken} says what
+	 * changed rather than retrying the same impossible thing. Everything else — a verb with no such
+	 * predicate, a target whose kind he has no record of, an unloaded chunk — is
+	 * {@link StepCheck#ready()} or {@link StepCheck#unknown()}, and the step runs and fails with its own
+	 * reason. A wrong "ready" costs a walk; a wrong "satisfied" is a false completion claim, which is the
+	 * one failure this project exists to prevent.
+	 *
+	 * <p>What is deliberately <b>not</b> answered here: whether the bag holds what a step needs, whether a
+	 * furnace is present, whether a chain of recipes exists. Those are the step's own questions and each
+	 * verb re-asks them as it starts (a craft re-plans its chain, a smelt re-resolves its furnace), so a
+	 * second rule here would be two answers to one question waiting to disagree.
 	 */
 	@Override
-	public boolean alreadySatisfied(ActionIntent intent) {
-		if (intent == null || level() == null) return false;
+	public StepCheck checkStep(ActionIntent intent) {
+		if (intent == null || level() == null) return StepCheck.unknown("nothing to look at");
+		String verb = intent.action() == null ? "" : intent.action();
 		BlockPos pos = new BlockPos(intent.x(), intent.y(), intent.z());
-		if (!level().isLoaded(pos)) return false;
-		return switch (intent.action()) {
+		if (!level().isLoaded(pos)) return StepCheck.unknown("that area is not loaded");
+
+		return switch (verb) {
 			// The thing he was sent to remove is gone: the goal holds, and there is nothing to swing at.
-			case ActionVocabulary.MINE -> level().getBlockState(pos).isAir();
-			// What he was sent to build is already standing there.
-			case ActionVocabulary.PLACE -> {
-				BlockState wanted = resolveState(intent.target(), pos);
-				yield wanted != null && level().getBlockState(pos).is(wanted.getBlock());
+			case ActionVocabulary.MINE -> {
+				BlockState state = level().getBlockState(pos);
+				if (state.isAir()) yield StepCheck.satisfied("there is nothing left at " + describe(pos) + " to break");
+				Block named = resolveBlock(intent.target());
+				yield named != null && !state.is(named)
+						? StepCheck.broken(describe(pos) + " is " + blockId(state) + " now, not the "
+								+ wordsFor(intent.target()) + " i was sent for")
+						: StepCheck.ready();
 			}
-			// Being near a spot is not standing in it. A destination he could never occupy is not satisfied by
-			// distance — without the fit test this answered yes for a walk aimed at solid stone, which became
-			// "nothing left to do — the world had already done that" about a place he cannot stand.
-			case ActionVocabulary.WALK_TO -> BodySpace.fits(this::solidAt, pos.getX(), pos.getY(), pos.getZ())
-					&& this.blockPosition().closerThan(pos, 1.5);
-			default -> false;
+			// What he was sent to build is already standing there, or the square is no longer free.
+			case ActionVocabulary.PLACE, ActionVocabulary.LIGHT -> {
+				BlockState wanted = resolveState(
+						ActionVocabulary.LIGHT.equals(verb) ? "minecraft:torch" : intent.target(), pos);
+				if (wanted == null) yield StepCheck.unknown("i do not know a block called " + intent.target());
+				BlockState standing = level().getBlockState(pos);
+				if (standing.is(wanted.getBlock())) {
+					yield StepCheck.satisfied("the " + blockId(wanted) + " is already standing at " + describe(pos));
+				}
+				yield !standing.isAir() && !standing.canBeReplaced()
+						? StepCheck.broken(describe(pos) + " is " + blockId(standing) + " now, where i was going to build")
+						: StepCheck.ready();
+			}
+			// Being near a spot is not standing in it, and a destination he could never occupy is not
+			// satisfied by distance — without the fit test this answered yes for a walk aimed at solid
+			// stone, which became "nothing left to do — the world had already done that" about a place he
+			// cannot stand in.
+			case ActionVocabulary.WALK_TO -> {
+				if (!BodySpace.fits(this::solidAt, pos.getX(), pos.getY(), pos.getZ())) {
+					yield StepCheck.broken(describe(pos) + " is " + blockId(level().getBlockState(pos))
+							+ " now, so i cannot stand there any more");
+				}
+				yield this.blockPosition().closerThan(pos, 1.5)
+						? StepCheck.satisfied("i am already at " + describe(pos))
+						: StepCheck.ready();
+			}
+			// The container was there when the plan was made, and what he was sent for is not in it any
+			// more. Asked of the contents, not of the block: a chest that is still standing and empty is
+			// exactly the case a player makes by taking the coal out while he walks over.
+			case ActionVocabulary.TAKE -> {
+				if (!(level() instanceof ServerLevel serverLevel)) yield StepCheck.unknown("no server world");
+				Container container = Containers.resolve(serverLevel, pos, owner(), CobbieConfig.isEnderChestAllowed());
+				if (container == null) yield StepCheck.ready(); // nothing resolved: a question he cannot answer
+				String what = resolveItemId(intent.target());
+				if (Containers.count(container, what) > 0) yield StepCheck.ready();
+				String where = "the " + Containers.nameOf(serverLevel, pos) + " at " + describe(pos);
+				yield StepCheck.broken(what == null || what.isBlank()
+						? where + " is empty now"
+						: where + " has no " + wordsFor(what) + " in it now");
+			}
+			default -> StepCheck.ready();
 		};
 	}
+
+	/**
+	 * Where else this same step could be done, now that the place it named is taken.
+	 *
+	 * <p><b>One verb wide on purpose.</b> A substitute may move the coordinates and nothing else, so it is
+	 * only honest where the coordinate is a spot rather than the thing asked for: the square for a torch
+	 * someone just built in is the one case in this codebase where "there" and "there" are the same job.
+	 * A chest that was emptied is not re-sourced from the chest next door, and a destination that no
+	 * longer fits is not quietly moved — those are the instruction, so they stop the plan and say what
+	 * changed instead.
+	 */
+	@Override
+	public ActionIntent replan(ActionIntent broken, StepCheck why) {
+		if (broken == null || why == null || level() == null) return null;
+		String verb = broken.action() == null ? "" : broken.action();
+
+		// A log that was broken out from under him: the job was one log, and there may be another. Only
+		// when the step names what it wanted — the coordinates alone do not say what to look for.
+		if (ActionVocabulary.MINE.equals(verb) && why.isSatisfied()) {
+			Block named = resolveBlock(broken.target());
+			if (named == null) return null;
+			BlockPos was = new BlockPos(broken.x(), broken.y(), broken.z());
+			BlockPos other = nearestBlockOf(named, was, MINE_REPLAN_RADIUS);
+			return other == null ? null
+					: new ActionIntent(verb, broken.target(), other.getX(), other.getY(), other.getZ(), broken.data());
+		}
+
+		// A square someone else built in, with the thing he was going to build still in his bag. Beside it
+		// before above it: a torch goes on the wall next to the blocked spot, not on their head.
+		if ((ActionVocabulary.PLACE.equals(verb) || ActionVocabulary.LIGHT.equals(verb)) && why.isBroken()) {
+			String block = ActionVocabulary.LIGHT.equals(verb) ? "minecraft:torch" : broken.target();
+			BlockPos was = new BlockPos(broken.x(), broken.y(), broken.z());
+			if (!level().isLoaded(was)) return null;
+			BlockPos[] candidates = { was.north(), was.south(), was.east(), was.west(), was.above() };
+			double navLimit = Math.max(8, CobbieConfig.getNavigationRange());
+			for (BlockPos candidate : candidates) {
+				if (!level().isLoaded(candidate)) continue;
+				if (placementRefusal(block, candidate) != null) continue;
+				BlockPos from = this.blockPosition().distSqr(candidate) > reachSquared()
+						? standingSpotNear(candidate) : this.blockPosition();
+				if (from == null || this.blockPosition().distSqr(from) > navLimit * navLimit) continue;
+				return new ActionIntent(verb, broken.target(), candidate.getX(), candidate.getY(),
+						candidate.getZ(), broken.data());
+			}
+		}
+		return null;
+	}
+
+	/** The nearest block of this kind within {@code radius} stood at a height he could work from. */
+	private BlockPos nearestBlockOf(Block block, BlockPos from, int radius) {
+		BlockPos best = null;
+		double bestDistance = Double.MAX_VALUE;
+		for (int dx = -radius; dx <= radius; dx++) {
+			for (int dz = -radius; dz <= radius; dz++) {
+				for (int dy = -2; dy <= 2; dy++) {
+					BlockPos at = from.offset(dx, dy, dz);
+					if (at.equals(from) || !level().isLoaded(at)) continue;
+					if (!level().getBlockState(at).is(block)) continue;
+					double distance = from.distSqr(at);
+					if (distance < bestDistance) {
+						bestDistance = distance;
+						best = at.immutable();
+					}
+				}
+			}
+		}
+		return best;
+	}
+
 
 	/**
 	 * A plan is a list of coordinates in one world. When a portal or a teleport changes the world
@@ -962,12 +1084,24 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		BlockPos stuck = this.blockPosition().immutable();
 		int[] free = BodySpace.nearestFree(this::solidAt, stuck.getX(), stuck.getY(), stuck.getZ(),
 				WALL_RESCUE_RADIUS);
-		cancelTask("i was inside a block");
+		// What was in flight when the body was in a wall, and how many times the walk had already been
+		// repaired: this guard fixes a symptom, and the symptom is only worth having in the log beside
+		// the plan it happened under.
+		TaskPlan live = tasks.plan();
+		TaskStep step = live == null ? null : live.running();
+		String context = live == null || live.isFinished() ? "no plan in flight"
+				: "plan " + live.id() + " \"" + live.request() + "\" step "
+						+ (step == null ? "between steps" : (step.index() + 1) + " " + step.intent().action()
+								+ " attempt " + step.attempts())
+						+ ", walk repaths " + walkRepaths;
+		rescues++;
+		cancelTask("i was inside a block at " + describe(stuck));
 		getNavigation().stop();
 		if (free != null) {
 			this.teleportTo(free[0] + 0.5, free[1], free[2] + 0.5);
 		}
-		Cobbie.LOGGER.warn("Cobbie was inside a block at {}; moved to {}", describe(stuck),
+		Cobbie.LOGGER.warn("Cobbie wall rescue #{}: inside a block at {} ({}); recovery destination {}",
+				rescues, describe(stuck), context,
 				free == null ? "nowhere free nearby" : free[0] + " " + free[1] + " " + free[2]);
 		if (!wallRescued) {
 			wallRescued = true;
@@ -975,6 +1109,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 					? "i am stuck inside a block and cannot get out"
 					: "i was inside a block, got myself out");
 		}
+	}
+
+	/** A registry id as words a person reads: "minecraft:oak_log" is "oak log" when he says it out loud. */
+	private static String wordsFor(String id) {
+		String short_ = Narrator.shortTarget(id);
+		return short_ == null ? id : short_;
 	}
 
 	/** Does the block at these coordinates stop a body? Unloaded ground counts as solid, so nothing aims at it. */
@@ -1037,6 +1177,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			com.rishi.cobbie.task.TaskPlan settledPlan = tasks.plan();
 			com.rishi.cobbie.presence.ActionTiming.settled(System.currentTimeMillis(),
 					settledPlan == null ? 0 : settledPlan.steps().size());
+			// A plan the world took away ends with a reason, said here rather than left to the settled job
+			// line: "partly done" behind it is a report, and a companion who stops without one is a
+			// companion who stopped for no visible cause.
+			if (settledPlan != null && !settledPlan.abortReason().isBlank()) {
+				sayToOwner(settledPlan.abortReason());
+			}
 			com.rishi.cobbie.brain.CobbieBrain.reportPlanSettled(this, settledPlan);
 		}
 
@@ -1886,6 +2032,19 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			}
 			if (this.blockPosition().distSqr(activeTarget) <= arriveRadiusSq) {
 				navigatingForAction = false;
+				// The walk took time and the world did not wait for it: the block he was sent to can be
+				// broken, the chest emptied, the spot filled by the time he gets there. Asked here, at the
+				// hand-over, a changed world is reported as what it is — not as a failure of the action that
+				// was about to touch it, and never as its success.
+				//
+				// Only a step he walked somewhere *else* for: on a walk the arrival is the proof, and asking
+				// whether he can stand where he is standing answers nothing.
+				StepCheck arrived = workTarget != null && !workTarget.equals(activeTarget)
+						? checkStep(active) : StepCheck.ready();
+				if (arrived.isSatisfied() || arrived.isBroken()) {
+					interrupt();
+					return ActionOutcome.fail(verb, arrived.changed());
+				}
 				return performNow();
 			}
 			if (getNavigation().isDone()) {

@@ -33,8 +33,9 @@ class TaskRunnerTest {
 		int interrupts;
 
 		@Override
-		public boolean alreadySatisfied(ActionIntent intent) {
-			return alreadyThere.contains(intent.action());
+		public StepCheck checkStep(ActionIntent intent) {
+			return alreadyThere.contains(intent.action())
+					? StepCheck.satisfied("nothing left to do there") : StepCheck.ready();
 		}
 
 		Fake answering(ActionOutcome... outcomes) {
@@ -110,12 +111,17 @@ class TaskRunnerTest {
 	}
 
 	/**
-	 * The rule is honoured once, when the plan starts — not per step. A target that disappears after that
-	 * is an impossible step and must still be attempted and fail, which is what makes the stale-project
-	 * case and the impossible-project case different tests rather than the same one twice.
+	 * The world moving on after adoption is not the same event as the world having done the job before it.
+	 *
+	 * <p>Adoption is where "already done" belongs: there the plan was made against a world it never got to
+	 * see change, and a finished objective is a truthful completion with nothing to do. A target that
+	 * disappears after adoption is the other case — he was sent to do something and somebody else did it —
+	 * and it must end as a stop with a reason, not as a completion claim about work he did not do, and not
+	 * as a swing at air. 0.78 replaced the once-at-adoption rule this test used to pin; the reason it
+	 * existed survives, in a different shape.
 	 */
 	@Test
-	void whatGoesStaleAfterThePlanStartsIsStillAttempted() {
+	void whatGoesStaleAfterThePlanStartsStopsWithAReasonRatherThanCompleting() {
 		Fake exec = new Fake();
 		TaskRunner runner = new TaskRunner(exec, 6, 0, 60_000);
 		runner.start("mine that far log", List.of(intent(ActionVocabulary.MINE)));
@@ -124,9 +130,11 @@ class TaskRunnerTest {
 		exec.answering(ActionOutcome.fail("mine", "there is nothing at 1 2 3"));
 		runner.tick(System.currentTimeMillis());
 
-		assertEquals(1, exec.begun.size(), "a step stale after adoption was quietly skipped");
-		assertEquals(0, runner.plan().alreadyDoneCount());
+		assertEquals(0, exec.begun.size(), "a step that went stale after adoption was run against nothing");
+		assertEquals(0, runner.plan().alreadyDoneCount(),
+				"a step somebody else finished after adoption was counted as work nobody did");
 		assertEquals(TaskPlan.Status.FAILED, runner.plan().status());
+		assertTrue(runner.plan().abortReason().contains("nothing left to do there"), runner.plan().abortReason());
 	}
 
 	@Test
