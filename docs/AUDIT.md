@@ -446,3 +446,105 @@ One limit, named: the farm case cannot induce a refused break, because a vanilla
 system. The number is therefore derived from the squares the world reports empty rather than from
 `destroyBlock`'s answer at all, and the test asserts the count against the field — but no run of this suite
 can make a crop refuse to be cut.
+
+# Inventory intelligence — 0.81.0
+
+The bag has been legible since 0.55.0: he can list it, and he can resolve *"my worst pickaxe"* out of a
+description. What was never asked is the question a player asks on every block — **which of these do I wear for
+this one** — and the answer was a hand-written table in `CobbieEntity`:
+
+```java
+private static final List<String> TIER_RANK = List.of(
+        "netherite", "diamond", "iron", "stone", "copper", "golden", "wooden", "wood", "leather");
+// scores(): tier + 8 if the block's *name* looks stony and the tool's name contains "pickaxe"
+```
+
+Four defects lived in those fourteen lines. All four are the family this file keeps rediscovering: **a rule
+written for the cases someone thought of, where the game already had the answer.**
+
+| what the table answered | what actually happened |
+|---|---|
+| "higher tier is better" | stone, iron and diamond pickaxes on cobblestone: the diamond one wore. A companion who breaks your diamond pickaxe on cobblestone is one you stop lending tools to |
+| "a stony *name* means a pickaxe helps" | stone-like fragments (`stone`, `ore`, `deepslate`, `cobble`, `granite`…) and nothing else. A pickaxe scored by its tier alone on **dirt**, so he dug dirt with a diamond pickaxe and wore it |
+| the same, asked of the drop | obsidian is neither stony by name nor hard to break by that gate, so a **wooden** pickaxe was raised, the obsidian broke, `Block.getDrops` paid out nothing, and the report said "nothing dropped". The block was lost for nothing and the sentence was true |
+| nothing at all | a pickaxe with one use left was as good as a fresh one. It broke mid-tunnel, silently |
+
+## The rule, and why both numbers are the game's
+
+`action/ToolChoice` answers it, and it is pure so the unit tier settles it:
+
+- **sufficient** = `ItemStack.isCorrectToolForDrops(state)`. In 26.3 there is no `Tiered` or
+  `TierSortingRegistry` to ask (checked in the deobfuscated jar, not assumed): a tool's material is baked into
+  its `Tool` component as one rule — `blocks = #mineable/pickaxe`, `speed = <material speed>`,
+  `correctForDrops = !<the material's incorrect_for_…_tool tag>.contains(block)`. `isCorrectForDrops` walks those
+  rules and returns `false` when nothing matches, so it is fail-closed. That one call replaces the name table: a
+  wooden pickaxe is not sufficient for obsidian, a pickaxe is not sufficient for dirt, a shovel is not
+  sufficient for stone.
+- **cost** = `ItemStack.getMaxDamage()`, the material's own durability — the only price the game publishes, and
+  it orders the tiers the way a player ranks them (wood 59, stone 131, copper 190, iron 250, diamond 1561,
+  netherite 2031). Gold at 32 is cheaper than wood and is spent first, which is also what a player does.
+
+So the pick is *the cheapest tool that can do the job, out of the ones that will harvest it*, and `isTool` now
+asks the game whether the stack carries a `Tool` component rather than scanning its name for "pickaxe".
+
+## Wear is arithmetic, not a mood
+
+Vanilla destroys a stack whose damage reaches its maximum, so a tool with `maxDamage - damage` uses left can be
+trusted for `maxDamage - damage - 1` blocks. The job's size is the mine steps still pending in the plan — one
+step is one block — which is why a tunnel of forty blocks does not begin with a pickaxe that has three uses
+left. Three outcomes, each with its own sentence:
+
+| the choice | what he says |
+|---|---|
+| a better tool is too worn, a cheaper one can do it | *using the iron pickaxe — the diamond pickaxe is nearly spent* |
+| nothing he owns can finish it | *the stone pickaxe is the only one i have for this and it is nearly spent* |
+| a tool gave out mid-job | *my stone pickaxe just gave out* |
+
+The first is said **once per plan**, not once per block. The silence was the defect: a tool that vanishes in a
+tunnel without a word is worse than a refusal. The second is a deliberate inversion of "never start a job you
+cannot finish" — refusing to work at all with a nearly-spent tool in the bag is not honesty, it is idleness — so
+he works and warns, and the warning is the guarantee.
+
+## Both gates now ask the same question
+
+`dropRefusal` and `breakRefusal` used the same table, so they now use the same `ToolChoice`, and the refusal
+names what is missing (*"I need a proper tool for minecraft:obsidian and have none"*). The two gates keep their
+deliberate difference from 0.79.0: an owner's *"dig through that stone"* may be a bare-handed break, because a
+hole and no drop is the thing he asked for, while a project that promises to gather may not.
+
+## Keeping, and the switch that is the owner's
+
+Nothing in the mod discards what he picked up. A full bag drops the loot at his feet on both of `mineBlock`'s
+paths, and there is no auto-discard anywhere in the entity — so *"should not throw away something the owner
+might want"* is already true, and it is now covered by the same test that reads the inventory.
+
+*"Should not fill his bag with forty stacks of dirt"* is the half with no behaviour to fix, because the only
+thing that fills his bag is work he was asked to do. A policy would be a knob — `keep everything` versus `stop
+picking up what I did not ask for` — and the honest default is **keeping**: a companion that silently drops the
+cobblestone out of your tunnel is one you have to clean up after. Proposed, not implemented, and defaulted to
+keeping: the owner sets it or nobody does.
+
+## What this slice does not cover
+
+- **The job estimate counts only blocks of the same kind.** A plan of ten stone and two oak logs whose steps
+  name no target counts twelve for the pickaxe. Over-counting makes him reach for a *longer-lasting* tool, which
+  is the safe direction; under-counting would break tools.
+- **The farm path does not use this chooser.** `farmAround` has its own hoe handling and was out of scope; the
+  chooser serves `mine`, where the wear is a block at a time.
+- **"Right implement" is the game's answer for *drops*, not for speed.** A gold pickaxe is cheap and sufficient
+  for stone and will be chosen over a wooden one; speed is not part of the price, by design.
+
+## The files
+
+| was | is |
+|---|---|
+| `scores(ItemStack, String blockId)` | `ToolChoice.choose(bag, blocksLeft)` |
+| `TIER_RANK`, `TOOL_WORDS` | deleted; `isTool` asks for the `Tool` component |
+| `bestToolFor(String)`, `equipBestToolFor(String)` | both take the `BlockState` and go through one `chooseTool` |
+| `indexOf` | deleted (the chosen slot comes back from `ToolChoice`) |
+| — | `noteToolChoice`, `blocksLeftInJob`, `toolCandidate`, `toolAt`, `toolWords` |
+
+`CobbieToolChoiceTest` (registry entry **68**) asserts all of it off the inventory after the run, in a survival
+world: `stone_pickaxe` with damage 1 while iron and diamond read 0; `iron_pickaxe` with damage 2 and the diamond
+left at `maxDamage - 1`, with the remark said exactly once; and obsidian refused with the wooden pickaxe still
+unworn. `ToolChoiceTest` (unit, 10 tests) settles the ordering arithmetic.

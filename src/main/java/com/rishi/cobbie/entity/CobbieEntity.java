@@ -6,6 +6,7 @@ import com.rishi.cobbie.action.ActionEvidence;
 import com.rishi.cobbie.action.ActionIntent;
 import com.rishi.cobbie.action.ActionOutcome;
 import com.rishi.cobbie.action.ActionVocabulary;
+import com.rishi.cobbie.action.ToolChoice;
 import com.rishi.cobbie.config.CobbieConfig;
 import com.rishi.cobbie.craft.CraftChain;
 import com.rishi.cobbie.craft.CraftRecipes;
@@ -210,11 +211,6 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			Blocks.TORCH, Blocks.WALL_TORCH, Blocks.SOUL_TORCH, Blocks.LADDER, Blocks.SNOW,
 			Blocks.TRIPWIRE_HOOK, Blocks.LEVER);
 
-	private static final List<String> TOOL_WORDS =
-			List.of("pickaxe", "axe", "shovel", "hoe", "shears", "sword");
-	private static final List<String> TIER_RANK = List.of(
-			"netherite", "diamond", "iron", "stone", "copper", "golden", "wooden", "wood", "leather");
-
 	/** Saved with the entity. ItemStack.OPTIONAL_CODEC tolerates empty slots. */
 	private static final Codec<List<ItemStack>> ITEM_LIST = ItemStack.OPTIONAL_CODEC.listOf();
 
@@ -237,6 +233,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private int walkRepaths;         // how many times this walk has been re-handed to it
 	private int climbAssists;        // how many of those were forgiven for being beside a climbable
 	private int pickupReportTick;    // last time a pickup was folded into what he tells the model
+	private String toolNoteKey = "";  // the tool sentence he has already said for this plan
 	private int pickedUpSinceReport;
 	private final Set<String> pickedUpIds = new HashSet<>();
 	private ActionOutcome pendingOutcome;
@@ -2380,9 +2377,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		// What he needs a tool for is the drop, not the break: a log comes off with bare hands in
 		// survival and anything comes off in creative, while stone yields nothing without a pickaxe.
-		String refusal = breakRefusal(id, hardness);
+		String refusal = breakRefusal(state, id, hardness);
 		if (refusal != null) return ActionOutcome.fail("mine", refusal);
-		ItemStack tool = equipBestToolFor(id);
+		ItemStack tool = equipBestToolFor(state);
 
 		// Loot comes from the game with the tool actually in hand. Never fabricated.
 		List<ItemStack> drops = Block.getDrops(state, serverLevel, pos, null, this, tool);
@@ -5585,30 +5582,66 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	}
 
 	/**
-	 * Pick the best tool for the block kind and raise it into the hand — moving the real stack, so
-	 * there is never a second copy of it.
-	 */
-	/**
 	 * The tool he could raise for this block, without raising it — so that a promise about a block and
 	 * the attempt at it are judged by one rule instead of two that can drift apart.
 	 */
-	private ItemStack bestToolFor(String blockId) {
+	private ItemStack bestToolFor(BlockState state) {
+		ToolChoice.Pick pick = chooseTool(state);
+		return pick.found() ? toolAt(pick.slot()) : ItemStack.EMPTY;
+	}
+
+	/**
+	 * The tool to raise for this block, decided by {@link ToolChoice} out of what the game says about each
+	 * tool and out of how much of the job is left. Separate from raising it so that a promise about a block
+	 * and the attempt at it are judged by one rule instead of two that can drift apart.
+	 */
+	private ToolChoice.Pick chooseTool(BlockState state) {
+		List<ToolChoice.Candidate> tools = new ArrayList<>();
 		ItemStack held = this.getMainHandItem();
-		if (isTool(held) && scores(held, blockId) > 0 && !isBroken(held)) {
-			return held; // already holding something usable
-		}
-		ItemStack best = ItemStack.EMPTY;
-		int bestScore = 0;
+		if (!held.isEmpty()) tools.add(toolCandidate(ToolChoice.HAND, held, state));
 		for (int i = 0; i < inventory.getContainerSize(); i++) {
 			ItemStack stack = inventory.getItem(i);
-			if (!isTool(stack) || isBroken(stack)) continue;
-			int score = scores(stack, blockId);
-			if (score > bestScore) {
-				bestScore = score;
-				best = stack;
-			}
+			if (!stack.isEmpty()) tools.add(toolCandidate(i, stack, state));
 		}
-		return best;
+		return ToolChoice.choose(tools, blocksLeftInJob(state));
+	}
+
+	/** One row of the bag as the tool question sees it — the game's answer, not a table of names. */
+	private ToolChoice.Candidate toolCandidate(int slot, ItemStack stack, BlockState state) {
+		int maxDamage = stack.getMaxDamage();
+		// A tool with no durability at all never wears out; everything the game ships for mining does.
+		int usesLeft = maxDamage <= 0 ? Integer.MAX_VALUE : maxDamage - stack.getDamageValue();
+		return new ToolChoice.Candidate(slot, itemId(stack), stack.isCorrectToolForDrops(state), maxDamage, usesLeft);
+	}
+
+	/** The stack in a slot {@link ToolChoice} named: {@link ToolChoice#HAND}, or a bag slot. */
+	private ItemStack toolAt(int slot) {
+		return slot == ToolChoice.HAND ? this.getMainHandItem() : inventory.getItem(slot);
+	}
+
+	/**
+	 * How many blocks of this kind the job still has to break, which is what a tool has to last. One step is
+	 * one block, so the answer is the mine steps still pending in the plan; a step that named no block (a
+	 * tunnel, where every step is "break what is in front of me") counts, and one that named a different
+	 * block does not.
+	 */
+	private int blocksLeftInJob(BlockState state) {
+		TaskPlan plan = tasks.plan();
+		if (plan == null) return 1;
+		String here = blockId(state);
+		int left = 0;
+		for (TaskStep step : plan.steps()) {
+			if (step.status() == TaskStep.Status.DONE || step.status() == TaskStep.Status.SKIPPED) continue;
+			if (!ActionVocabulary.MINE.equals(step.intent().action())) continue;
+			String named = step.intent().target();
+			if (named == null || named.isBlank()) {
+				left++;
+				continue;
+			}
+			Block block = resolveBlock(named);
+			if (block != null && blockId(block.defaultBlockState()).equals(here)) left++;
+		}
+		return Math.max(1, left);
 	}
 
 	/**
@@ -5618,7 +5651,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 */
 	private String dropRefusal(BlockState state, String id, float hardness) {
 		// The drop question and nothing else: a log gives itself up to bare hands, stone does not.
-		return bestToolFor(id).isEmpty() && state.requiresCorrectToolForDrops()
+		return bestToolFor(state).isEmpty() && state.requiresCorrectToolForDrops()
 				? "I need a proper tool for " + id + " and have none"
 				: null;
 	}
@@ -5630,12 +5663,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 * thing he asked for, and the report says nothing dropped. Conflating the two refused "dig through
 	 * that stone" for want of a pickaxe nobody needed. Hands still do not take obsidian to pieces.
 	 */
-	private String breakRefusal(String id, float hardness) {
+	private String breakRefusal(BlockState state, String id, float hardness) {
 		// "Can my hands do it at all", which depends on the WORLD's game mode — not on the autonomy setting.
 		// CobbieConfig.isCreative() is the autonomy mode, and using it here meant a creative world with ASSISTIVE
 		// autonomy refused to break an oak log bare-handed: a predicate answering a different question, again.
 		boolean slowByHand = hardness > 1.5f && !worldIsCreative();
-		return slowByHand && bestToolFor(id).isEmpty()
+		return slowByHand && bestToolFor(state).isEmpty()
 				? "I need a proper tool for " + id + " and have none"
 				: null;
 	}
@@ -5654,43 +5687,64 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		String id = blockId(state);
 		if (dropRefusal(state, id, hardness) != null) return false;
 		if (standingSpotNear(pos) == null) return false;
-		return fitsInInventory(Block.getDrops(state, serverLevel, pos, null, this, bestToolFor(id)));
+		return fitsInInventory(Block.getDrops(state, serverLevel, pos, null, this, bestToolFor(state)));
 	}
 
-	private ItemStack equipBestToolFor(String blockId) {
+	private ItemStack equipBestToolFor(BlockState state) {
+		ToolChoice.Pick pick = chooseTool(state);
+		// Said before anything moves: the note names the tool that was passed over, which is still in the bag.
+		noteToolChoice(pick);
 		ItemStack held = this.getMainHandItem();
-		ItemStack best = bestToolFor(blockId);
-		if (best == held) {
-			return held; // already holding something usable
-		}
-		if (best.isEmpty()) {
-			if (isTool(held)) this.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
-			return ItemStack.EMPTY;
-		}
-		// Stow whatever was in hand, then raise the tool out of the bag.
-		if (!held.isEmpty()) {
+		if (pick.slot() == ToolChoice.HAND) return held; // already holding the right one
+		// A tool in the hand when another is wanted goes back in the bag rather than nowhere.
+		if (isTool(held)) {
 			add(held.copy(), inventory);
 			this.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
 		}
-		inventory.setItem(indexOf(best), ItemStack.EMPTY);
-		this.setItemInHand(InteractionHand.MAIN_HAND, best);
-		return best;
+		if (!pick.found()) return ItemStack.EMPTY;
+		ItemStack chosen = inventory.getItem(pick.slot());
+		inventory.setItem(pick.slot(), ItemStack.EMPTY);
+		this.setItemInHand(InteractionHand.MAIN_HAND, chosen);
+		return chosen;
 	}
 
-	private int indexOf(ItemStack stack) {
-		for (int i = 0; i < inventory.getContainerSize(); i++) {
-			if (inventory.getItem(i) == stack) return i;
-		}
-		return 0;
+	/**
+	 * Say which tool he is wearing and why, when the choice is worth a word: a better tool was passed over
+	 * because it could not finish the job, rather than the cheapest one being the obvious answer. Once per
+	 * sentence per plan, because a tunnel of forty blocks is one remark and not forty.
+	 */
+	private void noteToolChoice(ToolChoice.Pick pick) {
+		String line = switch (pick.note()) {
+			case STEPPED_DOWN -> "using the " + toolWords(toolAt(pick.slot())) + " — the "
+					+ toolWords(toolAt(pick.passedOver()))
+					+ (toolUsesLeft(toolAt(pick.passedOver())) < 10 ? " is nearly spent" : " has not enough left for this");
+			case LAST_RESORT -> "the " + toolWords(toolAt(pick.slot()))
+					+ " is the only one i have for this and it is nearly spent";
+			case NONE, MISSING -> null;
+		};
+		if (line == null) return;
+		String key = tasks.latestPlanId() + "|" + line;
+		if (key.equals(toolNoteKey)) return;
+		toolNoteKey = key;
+		if (!sayToOwner(line)) speakNearby(line);
+		narrator.noteSpokenAt(System.currentTimeMillis());
+	}
+
+	private static int toolUsesLeft(ItemStack stack) {
+		return stack == null || stack.isEmpty() ? 0 : stack.getMaxDamage() - stack.getDamageValue();
+	}
+
+	/** "iron pickaxe": what a person calls the thing, out of the id the game gave it. */
+	private static String toolWords(ItemStack stack) {
+		if (stack == null || stack.isEmpty()) return "tool";
+		String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+		int colon = id.indexOf(':');
+		return (colon < 0 ? id : id.substring(colon + 1)).replace('_', ' ');
 	}
 
 	private static boolean isTool(ItemStack stack) {
-		if (stack == null || stack.isEmpty()) return false;
-		String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString().toLowerCase(Locale.ROOT);
-		for (String word : TOOL_WORDS) {
-			if (id.contains(word)) return true;
-		}
-		return false;
+		return stack != null && !stack.isEmpty()
+				&& stack.has(net.minecraft.core.component.DataComponents.TOOL);
 	}
 
 	private static boolean isBroken(ItemStack stack) {
@@ -5698,37 +5752,17 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				&& stack.getDamageValue() >= stack.getMaxDamage();
 	}
 
-	/** Higher is better; 0 means "not the right implement for this block". */
-	private static int scores(ItemStack stack, String blockId) {
-		String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString().toLowerCase(Locale.ROOT);
-		int tier = 0;
-		for (int t = 0; t < TIER_RANK.size(); t++) {
-			if (id.contains(TIER_RANK.get(t))) {
-				tier = TIER_RANK.size() - t;
-				break;
-			}
-		}
-		int score = tier;
-		String b = blockId == null ? "" : blockId.toLowerCase(Locale.ROOT);
-		boolean logLike = b.contains("log") || b.contains("planks") || b.contains("fence") || b.contains("wood");
-		boolean stoneLike = b.contains("stone") || b.contains("ore") || b.contains("deepslate")
-				|| b.contains("cobble") || b.contains("granite") || b.contains("diorite") || b.contains("andesite");
-		boolean dirtLike = b.contains("dirt") || b.contains("grass") || b.contains("sand")
-				|| b.contains("gravel") || b.contains("clay");
-		if (logLike && id.contains("axe")) score += 8;
-		else if (stoneLike && id.contains("pickaxe")) score += 8;
-		else if (dirtLike && id.contains("shovel")) score += 8;
-		else if (id.contains("sword")) score += 1;
-		return score;
-	}
-
 	private void wearTool(ItemStack tool) {
 		if (tool == null || tool.isEmpty() || !tool.isDamageableItem()) return;
 		try {
+			String name = toolWords(tool);
 			tool.hurtAndBreak(1, this, InteractionHand.MAIN_HAND);
 			if (isBroken(tool)) {
 				tool.shrink(1);
 				if (tool.isEmpty()) this.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+				// A tool that just gave out is said out loud: a companion whose pickaxe vanished mid-tunnel
+				// without a word is one you stop lending tools to.
+				if (!sayToOwner("my " + name + " just gave out")) speakNearby("my " + name + " gave out");
 			}
 		} catch (Exception e) {
 			Cobbie.LOGGER.debug("Cobbie tool wear skipped: {}", e.toString());
