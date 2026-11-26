@@ -17,7 +17,8 @@ import java.util.List;
 /**
  * What "the world has already done it" is allowed to mean.
  *
- * <p>{@code alreadySatisfied} was added in 0.75.0 so a project that went stale while it queued would close as done
+ * <p>{@code checkStep} — {@code alreadySatisfied} until 0.78 — was added in 0.75.0 so a project that went stale
+ * while it queued would close as done
  * instead of swinging at a target the world had removed. It was answering <b>yes</b> for a walk aimed at solid
  * stone — *"nothing left to do — the world had already done that"* about a destination he could never occupy. That is
  * a false completion claim, which is the one failure this project exists to prevent.
@@ -62,8 +63,8 @@ public final class CobbieAlreadyDoneTest implements FabricClientGameTest {
                         + " is not present");
             }
             boolean satisfiedAboutStone = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
-                    .alreadySatisfied(new ActionIntent(ActionVocabulary.WALK_TO, "", wall.getX(), wall.getY(),
-                            wall.getZ(), "")));
+                    .checkStep(new ActionIntent(ActionVocabulary.WALK_TO, "", wall.getX(), wall.getY(),
+                            wall.getZ(), "")).isSatisfied());
             if (satisfiedAboutStone) {
                 throw new AssertionError("A walk into solid stone at " + wall.toShortString()
                         + " was reported as already satisfied; the honest answer is that it cannot be stood in");
@@ -107,8 +108,8 @@ public final class CobbieAlreadyDoneTest implements FabricClientGameTest {
                     ActionVocabulary.CHAT, ActionVocabulary.WAIT);
             List<String> claimed = server.computeOnServer(s -> {
                 CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
-                return noPredicate.stream().filter(verb -> cobbie.alreadySatisfied(new ActionIntent(verb,
-                        "minecraft:oak_log", wall.getX(), wall.getY(), wall.getZ(), ""))).toList();
+                return noPredicate.stream().filter(verb -> cobbie.checkStep(new ActionIntent(verb,
+                        "minecraft:oak_log", wall.getX(), wall.getY(), wall.getZ(), "")).isSatisfied()).toList();
             });
             if (!claimed.isEmpty()) {
                 throw new AssertionError("These verbs were reported as already satisfied with no predicate to"
@@ -117,8 +118,8 @@ public final class CobbieAlreadyDoneTest implements FabricClientGameTest {
             // The control: an objective whose satisfaction IS observable still answers yes, so the test cannot
             // pass by answering no to everything.
             boolean mineAirIsSatisfied = server.computeOnServer(s -> CobbieTestSupport.cobbie(s).orElseThrow()
-                    .alreadySatisfied(new ActionIntent(ActionVocabulary.MINE, "minecraft:oak_log",
-                            wall.getX(), wall.getY() + 5, wall.getZ(), "")));
+                    .checkStep(new ActionIntent(ActionVocabulary.MINE, "minecraft:oak_log",
+                            wall.getX(), wall.getY() + 5, wall.getZ(), "")).isSatisfied());
             if (!mineAirIsSatisfied) {
                 throw new AssertionError("The positive control failed: mining open air is a kind whose goal the"
                         + " world can be asked about, and it answered no");

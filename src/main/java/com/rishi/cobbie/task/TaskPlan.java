@@ -29,9 +29,16 @@ public final class TaskPlan {
 	private Status status = Status.PLANNED;
 	private String failureReason = "";
 	/**
-	 * How many of the finished steps needed no work because the world already held the answer when the
-	 * plan started. A plan made only of those completed with nothing done, and saying "all done" about it
-	 * would be a claim about work nobody did.
+	 * The sentence he says when a plan ends because the world changed under it. Kept apart from
+	 * {@link #failureReason} because that one attributes the failure to a step for the log, while this
+	 * one is spoken to the owner and has to read like a person explaining what they found.
+	 */
+	private String abortReason = "";
+	/**
+	 * How many of the finished steps needed no work because the world already held the answer — whether
+	 * it held it when the plan started or did the work while he was on his way. A plan made only of
+	 * those completed with nothing done, and saying "all done" about it would be a claim about work
+	 * nobody did.
 	 */
 	private int alreadyDone = 0;
 	private int totalRetries = 0;
@@ -137,10 +144,20 @@ public final class TaskPlan {
 		return alreadyDone;
 	}
 
-	/** Record a step that needed no work: the world already held the answer when the plan started. */
-	void recordAlreadyDone(String action) {
+	/** Record a step that needed no work: the objective already held. */
+	void recordAlreadyDone(String action, String when) {
 		alreadyDone++;
-		note(action + " skipped: already done — nothing left to do");
+		note(action + " skipped: already done " + when);
+	}
+
+	/** Record the change that ended the plan, in the words it will be said in. */
+	void recordAbort(String why) {
+		this.abortReason = why == null ? "" : why;
+	}
+
+	/** Why the plan stopped when it stopped because the world moved on; blank otherwise. */
+	public String abortReason() {
+		return abortReason;
 	}
 
 	void setStatus(Status next) {

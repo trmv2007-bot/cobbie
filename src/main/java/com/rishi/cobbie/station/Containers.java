@@ -153,6 +153,27 @@ public final class Containers {
 	}
 
 	/**
+	 * How much of {@code wantedId} the container holds, without moving anything.
+	 *
+	 * <p>Asked by the planner when a step's turn comes, so "the chest has no coal in it any more" is a
+	 * fact read off the chest rather than an inference from a failure. A furnace's fuel and input slots
+	 * are skipped for the same reason {@link #extract} skips them: a burning coal is not something he may
+	 * count as taking.
+	 */
+	public static int count(Container container, String wantedId) {
+		if (container == null) return 0;
+		boolean furnace = isFurnace(container);
+		int total = 0;
+		for (int i = 0; i < container.getContainerSize(); i++) {
+			if (furnace && (i == FURNACE_FUEL || i == FURNACE_INPUT)) continue;
+			ItemStack stack = container.getItem(i);
+			if (stack.isEmpty() || !matchesId(wantedId, stack)) continue;
+			total += stack.getCount();
+		}
+		return total;
+	}
+
+	/**
 	 * Registry-id match tolerant of how the model writes item names: "cobblestone",
 	 * "minecraft:cobblestone" and "mine craft:cobble stone" all have to land on the same item.
 	 */

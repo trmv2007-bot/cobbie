@@ -12,12 +12,18 @@ public final class TaskStep {
 
 	public enum Status { PENDING, RUNNING, DONE, FAILED, SKIPPED }
 
-	private final ActionIntent intent;
+	/**
+	 * Not final: a step whose coordinates went stale is replanned onto a substitute that keeps the verb
+	 * and the target, and that substitute is what the step then is. See {@link #retarget}.
+	 */
+	private ActionIntent intent;
 	private final int index;
 
 	private Status status = Status.PENDING;
 	private int attempts = 0;
 	private String result = "";
+	/** A step is replanned at most once, so a world that keeps changing cannot become an endless search. */
+	private boolean replanned = false;
 
 	public TaskStep(ActionIntent intent, int index) {
 		this.intent = intent;
@@ -84,6 +90,25 @@ public final class TaskStep {
 	/** Give it back to the planner for another try, if the retry budget allows. */
 	void requeue() {
 		status = Status.PENDING;
+	}
+
+	/** Has this step already spent its one replan? */
+	boolean wasReplanned() {
+		return replanned;
+	}
+
+	/** Spend the replan — recorded before the executor is asked, so an abort cannot become a second one. */
+	void markReplanned() {
+		replanned = true;
+	}
+
+	/**
+	 * Move the step onto a substitute. The verb and the target stay the plan's; only the coordinates may
+	 * change, which is what makes this a replan of the same job rather than a new one.
+	 */
+	void retarget(ActionIntent substitute) {
+		this.intent = substitute;
+		this.status = Status.PENDING;
 	}
 
 	/** Never got a chance to run because the plan was cancelled. */
