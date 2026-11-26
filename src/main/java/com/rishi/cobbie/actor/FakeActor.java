@@ -9,6 +9,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
@@ -144,6 +145,78 @@ public final class FakeActor {
 	 */
 	public static FakePlayer actorFor(ServerLevel level) {
 		return FakePlayer.get(level, PROFILE);
+	}
+
+	/** What came of offering a block up to the world: whether it landed, and how the game answered. */
+	public record Placed(boolean placed, InteractionResult result, ItemStack remaining) {}
+
+	/**
+	 * Place a block the way a player does: a right-click with it in hand, and the game's own placement
+	 * rules deciding the blockstate.
+	 *
+	 * <p>The click is the whole of the state. A stair's {@code facing} and {@code half}, a slab's
+	 * {@code type}, a torch's {@code attachment}, a door's {@code hinge}, a sign's {@code rotation} and
+	 * a chest's {@code facing} all come from the face that was clicked and the stance it was clicked
+	 * from — a block written straight into the square with {@code setBlock} gets none of them, and
+	 * looks exactly like a placement from the outside.
+	 *
+	 * <p>So the square is offered to the game as the clicks a player standing here would make: the
+	 * ground under it on its top face, then the four sides (the one he is facing first, which is how a
+	 * ladder or a wall torch gets attached), then the ceiling above. The first click the game accepts
+	 * is the placement, and the state it leaves at the square is the answer.
+	 */
+	public static Placed placeAt(CobbieEntity body, ServerLevel level, BlockPos pos, ItemStack held) {
+		if (level == null || pos == null || held == null || held.isEmpty()) return null;
+		FakePlayer actor = place(body, level, held, pos);
+		try {
+			BlockState before = level.getBlockState(pos);
+			for (BlockHitResult where : clicksFor(level, pos, body)) {
+				InteractionResult result = actor.gameMode.useItemOn(actor, level,
+						actor.getItemInHand(InteractionHand.MAIN_HAND), InteractionHand.MAIN_HAND, where);
+				ItemStack left = actor.getItemInHand(InteractionHand.MAIN_HAND).copy();
+				BlockState now = level.getBlockState(pos);
+				if (!now.equals(before) && !now.isAir()) return new Placed(true, result, left);
+			}
+			return new Placed(false, InteractionResult.FAIL, actor.getItemInHand(InteractionHand.MAIN_HAND).copy());
+		} finally {
+			clearHand(actor);
+		}
+	}
+
+	/**
+	 * The clicks that put a block in this square, in the order a player would try them.
+	 *
+	 * <p>Only a block that is really there is offered: a click on air is not a click, and a support the
+	 * game would replace sends the block to the square beside it rather than this one — which would
+	 * make a placement report success over a block that landed somewhere he was not asked to build.
+	 */
+	private static java.util.List<BlockHitResult> clicksFor(ServerLevel level, BlockPos pos, CobbieEntity body) {
+		java.util.List<BlockHitResult> clicks = new java.util.ArrayList<>();
+		BlockState at = level.getBlockState(pos);
+		if (!at.isAir() && at.canBeReplaced()) clicks.add(clickOn(pos, Direction.UP));
+		if (solid(level, pos.below())) clicks.add(clickOn(pos.below(), Direction.UP));
+		java.util.List<Direction> sides = new java.util.ArrayList<>(
+				java.util.List.of(Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST));
+		// Farthest first: the wall he is looking at is on the far side of the square from him.
+		sides.sort(java.util.Comparator.comparingDouble(
+				face -> -body.blockPosition().distSqr(pos.relative(face))));
+		for (Direction face : sides) {
+			BlockPos support = pos.relative(face);
+			if (solid(level, support)) clicks.add(clickOn(support, face.getOpposite()));
+		}
+		if (solid(level, pos.above())) clicks.add(clickOn(pos.above(), Direction.DOWN));
+		return clicks;
+	}
+
+	private static boolean solid(ServerLevel level, BlockPos pos) {
+		if (!level.isLoaded(pos)) return false;
+		BlockState state = level.getBlockState(pos);
+		return !state.isAir() && !state.canBeReplaced();
+	}
+
+	private static BlockHitResult clickOn(BlockPos support, Direction face) {
+		Vec3 hit = Vec3.atCenterOf(support).relative(face, 0.5);
+		return new BlockHitResult(hit, face, support, false);
 	}
 
 	/** Right-click a block: seeds on farmland, bone meal on a crop, a lever, a button. */

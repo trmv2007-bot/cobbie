@@ -627,3 +627,77 @@ health  8:  deepest drop he will path down 10   (an 11-block drop costs 8)
   not a fact this world can produce. The assertion is the pair instead: with the instinct he finishes on the
   health he started the retreat with, and without it he does not — which is the same claim measured against the
   world that exists.
+
+# Placement state, and the station that is not pristine — 0.83.0
+
+The four families above are about what he *claims*. This slice is about the one place where a claim is not
+even a sentence: a placement is a blockstate in the world, and nothing in it is a number he could round in
+his favour. It was still wrong for ten slices, because "a block appeared in the square" is a claim that
+survives every check it was given.
+
+## Two defects, one shape, both silent
+
+| defect | what the world held | why nothing noticed |
+|---|---|---|
+| placement wrote the state instead of placing it | the block, with a mirrored `facing` and every other property at its default | the square was occupied, the stack shrank, the plan said done |
+| a chipped anvil was not an anvil | "I need an anvil and there is none near me", two blocks from one | the answer was a refusal, which reads as the owner's mistake |
+
+The first is the same bug as the farmland harvest of 0.62.0 one layer down. There the *face* clicked differed
+from the face the probe used, the report said fine, and nothing grew; here the *block written* differs from the
+block the game would have produced, and the report still said fine. Both are a claim that is true of the
+coordinate.
+
+The second is the allowlist shape this file already names: `minecraft:anvil` is a list of one, and the anvil
+that had been used is not on it, so the miss was silent — it became a sentence blaming the owner's world.
+
+## The rule this slice adds
+
+**A placement is verified against the blockstate, not against the block.** `place` used to prove itself with
+*"minecraft:oak_stairs is at 0 -60 6"*, which is true of a stair facing any of four ways, of a slab on either
+half and of a door with no top. The evidence now names the state — `minecraft:oak_stairs[facing=south,
+half=bottom,shape=straight,waterlogged=false]` — and the state comes from the game because the placement is a
+real right-click (`FakeActor.placeAt`), not a `setBlock` of a hand-built state.
+
+**A station's verb answers about the station's contents.** The chest, furnace and anvil cases read the slots
+and the bag after the fact. And a right-click whose only answer is a menu — a chest, a furnace, a table, an
+anvil — is now a refusal with the reason, because the actor opens the menu into nothing and "used it" was a
+claim about a screen that never appeared.
+
+## How the tests avoid agreeing with the code
+
+The oracle is a **real player**: the owner's own `gameMode.useItemOn`, standing in the identical spot and
+clicking the identical face on an identical square three blocks away. Nothing of Cobbie's placement path is on
+it. Writing the expected state from memory would have been my reading of the game — and the game disagrees
+with intuition in at least three ways (a stair faces the way the placer looks, a chest faces the placer, a
+bed's head goes away from him).
+
+Because an oracle that is wrong in the same way as the code would pass, every case also asserts the properties
+**by name**, and the four approach angles must produce four *different* stair facings. A default state cannot
+satisfy either.
+
+## What is asserted, and what could not be
+
+| class | what it reads |
+|---|---|
+| `CobbieBlockStateTest` | 10 placements against the owner's own click: stairs, slab, torch on the floor and on a wall, ladder, door (both halves), bed (both halves), sign, chest, dirt control |
+| `CobbieApproachTest` | 14 placements: stairs from four sides and from above, a torch on the floor from all five stances, a torch hung on each of the four walls |
+| `CobbieStationTest` | chest round trip from four sides then put back after walking to a second position; two smelts from two sides; an anvil from two sides with Sharpness climbing 1 → 2; stairs cut from two sides; pickaxes made at a table from two sides; `use` on a menu refused |
+
+- **The top half of a slab cannot be built by his gesture.** `type=top` needs a click in the upper part of a
+  side face; his aim, like a player's when the click is what the verb carries, is the middle of the face. Every
+  slab he places is a bottom slab, and the test says so instead of pretending otherwise.
+- **The stonecutter and the crafting table are gates and scenery, not menus.** A stonecutter step needs one
+  within reach and then produces the recipe's output; crafting is done by hand from the recipe table. There is
+  no menu for a side to get wrong, so the assertion is the output in his bag from every side. This is a design
+  choice of the mod, not a defect, and it is named rather than dressed up.
+- **The stonecutter is not *reached* by `craft` for any item that also has a table recipe**, and every
+  stonecutter output has one: the planner prefers the shaped recipe, so `craft stone_stairs` spent six stone in
+  the table's recipe when one stone on the cutter would have done. A cheaper-recipe rule is a plan-quality
+  slice, not this one; here the cutter is proven to be satisfied by his presence beside it, and this sentence
+  is the gap.
+- **A bed's sleeping is not reachable.** `use` on a bed answers a real player by starting to sleep; the actor
+  has nowhere to sleep and nothing happens. It is not a menu, so the new refusal does not catch it, and it is
+  left here rather than special-cased: a companion that sleeps is a new verb.
+- **`type=double` for slabs** is a placement over an existing slab, which `placementRefusal` refuses as an
+  occupied square. That is the right answer for "put a block here", and it means the double slab is a thing
+  this verb deliberately does not do.
