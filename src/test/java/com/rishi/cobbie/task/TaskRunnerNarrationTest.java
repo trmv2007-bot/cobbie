@@ -1,6 +1,7 @@
 package com.rishi.cobbie.task;
 
 import com.rishi.cobbie.action.ActionIntent;
+import com.rishi.cobbie.action.ActionEvidence;
 import com.rishi.cobbie.action.ActionOutcome;
 import com.rishi.cobbie.action.ActionVocabulary;
 import com.rishi.cobbie.presence.Narrator;
@@ -39,7 +40,8 @@ class TaskRunnerNarrationTest {
 		public ActionOutcome begin(ActionIntent intent) {
 			begun.add(intent);
 			if (asynchronous) return null;
-			return script.isEmpty() ? ActionOutcome.ok(intent.action(), "fine") : script.poll();
+			return script.isEmpty() ? ActionOutcome.ok(intent.action(), "fine", ActionEvidence.world("the world agreed"))
+					: script.poll();
 		}
 
 		@Override
@@ -70,8 +72,10 @@ class TaskRunnerNarrationTest {
 	@Test
 	void eachStepIsAnnouncedAsItStartsAndClosedAsItSettles() {
 		Fake body = new Fake().answering(
-				ActionOutcome.ok(ActionVocabulary.MINE, "mined minecraft:stone at 10 64 -3"),
-				ActionOutcome.ok(ActionVocabulary.PLACE, "placed minecraft:torch"));
+				ActionOutcome.ok(ActionVocabulary.MINE, "mined minecraft:stone at 10 64 -3",
+						ActionEvidence.world("10 64 -3 is air now")),
+				ActionOutcome.ok(ActionVocabulary.PLACE, "placed minecraft:torch",
+						ActionEvidence.world("a torch is at that square now")));
 		TaskRunner runner = new TaskRunner(body, 6, 1, 60_000L);
 		Recorder lines = new Recorder();
 		runner.setListener(lines);
@@ -114,7 +118,7 @@ class TaskRunnerNarrationTest {
 
 	@Test
 	void aThrowingNarratorCannotStopTheWork() {
-		Fake body = new Fake().answering(ActionOutcome.ok(ActionVocabulary.MINE, "mined"));
+		Fake body = new Fake().answering(ActionOutcome.ok(ActionVocabulary.MINE, "mined", ActionEvidence.world("the square is air now")));
 		TaskRunner runner = new TaskRunner(body, 6, 1, 60_000L);
 		runner.setListener(new TaskRunner.Listener() {
 			@Override
@@ -140,7 +144,7 @@ class TaskRunnerNarrationTest {
 
 	@Test
 	void theClosingLineOfAJobSaysWhatHappened() {
-		Fake body = new Fake().answering(ActionOutcome.ok(ActionVocabulary.MINE, "mined"));
+		Fake body = new Fake().answering(ActionOutcome.ok(ActionVocabulary.MINE, "mined", ActionEvidence.world("the square is air now")));
 		TaskRunner runner = new TaskRunner(body, 6, 0, 60_000L);
 		runner.start("dig those out", List.of(
 				new ActionIntent(ActionVocabulary.MINE, "minecraft:stone", 10, 64, -3, ""),

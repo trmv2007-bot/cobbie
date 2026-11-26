@@ -1,5 +1,6 @@
 package com.rishi.cobbie.task;
 
+import com.rishi.cobbie.action.ActionEvidence;
 import com.rishi.cobbie.action.ActionIntent;
 import com.rishi.cobbie.action.ActionOutcome;
 import com.rishi.cobbie.action.ActionVocabulary;
@@ -283,8 +284,10 @@ public final class TaskRunner {
 			if (!step.isPending()) continue;
 			StepCheck check = checkStep(step.intent());
 			if (!check.isSatisfied()) continue;
+			String seen = check.changed().isBlank() ? "the check found nothing left to do" : check.changed();
 			step.markDone(check.changed().isBlank()
-					? "already done — nothing left to do" : "already done — " + check.changed());
+					? "already done — nothing left to do" : "already done — " + check.changed(),
+					ActionEvidence.world(seen));
 			next.recordAlreadyDone(step.intent().action(), "when the plan started");
 		}
 	}
@@ -506,8 +509,20 @@ public final class TaskRunner {
 		String action = step.intent().action();
 		boolean worldChange = ActionVocabulary.isWorldChanging(action);
 
+		// One contract, applied here rather than kept by each handler: a step is done when the verb's claim
+		// rests on the world. A handler that comes back with a success and nothing read back — "the call
+		// answered yes", "I got there" — has not finished the job, whatever it typed in the summary. It
+		// becomes a failure that says so, and takes the same retry budget every other failure takes, so a
+		// handler that keeps guessing is reported rather than promoted.
+		if (outcome.success() && ActionVocabulary.provesWorld(action) && !outcome.aboutTheWorld()) {
+			String seen = outcome.evidence() == null ? "nothing" : "\"" + outcome.evidence().observed() + "\"";
+			plan.note(action + " claimed done with no world to show for it: " + seen);
+			outcome = ActionOutcome.fail(action, "i said " + action + " was done with only " + seen
+					+ " to go on, and " + action + " has to be read back off the world");
+		}
+
 		if (outcome.success()) {
-			step.markDone(outcome.summary());
+			step.markDone(outcome.summary(), outcome.evidence());
 			plan.note(action + ": " + outcome.summary());
 			notifySettled(step, outcome);
 			return;

@@ -1,5 +1,6 @@
 package com.rishi.cobbie.task;
 
+import com.rishi.cobbie.action.ActionEvidence;
 import com.rishi.cobbie.action.ActionIntent;
 
 /**
@@ -22,6 +23,12 @@ public final class TaskStep {
 	private Status status = Status.PENDING;
 	private int attempts = 0;
 	private String result = "";
+	/**
+	 * What the completion rested on, when it is one. Kept on the step rather than only in the plan log
+	 * because a caller — a test, {@code /cobbie status}, a report — may want to ask a finished step what it
+	 * saw, and "the summary says mined" is not that answer.
+	 */
+	private ActionEvidence evidence;
 	/** A step is replanned at most once, so a world that keeps changing cannot become an endless search. */
 	private boolean replanned = false;
 
@@ -48,6 +55,11 @@ public final class TaskStep {
 
 	public String result() {
 		return result;
+	}
+
+	/** What this step saw before it called itself done, or null when it has not settled as done. */
+	public ActionEvidence evidence() {
+		return evidence;
 	}
 
 	public boolean isPending() {
@@ -77,9 +89,10 @@ public final class TaskStep {
 		status = Status.RUNNING;
 	}
 
-	void markDone(String note) {
+	void markDone(String note, ActionEvidence evidence) {
 		status = Status.DONE;
 		result = note == null ? "" : note;
+		this.evidence = evidence;
 	}
 
 	void markFailed(String note) {
