@@ -17,6 +17,12 @@ public final class BodySpace {
 		boolean solidAt(int x, int y, int z);
 	}
 
+	/** Is this block one a body can occupy without being hurt by it? */
+	@FunctionalInterface
+	public interface Safe {
+		boolean safeAt(int x, int y, int z);
+	}
+
 	private BodySpace() {}
 
 	/** Feet block and head block both free: the column a body occupies, and nothing else. */
@@ -33,6 +39,24 @@ public final class BodySpace {
 	 * @return {x, y, z} of the column's feet, or null when there is nothing free within {@code radius}
 	 */
 	public static int[] nearestFree(Solid solid, int x, int y, int z, int radius) {
+		return nearest(solid, (sx, sy, sz) -> true, x, y, z, radius);
+	}
+
+	/**
+	 * The nearest column he can stand in that would not hurt him to stand in — out of the fire, off the
+	 * cactus, out of the lava.
+	 *
+	 * <p>Three blocks are asked, not one: his feet and his head, and the ground he would be standing on.
+	 * A square whose floor is magma reads as free space and costs health every tick, which is the same
+	 * mistake as a rescue that steps him from a fire into a campfire.
+	 *
+	 * @return {x, y, z} of the column's feet, or null when nothing within {@code radius} is safe
+	 */
+	public static int[] nearestSafe(Solid solid, Safe safe, int x, int y, int z, int radius) {
+		return nearest(solid, safe, x, y, z, radius);
+	}
+
+	private static int[] nearest(Solid solid, Safe safe, int x, int y, int z, int radius) {
 		for (int ring = 1; ring <= Math.max(1, radius); ring++) {
 			int[] best = null;
 			double bestCost = Double.MAX_VALUE;
@@ -45,6 +69,8 @@ public final class BodySpace {
 						int pz = z + dz;
 						if (!fits(solid, px, py, pz)) continue;
 						if (!solid.solidAt(px, py - 1, pz)) continue;
+						if (!safe.safeAt(px, py, pz) || !safe.safeAt(px, py + 1, pz)
+								|| !safe.safeAt(px, py - 1, pz)) continue;
 						double cost = dx * dx + dz * dz + 0.5 * dy * dy;
 						if (cost < bestCost) {
 							bestCost = cost;

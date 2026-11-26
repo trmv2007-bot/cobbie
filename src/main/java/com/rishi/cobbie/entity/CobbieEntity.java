@@ -22,6 +22,7 @@ import com.rishi.cobbie.task.TaskPlan;
 import com.rishi.cobbie.task.TaskRunner;
 import com.rishi.cobbie.task.TaskStep;
 import com.rishi.cobbie.world.BodySpace;
+import com.rishi.cobbie.world.Falls;
 import com.rishi.cobbie.world.WorldPerception;
 import com.rishi.cobbie.world.WorldSnapshot;
 import net.minecraft.core.BlockPos;
@@ -136,6 +137,16 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private static final int WALL_RESCUE_TICKS = 10;
 	/** How far the rescue looks for two free blocks with ground under them. */
 	private static final int WALL_RESCUE_RADIUS = 4;
+	/** Ticks his body spends in fire, lava or against a cactus before he stops what he is doing. */
+	private static final int HAZARD_RESCUE_TICKS = 5;
+	/** How far the escape looks for a square that is not on fire, in blocks. */
+	private static final int HAZARD_RESCUE_RADIUS = 4;
+	/** How long a retreat lasts before he stops running: eight seconds is a sprint out of a fight. */
+	private static final int RETREAT_TICKS = 160;
+	/** How long after a retreat he will not begin another: a companion who runs at every scratch is useless. */
+	private static final int RETREAT_COOLDOWN_TICKS = 1200;
+	/** How close a hostile must be, and engaged, before a wound is worth running from. */
+	private static final double RETREAT_THREAT_RANGE = 12.0;
 	/** How far a replanned mine will look for the same block it was sent for, in blocks. */
 	private static final int MINE_REPLAN_RADIUS = 8;
 	/** How often he remarks on what he can see while he has nothing else to do (60s). */
@@ -242,6 +253,16 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private boolean wallRescued;
 	/** How many times this body has had to be lifted out of a block, for the log that says when it happens. */
 	private int rescues;
+	/** Consecutive ticks his body has been in fire, lava or against a cactus. */
+	private int hazardTicks;
+	/** How many times this body has got itself out of something burning. */
+	private int hazardRescues;
+	/** When the retreat he is in ends, and when he may begin another. */
+	private int retreatUntilTick;
+	private int retreatCooldownUntil;
+	/** The health his fall limit was computed for, so the pathfinder does not recompute it per node. */
+	private float fallLimitForHealth = -1.0f;
+	private int fallLimit;
 
 	// ---- bookkeeping ----
 	private int waveTicksLeft;
@@ -463,12 +484,14 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		@Override
 		public boolean canUse() {
-			return CobbieConfig.isCombatAllowed() && cobbie.getTarget() != null && super.canUse();
+			return CobbieConfig.isCombatAllowed() && !cobbie.isRetreating()
+					&& cobbie.getTarget() != null && super.canUse();
 		}
 
 		@Override
 		public boolean canContinueToUse() {
-			return CobbieConfig.isCombatAllowed() && cobbie.getTarget() != null && super.canContinueToUse();
+			return CobbieConfig.isCombatAllowed() && !cobbie.isRetreating()
+					&& cobbie.getTarget() != null && super.canContinueToUse();
 		}
 	}
 
@@ -484,6 +507,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		@Override
 		public boolean canUse() {
 			if (!CobbieConfig.isCombatAllowed()) return false;
+			// Choosing a new fight while running from one is how a retreat becomes a death.
+			if (cobbie.isRetreating()) return false;
 			LivingEntity current = cobbie.getTarget();
 			if (current != null && current.isAlive()) return false;
 			if (--scanCooldown > 0) return false;
@@ -1119,6 +1144,101 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		}
 	}
 
+	/**
+	 * Fire, lava and cactus: his body is in something that is taking his health, and no plan is worth
+	 * standing in it.
+	 *
+	 * <p>This lives on the tick beside {@link #wallRescueTick()} and not in a verb, for the same reason:
+	 * a body can be put into a fire by the walk it was given, by a piston, by a creeper's knockback or by
+	 * the world changing under it, and the one thing that must not happen is that he keeps walking deeper
+	 * because a plan said so. So the plan in flight is cancelled rather than obeyed, and he steps onto the
+	 * nearest square that is not on fire — four blocks at most, the same bounded search the wall rescue
+	 * uses — and says which of the three he got out of.
+	 *
+	 * <p>In a fight he stays where he is: a companion who flees a fire is alive, and one who flees a fight
+	 * he was winning has lost the fight. Getting out of the fire after it is the lesser of the two.
+	 */
+	private void hazardRescueTick() {
+		String hazard = hazardOnBody();
+		if (hazard == null || isFighting()) {
+			hazardTicks = 0;
+			return;
+		}
+		// A couple of ticks of contact, not one: walking past a lit campfire or through the edge of a
+		// creeper's blast should not teleport him sideways. Five ticks is a quarter second.
+		if (++hazardTicks < HAZARD_RESCUE_TICKS) return;
+		hazardTicks = 0;
+
+		BlockPos from = this.blockPosition().immutable();
+		int[] safe = BodySpace.nearestSafe(this::solidAt, (x, y, z) -> !blockHurts(x, y, z),
+				from.getX(), from.getY(), from.getZ(), HAZARD_RESCUE_RADIUS);
+		boolean stoppedThePlan = cancelTask("i was standing in " + hazard + ", so i stopped what i was doing");
+		getNavigation().stop();
+		interrupt();
+		if (safe == null) {
+			Cobbie.LOGGER.warn("Cobbie hazard rescue: standing in {} at {} and found nowhere safe within {} blocks",
+					hazard, describe(from), HAZARD_RESCUE_RADIUS);
+			say("i am standing in " + hazard + " and there is nowhere safe to step");
+			return;
+		}
+		hazardRescues++;
+		this.teleportTo(safe[0] + 0.5, safe[1], safe[2] + 0.5);
+		this.setDeltaMovement(Vec3.ZERO);
+		Cobbie.LOGGER.info("Cobbie hazard rescue #{}: out of {} at {} to {} {} {}", hazardRescues, hazard,
+				describe(from), safe[0], safe[1], safe[2]);
+		say("i was standing in " + hazard + ", so i got myself out"
+				+ (stoppedThePlan ? " and stopped what i was doing" : ""));
+	}
+
+	/**
+	 * The thing his body is actually in, in the word he would use for it, or null.
+	 *
+	 * <p>Asked of the blocks his bounding box overlaps, not of the two blocks his feet and head are
+	 * centred in: a cactus hurts when his shoulder is in it, and a campfire hurts when he is standing in
+	 * the half-block the game leaves you standing in. The first version of this asked whether a cactus was
+	 * in the next column and teleported him away from one he was never touching — a rule written for the
+	 * case someone imagined rather than for the one the game has.
+	 */
+	private String hazardOnBody() {
+		AABB body = this.getBoundingBox().inflate(0.02);
+		for (BlockPos at : BlockPos.betweenClosed(
+				Mth.floor(body.minX), Mth.floor(body.minY), Mth.floor(body.minZ),
+				Mth.floor(body.maxX), Mth.floor(body.maxY), Mth.floor(body.maxZ))) {
+			String word = hazardWord(level().getBlockState(at));
+			if (word != null) return word;
+		}
+		return null;
+	}
+
+	/** Does this block take health from a body in it — the question the escape is actually about. */
+	private String hazardWord(BlockState state) {
+		if (state.getFluidState().is(FluidTags.LAVA) || state.is(Blocks.LAVA)) return "lava";
+		if (state.is(Blocks.FIRE) || state.is(Blocks.SOUL_FIRE)) return "fire";
+		if (state.is(Blocks.CAMPFIRE) || state.is(Blocks.SOUL_CAMPFIRE)) return "a campfire";
+		if (state.is(Blocks.MAGMA_BLOCK)) return "hot ground";
+		if (state.is(Blocks.SWEET_BERRY_BUSH)) return "a berry bush";
+		if (state.is(Blocks.WITHER_ROSE)) return "a wither rose";
+		if (state.is(Blocks.CACTUS)) return "a cactus";
+		return null;
+	}
+
+	/**
+	 * Is this a square he could stand in for a moment without being hurt? The ground under it counts too:
+	 * a square over magma is free space that costs health, which is the same mistake as stepping out of a
+	 * fire into a campfire.
+	 */
+	private boolean blockHurts(int x, int y, int z) {
+		BlockPos pos = new BlockPos(x, y, z);
+		if (!level().isLoaded(pos)) return true;   // unknown ground is not somewhere to put him
+		return hazardWord(level().getBlockState(pos)) != null;
+	}
+
+	/** Is he in a fight right now — a swinging step, a target, or one on the way? */
+	private boolean isFighting() {
+		return hunted != null || this.getTarget() != null
+				|| (active != null && ActionVocabulary.ATTACK.equals(active.action()));
+	}
+
 	/** A registry id as words a person reads: "minecraft:oak_log" is "oak log" when he says it out loud. */
 	private static String wordsFor(String id) {
 		String short_ = Narrator.shortTarget(id);
@@ -1167,6 +1287,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		CrossDimensionFollow.remember(this);
 		watchWorldChange();
 		wallRescueTick();
+		hazardRescueTick();
+		disengageTick();
 		updateNameplate();
 		followOwnerTick();
 		swimTick();
@@ -1487,6 +1609,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	/** The one and only following mechanism. */
 	private void followOwnerTick() {
 		if (!following || ownerUuid == null) return;
+		// The retreat drives his feet itself; two loops aiming at the owner is two repath budgets for one walk.
+		if (isRetreating()) return;
 		// While a task is walking him somewhere, following must not repath him back mid-job. Any
 		// other kind of plan (talking, waving, a queued single step) must not freeze his feet.
 		if (navigatingForAction) return;
@@ -2120,7 +2244,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				// Read the target before interrupt(): interrupt() clears it, and the failure line then
 				// said "could not get close enough to ?" — a sentence that names nothing.
 				String unreachable = describe(activeTarget) + " from " + describe(this.blockPosition())
-						+ (climbAssists >= MAX_CLIMB_ASSISTS ? " (and it is too high to climb to)" : "");
+						+ (climbAssists >= MAX_CLIMB_ASSISTS ? " (and it is too high to climb to)" : "")
+						+ dropNote(activeTarget);
 				interrupt();
 				return ActionOutcome.fail(verb, "could not get close enough to " + unreachable);
 			}
@@ -2369,6 +2494,14 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		}
 		if (this.blockPosition().distSqr(pos) > reachSquared()) {
 			return ActionOutcome.fail("mine", describe(pos) + " is out of reach");
+		}
+		// The block under his feet is the block holding him up. A shaft straight down over lava, or a
+		// ledge over a long fall, is a dig that ends with his body at the bottom of it, and the answer is
+		// the game's own: the fall distance against the health he has. Refused, with the reason, before
+		// the swing — not attempted and regretted.
+		if (pos.equals(this.blockPosition().below())) {
+			String fatal = fatalDigNote(pos);
+			if (fatal != null) return ActionOutcome.fail("mine", fatal);
 		}
 
 		String id = blockId(state);
@@ -5387,6 +5520,186 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return e instanceof Enemy;                           // hostile mobs only; passives are untouchable
 	}
 
+	// ---- disengaging ----
+
+	/**
+	 * Is he falling back from a fight right now?
+	 *
+	 * <p>Asked by the melee goal and the defence goal, which is the half of this that keeps him from
+	 * trading blows while he runs: a retreat that the attack goal ignores is a retreat that never happens.
+	 */
+	public boolean isRetreating() {
+		return this.retreatUntilTick > this.tickCount;
+	}
+
+	/**
+	 * Below a fraction of his health, with a hostile engaging him, he breaks off and falls back to his
+	 * owner.
+	 *
+	 * <p>A companion who stands and trades blows until he dies is a companion you watch die. The fraction
+	 * is a setting because how cautious he should be is the owner's call, and the default is deliberately
+	 * low so he is not forever running from a scratch.
+	 *
+	 * <p>What "engaging" means is the game's own answer: an {@link Enemy} within twelve blocks whose
+	 * {@code getTarget()} is him or his owner. Not "something hostile is nearby" — a zombie walking past
+	 * is not a fight — and not gated on the combat permission, because being hit does not need permission.
+	 */
+	private void disengageTick() {
+		if (isRetreating()) {
+			driveRetreat();
+			return;
+		}
+		if (this.tickCount < retreatCooldownUntil) return;
+		double fraction = CobbieConfig.getRetreatHealthFraction();
+		if (fraction <= 0) return;
+		if (this.getHealth() >= this.getMaxHealth() * fraction) return;
+		LivingEntity threat = engagingThreat();
+		if (threat == null) return;
+
+		boolean stoppedThePlan = cancelTask("i am too badly hurt to keep fighting");
+		interrupt();
+		this.setTarget(null);
+		this.retreatUntilTick = this.tickCount + RETREAT_TICKS;
+		this.retreatCooldownUntil = this.tickCount + RETREAT_COOLDOWN_TICKS;
+		String line = "i am badly hurt, so i am falling back to you";
+		if (!sayToOwner(line)) speakNearby(line);
+		narrator.noteSpokenAt(System.currentTimeMillis());
+		Cobbie.LOGGER.info("Cobbie disengaged at {} of {} health from {} (plan {})", (int) this.getHealth(),
+				(int) this.getMaxHealth(), threat.getName().getString(),
+				stoppedThePlan ? "cancelled" : "none in flight");
+		driveRetreat();
+	}
+
+	/** The nearest hostile that is actually coming for him or for his owner. */
+	private LivingEntity engagingThreat() {
+		ServerPlayer owner = owner();
+		LivingEntity best = null;
+		double bestDist = RETREAT_THREAT_RANGE * RETREAT_THREAT_RANGE;
+		for (LivingEntity e : level().getEntitiesOfClass(LivingEntity.class,
+				new AABB(this.blockPosition()).inflate(RETREAT_THREAT_RANGE), LivingEntity::isAlive)) {
+			if (e == this || !(e instanceof Enemy) || !(e instanceof Mob mob)) continue;
+			if (mob.getTarget() != this && (owner == null || mob.getTarget() != owner)) continue;
+			double d = e.distanceToSqr(this);
+			if (d > bestDist) continue;
+			bestDist = d;
+			best = e;
+		}
+		return best;
+	}
+
+	/**
+	 * Put distance between himself and the fight, toward the owner.
+	 *
+	 * <p>Bounded twice: he stops when he is back at his owner's side, and he stops after
+	 * {@link #RETREAT_TICKS} whatever happens. A retreat with no end is a companion who wandered off.
+	 */
+	private void driveRetreat() {
+		if (!isRetreating()) return;
+		ServerPlayer owner = owner();
+		boolean withOwner = owner != null && owner.level() == this.level()
+				&& this.distanceToSqr(owner) <= Math.pow(Math.max(2.0, CobbieConfig.getFollowDistance()), 2);
+		if (withOwner) {
+			endRetreat();
+			return;
+		}
+		if (this.tickCount - followRepathTick < FOLLOW_REPATH_INTERVAL) return;
+		followRepathTick = this.tickCount;
+		if (owner != null && owner.level() == this.level()) {
+			getNavigation().moveTo(owner.getX(), owner.getY(), owner.getZ(), 1.2);
+			return;
+		}
+		// Nobody to fall back to: break off anyway. Standing in melee range at a third of his health is
+		// the one thing this behaviour exists to stop; without an owner the nearest thing to a retreat is
+		// the square furthest from whatever is hitting him.
+		LivingEntity threat = engagingThreat();
+		if (threat == null) return;
+		BlockPos away = standingSpotNear(this.blockPosition().offset(
+				Integer.signum(this.blockPosition().getX() - threat.blockPosition().getX()) * 4, 0,
+				Integer.signum(this.blockPosition().getZ() - threat.blockPosition().getZ()) * 4));
+		if (away != null) getNavigation().moveTo(away.getX() + 0.5, away.getY(), away.getZ() + 0.5, 1.2);
+	}
+
+	private void endRetreat() {
+		this.retreatUntilTick = 0;
+		if (!isBusy()) getNavigation().stop();
+	}
+
+	// ---- falling ----
+
+	/**
+	 * The deepest drop the pathfinder may plan him down.
+	 *
+	 * <p>The game's own answer is {@code floor(health + 3)} — its "comfortable fall distance" — and by the
+	 * game's own damage arithmetic that is a fall costing exactly his health: at 20 health it will plan a
+	 * 23-block drop and 20 damage, which is the last fall he ever takes. This asks for the deepest fall
+	 * that leaves him standing instead, so no path can walk him off a ledge that kills him. Pathing prices
+	 * lava and fire already; this is the number it never had.
+	 */
+	@Override
+	public int getMaxFallDistance() {
+		float health = this.getHealth();
+		if (health != fallLimitForHealth) {
+			fallLimitForHealth = health;
+			fallLimit = Falls.safeDrop(health, this::fallDamage);
+		}
+		return fallLimit;
+	}
+
+	/** What the game says a fall of this many blocks costs him. */
+	private double fallDamage(double distance) {
+		return this.calculateFallDamage(distance, 1.0f);
+	}
+
+	/** One level of a column of the world, for {@link Falls}. */
+	private Falls.Floor floorAt(int x, int y, int z) {
+		BlockPos pos = new BlockPos(x, y, z);
+		if (!level().isLoaded(pos)) return Falls.Floor.SOLID;   // an unloaded column is not somewhere to fall
+		BlockState state = level().getBlockState(pos);
+		if (state.getFluidState().is(FluidTags.LAVA)) return Falls.Floor.LAVA;
+		if (!state.getCollisionShape(level(), pos).isEmpty()) return Falls.Floor.SOLID;
+		if (!state.getFluidState().isEmpty()) return Falls.Floor.WATER;
+		return Falls.Floor.AIR;
+	}
+
+	/**
+	 * What happens to his body if the block under his feet turns to air. Null when the answer is "he is
+	 * still standing", otherwise the sentence that refuses the dig.
+	 *
+	 * <p>The column is described as it will be <em>after</em> the break, which is why the mined block
+	 * itself reads as air here: the question is not what is there now, it is what he would land in.
+	 */
+	private String fatalDigNote(BlockPos floor) {
+		BlockPos feet = this.blockPosition();
+		Falls.Below below = Falls.below(feet.getY(), level().getMinY(),
+				y -> y == floor.getY() ? Falls.Floor.AIR : floorAt(feet.getX(), y, feet.getZ()));
+		if (!Falls.fatal(below, this.getHealth(), this::fallDamage)) return null;
+		return switch (below.landing()) {
+			case LAVA -> "I will not break the block under my feet — it would drop me straight into lava";
+			case VOID -> "I will not break the block under my feet — there is nothing below it but the void";
+			case WATER -> null;   // water breaks a fall; this arm is unreachable, and saying so is cheaper than lying
+			case GROUND -> "I will not break the block under my feet — it is a " + (int) below.distance()
+					+ "-block drop and that would cost me " + (int) fallDamage(below.distance())
+					+ " of my " + (int) this.getHealth() + " health";
+		};
+	}
+
+	/**
+	 * Why a target below him is out of walking reach: how far below, and what a fall of that far would cost
+	 * him, in the game's own damage.
+	 *
+	 * <p>It says the geometry and the price, not "there is no staircase" — nothing here can see one. What it
+	 * can see is that the pathfinder refused a route to a target this far beneath him, and that a drop of
+	 * that size costs more health than he has left. That is the reason the refusal is honest to give.
+	 */
+	private String dropNote(BlockPos target) {
+		int drop = this.blockPosition().getY() - target.getY();
+		if (drop <= 3) return "";   // the game's first three blocks are free
+		double damage = fallDamage(drop);
+		if (damage < this.getHealth()) return "";
+		return " (it is " + drop + " blocks below me, and a drop of that far costs " + (int) damage
+				+ " of my " + (int) this.getHealth() + " health)";
+	}
+
 	private ActionOutcome startAttack(ActionIntent intent) {
 		if (!CobbieConfig.isCombatAllowed()) return ActionOutcome.fail("attack", "combat is switched off");
 		LivingEntity target = chooseAttackTarget(intent.target());
@@ -5686,6 +5999,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (hardness < 0) return false;
 		String id = blockId(state);
 		if (dropRefusal(state, id, hardness) != null) return false;
+		if (pos.equals(this.blockPosition().below()) && fatalDigNote(pos) != null) return false;
 		if (standingSpotNear(pos) == null) return false;
 		return fitsInInventory(Block.getDrops(state, serverLevel, pos, null, this, bestToolFor(state)));
 	}
