@@ -218,6 +218,36 @@ public final class LlmClient {
 		return complete(system, List.of(), user);
 	}
 
+	/**
+	 * Ask for an answer that is only JSON, using the server's own structured-output mode.
+	 *
+	 * <p>Ollama takes {@code format: "json"} and the OpenAI-compatible shape takes
+	 * {@code response_format: {"type":"json_object"}}; this is the same payload either way with that one
+	 * field added, so every rule already in this class — the retry budget, the reasoning-token
+	 * accounting, the redaction — applies to it unchanged. A server that rejects the field gets the same
+	 * one protocol correction the {@code think} field gets: the field is dropped and the request is
+	 * re-sent, because a constraint on the shape is a convenience and the prompt still asks for JSON.
+	 *
+	 * <p>It is a <em>hint to the server</em> and never a promise: callers still parse what comes back and
+	 * must fail closed when it is not the shape they asked for.
+	 */
+	public CompletableFuture<Result> completeJson(String system, String user) {
+		JsonObject payload;
+		try {
+			payload = buildPayload(system, List.of(), user);
+		} catch (Exception e) {
+			return CompletableFuture.completedFuture(Result.failure("could not build request: " + e));
+		}
+		if (provider.startsWith("openai")) {
+			JsonObject format = new JsonObject();
+			format.addProperty("type", "json_object");
+			payload.add("response_format", format);
+		} else {
+			payload.addProperty("format", "json");
+		}
+		return attempt(payload, 0);
+	}
+
 	// ---- retry loop ----
 
 	private CompletableFuture<Result> attempt(JsonObject payload, int attemptNo) {
@@ -235,6 +265,14 @@ public final class LlmClient {
 				if (payload.has("think") && thinksFieldWasRejected(res.error())) {
 					payload.remove("think");
 					Cobbie.LOGGER.info("Cobbie: this server rejects \"think\", reasoning tokens are back on");
+					return attempt(payload, attemptNo);
+				}
+				// The same correction for forced JSON: a server that does not know the field is not a
+				// reason to lose the turn, and the prompt still asks for one object.
+				if (jsonFieldWasRejected(payload, res.error())) {
+					payload.remove("format");
+					payload.remove("response_format");
+					Cobbie.LOGGER.info("Cobbie: this server rejects the forced-JSON field, asking in words instead");
 					return attempt(payload, attemptNo);
 				}
 				// OpenAI's reasoning models take max_completion_tokens and reject max_tokens with a
@@ -270,6 +308,13 @@ public final class LlmClient {
 						.thenCompose(ignored -> attempt(payload, attemptNo + 1));
 			}
 		});
+	}
+
+	private static boolean jsonFieldWasRejected(JsonObject payload, String error) {
+		if (error == null) return false;
+		if (!payload.has("format") && !payload.has("response_format")) return false;
+		String e = error.toLowerCase(Locale.ROOT);
+		return e.contains("400") && (e.contains("format") || e.contains("response_format") || e.contains("json"));
 	}
 
 	private static boolean thinksFieldWasRejected(String error) {

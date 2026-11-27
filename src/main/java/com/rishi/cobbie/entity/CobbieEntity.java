@@ -191,10 +191,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private static final int STATION_STALL_TICKS = 400;
 	/** How far he will look for a furnace before giving up on making iron. */
 	private static final int FURNACE_SEARCH = 12;
-	/** How often he looks for a project, how long he waits after one, and how quiet the owner must be. */
-	private static final int INITIATIVE_INTERVAL_TICKS = 100;
-	private static final int INITIATIVE_COOLDOWN_TICKS = 2400;
+	/** How quiet the owner must be before he will start something of his own mid-conversation. */
 	private static final int INITIATIVE_QUIET_TICKS = 200;
+	/** How often the situation is read: twice a second, which is what the cadence compares. */
+	private static final int SITUATION_INTERVAL_TICKS = 10;
 	/** How far round himself he will look for two animals of a kind. */
 	private static final int BREED_RADIUS = 8;
 	/** How far round himself he will tend a farm. A plot is small; a field he walks. */
@@ -351,8 +351,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 	/** True while the plan running is a project he started, so an owner instruction can cancel it. */
 	private boolean initiativePlan;
-	/** Ticks since his last project, so he does not start one every few seconds. */
-	private int initiativeCooldown;
+	/** When he may ask the model what to do next: changes wake it, a slow heartbeat keeps it honest. */
+	private final com.rishi.cobbie.opportunity.OpportunityCadence opportunityCadence =
+			new com.rishi.cobbie.opportunity.OpportunityCadence();
 	/** The tick the owner last asked him for anything: he does not start work mid-sentence. */
 	private int lastOwnerContactTick;
 
@@ -655,19 +656,29 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	}
 
 	/**
-	 * Start a project of his own: the same plan machinery, with the intent to cancel it on a word.
+	 * Start an opportunity the model chose from the shortlist: the same plan machinery, with the intent
+	 * to cancel it on a word.
+	 *
+	 * <p>Called only by {@link com.rishi.cobbie.opportunity.OpportunityCycle}, on the server thread, and
+	 * only for an opportunity that arrived from the assessor. The steps are the opportunity's own, so what
+	 * runs is exactly what was offered and what was chosen — no re-invention between the two.
 	 *
 	 * @return null when started, otherwise why not
 	 */
-	private String startProject(com.rishi.cobbie.task.Initiative.Project project) {
-		if (project == null || project.steps().isEmpty()) return "nothing worth doing here";
-		String refusal = tasks.start(project.request(), project.steps(), false);
+	public String startOpportunity(com.rishi.cobbie.opportunity.Opportunity opportunity) {
+		if (opportunity == null || opportunity.steps().isEmpty()) return "nothing worth doing here";
+		String refusal = tasks.start(opportunity.request(), opportunity.steps(), false);
 		if (refusal == null) {
 			initiativePlan = true;
 			planOrigin = this.blockPosition().immutable();
-			interruptedPlan = project.request();
+			interruptedPlan = opportunity.request();
 		}
 		return refusal;
+	}
+
+	/** The cadence that decides when he may ask what to do next: exposed for the cycle and its tests. */
+	public com.rishi.cobbie.opportunity.OpportunityCadence opportunityCadence() {
+		return opportunityCadence;
 	}
 
 	/**
@@ -1372,14 +1383,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			collectWithinReach();
 		}
 
-		// Own initiative: creative mode only, idle, allowed to explore, and not asked to stay.
-		if (!isBusy() && !following && pendingOutcome == null
-				&& CobbieConfig.isCreative() && CobbieConfig.permits("explore")
-				&& this.random.nextInt(400) == 0) {
-			exploreSomewhereNearby();
-		}
-
-		initiativeTick();
+		// Nothing here decides what he does when he is idle: that is the opportunity cycle below, which
+		// asks the model to choose among what he can actually start. The old one-in-four-hundred random
+		// wander lived here and was the last place he invented a goal for himself.
+		opportunityTick();
 	}
 
 	/**
@@ -1393,33 +1400,44 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	}
 
 	/**
-	 * Start a project of his own, if it is allowed and there is something worth doing.
+	 * Ask what he could do, and let the model pick one — the whole of his autonomy, once per change.
 	 *
-	 * <p>The conditions are the brief's, each with a reason: <b>creative autonomy only</b> (assistive
-	 * stays assistive), <b>the switch is on</b>, <b>nothing else is running</b>, and <b>the owner has been
-	 * quiet</b> — starting work while being spoken to is worse than waiting. One look every
-	 * {@link #INITIATIVE_INTERVAL_TICKS} rather than every tick, and a cooldown after each project so a
-	 * companion does not churn.
+	 * <p>Four gates, each with a reason: <b>the switch is on</b>, <b>creative autonomy only</b> (assistive
+	 * stays assistive), <b>nothing else is running</b>, and <b>the owner has been quiet</b> for
+	 * {@link #INITIATIVE_QUIET_TICKS} — starting work while being spoken to is worse than waiting.
 	 *
-	 * <p>He announces it once, in the same breath as handing the plan over, and the declared-action
-	 * contract covers the rest: a project that promised work and queued no step is a contradiction the
-	 * code can see.
+	 * <p>Everything after the gates is {@link com.rishi.cobbie.opportunity.OpportunityCycle}: the cadence
+	 * decides whether this scene is worth a question at all (an unchanged scene is not, until the slow
+	 * heartbeat), the assessor lists what can start right now, and the model's answer — or its rejection —
+	 * becomes the plan. <b>Nothing here falls back to a candidate when the model does not answer</b>: a
+	 * silent brain means WAIT, because the alternative is the assessor deciding, which is the picker this
+	 * slice replaced.
 	 */
-	private void initiativeTick() {
-		if (this.initiativeCooldown > 0) this.initiativeCooldown--;
-		if (initiativeCooldown > 0) return;
+	private void opportunityTick() {
 		if (!CobbieConfig.isInitiativeAllowed()) return;
 		if (!CobbieConfig.isCreative()) return;
 		if (isBusy() || active != null || pendingOutcome != null) return;
-		if (this.tickCount % INITIATIVE_INTERVAL_TICKS != 0) return;
 		if (this.tickCount - lastOwnerContactTick < INITIATIVE_QUIET_TICKS) return;
+		// The fingerprint scans the neighbourhood for hostiles and the bag for what he carries, so it is
+		// read twice a second rather than every tick. Half a second of latency on "a change arrived" is
+		// nothing to a companion, and the alternative is an entity query in every tick of every body.
+		if (this.tickCount % SITUATION_INTERVAL_TICKS != 0) return;
+		if (com.rishi.cobbie.opportunity.OpportunitySelector.busy()) return;
 
-		com.rishi.cobbie.task.Initiative.Project project = com.rishi.cobbie.task.Initiative.choose(this);
-		if (project == null) return;
-		if (startProject(project) == null) {
-			speak(project.line());
-			initiativeCooldown = INITIATIVE_COOLDOWN_TICKS;
+		com.rishi.cobbie.opportunity.Situation scene = com.rishi.cobbie.opportunity.Situation.of(this);
+		if (!opportunityCadence.shouldAsk(this.tickCount, scene)) return;
+
+		com.rishi.cobbie.opportunity.Shortlist list = com.rishi.cobbie.opportunity.OpportunityAssessor.assess(this);
+		// Recorded even when the list is empty: the situation was examined, and re-examining an unchanged
+		// one on the next tick would be a poll. The heartbeat is what tries again.
+		opportunityCadence.noted(this.tickCount, scene);
+		if (list.isEmpty()) {
+			com.rishi.cobbie.opportunity.OpportunityCycle.nothingOffered(this, opportunityCadence.why(this.tickCount, scene));
+			return;
 		}
+		net.minecraft.server.MinecraftServer server = level().getServer();
+		if (server == null) return;
+		com.rishi.cobbie.opportunity.OpportunityCycle.begin(this, list, server);
 	}
 
 	private record DeferredDrop(ServerLevel level, BlockPos at, List<ItemStack> stacks) {}
@@ -6453,6 +6471,145 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (pos.equals(this.blockPosition().below()) && fatalDigNote(pos) != null) return false;
 		if (standingSpotNear(pos) == null) return false;
 		return fitsInInventory(Block.getDrops(state, serverLevel, pos, null, this, bestToolFor(state)));
+	}
+
+	// ==================================================================
+	// What the opportunity assessor may read — and nothing else
+	// ==================================================================
+	//
+	// The assessor is deterministic and lives outside this class, so it can only ask questions the body
+	// already answers for itself. These are those questions, one line each: the threat rule, the loose
+	// item, the ripe crops, whether a walk would start, how the bag is shaped, and what he is carrying in
+	// words. Adding a second opinion to any of them here is how the two copies drift apart.
+
+	/** The hostile already coming for him or his owner, or null. The defensive pick, in one place. */
+	public LivingEntity threatToDefendAgainst() {
+		return findThreatToDefendAgainst();
+	}
+
+	/** A hostile in sight that is not coming for anyone yet: worth going after, never urgent. */
+	public LivingEntity idleHostileNear(int radius) {
+		if (!CobbieConfig.isCombatAllowed()) return null;
+		List<LivingEntity> around = level().getEntitiesOfClass(LivingEntity.class,
+				new AABB(this.blockPosition()).inflate(radius),
+				e -> e.isAlive() && isLegalTarget(e) && threatTier(e) == 2 && this.hasLineOfSight(e));
+		return realThreat(around);
+	}
+
+	/**
+	 * The threat situation, as a state rather than a tally: <b>0</b> nothing, <b>1</b> something already
+	 * coming for him or the owner, <b>2</b> something hostile merely in sight, <b>3</b> both at once.
+	 *
+	 * <p>A count is the wrong fingerprint for "a hostile arrived": a second zombie walking into view of
+	 * the first changes a number and changes nothing about what he should do.
+	 */
+	public int threatsNear(int radius) {
+		if (!CobbieConfig.isCombatAllowed()) return 0;
+		boolean engaging = false;
+		boolean sighted = false;
+		for (LivingEntity e : level().getEntitiesOfClass(LivingEntity.class,
+				new AABB(this.blockPosition()).inflate(radius),
+				e -> e.isAlive() && isLegalTarget(e) && this.hasLineOfSight(e))) {
+			if (threatTier(e) <= 1) engaging = true;
+			else sighted = true;
+		}
+		return engaging && sighted ? 3 : engaging ? 1 : sighted ? 2 : 0;
+	}
+
+	/** The nearest loose item he could walk to and pick up, or null when the ground is empty. */
+	public ItemEntity nearestLooseItem() {
+		return nearestCollectable();
+	}
+
+	/** How many crops within reach are ready to take. */
+	public int ripeCropsNear(int radius) {
+		if (!(level() instanceof ServerLevel serverLevel)) return 0;
+		BlockPos feet = blockPosition();
+		int ripe = 0;
+		for (BlockPos pos : BlockPos.betweenClosed(feet.offset(-radius, -2, -radius), feet.offset(radius, 2, radius))) {
+			BlockState state = serverLevel.getBlockState(pos);
+			if (state.getBlock() instanceof net.minecraft.world.level.block.CropBlock crop && crop.isMaxAge(state)) {
+				ripe++;
+			}
+		}
+		return ripe;
+	}
+
+	/**
+	 * Whether a walk there would start: loaded, inside the verb's own range, room for his body, and a
+	 * route the pathfinder can actually find. The same gate the step applies, asked before it is queued —
+	 * an offered walk that the verb would refuse is a promise made before the check.
+	 */
+	public boolean canWalkTo(BlockPos pos) {
+		if (!canStandAt(pos)) return false;
+		double navLimit = Math.max(8, CobbieConfig.getNavigationRange());
+		if (blockPosition().distSqr(pos) > navLimit * navLimit) return false;
+		if (blockPosition().closerThan(pos, 1.5)) return true;
+		return getNavigation().createPath(pos, 1) != null;
+	}
+
+	/**
+	 * Whether his body has room at this square — loaded, and the two blocks a companion occupies are free.
+	 *
+	 * <p>The half of a walk's gate that does not depend on where he is standing now, which is what a leg he
+	 * has not reached yet can honestly be checked for.
+	 */
+	public boolean canStandAt(BlockPos pos) {
+		if (pos == null || !(level() instanceof ServerLevel serverLevel) || !serverLevel.isLoaded(pos)) return false;
+		return com.rishi.cobbie.world.BodySpace.fits(this::solidAt, pos.getX(), pos.getY(), pos.getZ());
+	}
+
+	/**
+	 * The bag and the raised hand, with every count in powers of two.
+	 *
+	 * <p>Coarse on purpose: the fingerprint only has to change when <b>what he could do</b> changes. Three
+	 * logs and four logs are the same plan; a log and a pickaxe are not. A raw count would wake the model
+	 * every time he picked a flower, which is the poll this cadence exists to avoid.
+	 */
+	public int bagFingerprint() {
+		int hash = 17;
+		hash = 31 * hash + itemId(getMainHandItem()).hashCode();
+		for (int slot = 0; slot < inventory.getContainerSize(); slot++) {
+			ItemStack stack = inventory.getItem(slot);
+			if (stack.isEmpty()) continue;
+			hash = 31 * hash + itemId(stack).hashCode();
+			hash = 31 * hash + (32 - Integer.numberOfLeadingZeros(Math.max(1, stack.getCount())));
+		}
+		return hash;
+	}
+
+	/** What he is carrying, in words, for the line the model reads beside the shortlist. */
+	public String carriedSummary() {
+		java.util.LinkedHashMap<String, Integer> counts = new java.util.LinkedHashMap<>();
+		for (int slot = 0; slot < inventory.getContainerSize(); slot++) {
+			ItemStack stack = inventory.getItem(slot);
+			if (stack.isEmpty()) continue;
+			counts.merge(itemId(stack), stack.getCount(), Integer::sum);
+		}
+		ItemStack hand = this.getMainHandItem();
+		if (!hand.isEmpty()) counts.merge(itemId(hand) + " (in hand)", hand.getCount(), Integer::sum);
+		if (counts.isEmpty()) return "nothing";
+		StringBuilder sb = new StringBuilder();
+		int shown = 0;
+		for (var entry : counts.entrySet()) {
+			if (shown++ == 8) {
+				sb.append(", ...");
+				break;
+			}
+			if (sb.length() > 0) sb.append(", ");
+			sb.append(shortId(entry.getKey())).append(" x").append(entry.getValue());
+		}
+		return sb.toString();
+	}
+
+	/** The tick anyone last asked him for anything. */
+	public int lastOwnerContactTick() {
+		return lastOwnerContactTick;
+	}
+
+	private static String shortId(String id) {
+		int colon = id.indexOf(':');
+		return colon < 0 ? id : id.substring(colon + 1);
 	}
 
 	private ItemStack equipBestToolFor(BlockState state) {
