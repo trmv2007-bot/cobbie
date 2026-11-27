@@ -44,7 +44,7 @@ Every source is the game's own method or a `FoodConstants` field, applied where 
 | walks, sprints, swims | `ServerPlayer.checkMovementStatistics(dx, dy, dz)` on his actor | `EXHAUSTION_WALK` 0.0, `EXHAUSTION_SPRINT` 0.1, `EXHAUSTION_SWIM` 0.01 |
 | jumps | `ServerPlayer.jumpFromGround()` on his actor | `EXHAUSTION_JUMP` 0.05, `EXHAUSTION_SPRINT_JUMP` 0.2 |
 | breaks a block | `causeFoodExhaustion` with the number `Block.playerDestroy` charges | `EXHAUSTION_MINE` 0.005 |
-| lands a hit | the number `Player.attack` charges, on a hit that landed | `EXHAUSTION_ATTACK` 0.1 |
+| lands a hit | the number `Player.attack` charges, at the one place a hit lands (`trySwingAt`, after the 0.84.0 merge) | `EXHAUSTION_ATTACK` 0.1 |
 | takes damage | `source.getFoodExhaustion()`, the same call `Player.hurtServer` makes | the damage type's own figure |
 | heals from food | inside `FoodData.tick` | `EXHAUSTION_HEAL` 6.0 |
 
@@ -114,8 +114,19 @@ the same run, never with a number written here:
 | `JAVA_HOME=C:/Users/rishi/jdk25 ./gradlew cleanTest test` | 301 tests, 0 failed |
 | `runClientGameTest -PcobbieTests=Hunger --no-build-cache --rerun-tasks` | 1 passed of 1 |
 | `runClientGameTest -PcobbieTests=Panel,Persistence,Status --no-build-cache --rerun-tasks` | 3 passed of 3 |
-| `runClientGameTest --no-build-cache --rerun-tasks` (whole suite) | **74 passed, 2 failed of 76** — `CobbieGameTests` registers 76 classes, was 75 |
-| the two reds | `CobbieSmokeTest` and `CobbieChatTest`, both "never reached a connected brain": no Ollama is answering at 11434 on this machine (preflight said so before the run), and both fail identically on pristine `master` for that reason |
+| `runClientGameTest --no-build-cache --rerun-tasks` (whole suite, exact pushed tree) | **78 passed, 2 failed of 80** — `CobbieGameTests` registers 80 classes, was 75 at 0.83.0 and 79 after 0.84.0 |
+| the two reds | `CobbieSmokeTest` and `CobbieChatTest`, both "never reached a connected brain": nothing answers at 11434 on this machine, and preflight said so before the run. They are the two brain-gated classes and fail for that reason alone, as the 0.83.0 run recorded them against pristine master |
+
+Two things the suite taught, both recorded rather than papered over:
+
+- **A fed companion regenerates, and a fall-damage test that sampled health forty ticks after the
+  landing measured the healing as much as the fall** (`CobbieFatalDigTest` read 15.5 where it wanted
+  six points off 20). The test now keeps the lowest health across those forty ticks; the claim — a
+  nine-block drop costs six — is unchanged and is measured at the moment it happens.
+- **`CobbiePersistenceTest` lost its save-timing race once the suite grew past 76 classes**: a
+  three-leg walk could finish inside the save window, so the save legitimately carried no work.
+  Its in-flight walk is now the same three known-walkable legs repeated three times — same claims,
+  same ground, long enough that no save can outlast it. It passed in the final whole-suite run.
 
 ## What could not be driven honestly
 
