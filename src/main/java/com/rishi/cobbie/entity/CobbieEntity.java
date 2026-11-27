@@ -5027,6 +5027,16 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 					: "I have no " + intent.target() + " to use");
 		}
 		if (held.is(Items.FISHING_ROD)) return ActionOutcome.fail("use", NO_FISHING);
+		// The guard is on the act, not on the prompt: TNT, fire and lava are refused near the owner's
+		// things whoever asked for them, and it is asked before he walks anywhere, so he does not
+		// stroll over with a flint and steel and refuse at the end of it.
+		com.rishi.cobbie.safety.Hazards.Act hazard = com.rishi.cobbie.safety.Hazards.actOf(held,
+				atBlock ? level().getBlockState(pos) : null);
+		if (hazard != null) {
+			String refusal = com.rishi.cobbie.safety.Hazards.refusalFor(this, hazard,
+					atBlock ? pos : this.blockPosition());
+			if (refusal != null) return ActionOutcome.fail("use", refusal);
+		}
 		if (atBlock && this.blockPosition().distSqr(pos) > reachSquared()) {
 			BlockPos stand = standingSpotNear(pos);
 			if (stand == null) return ActionOutcome.fail("use", "nowhere to stand at " + describe(pos));
@@ -5804,12 +5814,22 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (!CobbieConfig.isCombatAllowed()) return null;
 		List<LivingEntity> around = level().getEntitiesOfClass(LivingEntity.class,
 				new AABB(this.blockPosition()).inflate(16.0),
-				e -> e.isAlive() && isLegalTarget(e) && threatTier(e) <= 1 && this.hasLineOfSight(e));
+				e -> e.isAlive() && isThreat(e) && threatTier(e) <= 1 && this.hasLineOfSight(e));
 		return realThreat(around);
 	}
 
-	/** The combat safety rules, in exactly one place. */
-	boolean isLegalTarget(LivingEntity e) {
+	/**
+	 * The combat safety rules, in exactly one place.
+	 *
+	 * <p>Two kinds of target and no third: a hostile, when combat is on at all, and a <b>hunted animal</b>,
+	 * when {@link #mayHunt()} says he is hungry and has nothing to eat. The hunting half is the rule in
+	 * {@link com.rishi.cobbie.safety.Hunting}, and it lives there rather than here so the sentence, the
+	 * radius and the pen are written once.
+	 *
+	 * <p>Public for the in-game suite, which has to ask the rule rather than infer it from a cow's health:
+	 * a control and its case have to differ in the fence and nothing else.
+	 */
+	public boolean isLegalTarget(LivingEntity e) {
 		if (e == null || !e.isAlive() || e == this) return false;
 		if (e instanceof Player p && isOwner(p)) return false;   // never the owner
 		if (e instanceof Player) {
@@ -5819,7 +5839,45 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		// wolf because it is a mob has taken something that was not his to take.
 		if (e instanceof OwnableEntity pet && pet.getOwner() != null) return false;
 		if (!CobbieConfig.isCombatAllowed()) return false;
-		return e instanceof Enemy;                           // hostile mobs only; passives are untouchable
+		if (e instanceof Enemy) return true;                 // hostiles need nothing beyond the switch
+		return e instanceof net.minecraft.world.entity.animal.Animal animal && mayHunt() && !keptInPen(animal);
+	}
+
+	/**
+	 * Whether an animal is food today: he is hungry and carrying nothing the game would let him eat.
+	 *
+	 * <p>The question every combat path defers to, so "he hunts when he is hungry" is one predicate and not
+	 * a condition copied into the melee goal, the attack verb and the assessor. A fed companion never takes
+	 * an animal, which is what keeps a hunt from becoming sport.
+	 */
+	public boolean mayHunt() {
+		return CobbieConfig.isCombatAllowed() && hunger.foodLevel() <= Hunger.EAT_AT && !hunger.carriesFood();
+	}
+
+	/** A farm animal is "kept" when somebody's fence, gate or wall stands within the hunting radius of it. */
+	private boolean keptInPen(net.minecraft.world.entity.animal.Animal animal) {
+		BlockPos at = animal.blockPosition();
+		return com.rishi.cobbie.safety.Hunting.inPen(this::barrierAt, at.getX(), at.getY(), at.getZ(),
+				com.rishi.cobbie.safety.Hunting.PEN_RADIUS);
+	}
+
+	/** The blocks that mean somebody built a boundary. Fences of both kinds, gates, and walls. */
+	private boolean barrierAt(int x, int y, int z) {
+		BlockState state = level().getBlockState(new BlockPos(x, y, z));
+		return state.is(net.minecraft.tags.BlockTags.FENCES)
+				|| state.is(net.minecraft.tags.BlockTags.FENCE_GATES)
+				|| state.is(net.minecraft.tags.BlockTags.WALLS);
+	}
+
+	/**
+	 * The hostiles: what every threat question means.
+	 *
+	 * <p>Separate from {@link #isLegalTarget} because a huntable animal is a target and never a threat. Fold
+	 * the two together and a hungry companion's hunger bar starts deciding how many enemies he thinks are
+	 * around him, which is a fingerprint and a defensive plan reading the wrong fact.
+	 */
+	private boolean isThreat(LivingEntity e) {
+		return e instanceof Enemy && isLegalTarget(e);
 	}
 
 	// ---- disengaging ----
@@ -5927,7 +5985,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		double bestDist = range * range;
 		for (LivingEntity e : level().getEntitiesOfClass(LivingEntity.class,
 				new AABB(this.blockPosition()).inflate(range),
-				e -> e.isAlive() && isLegalTarget(e) && threatTier(e) <= 1 && this.hasLineOfSight(e))) {
+				e -> e.isAlive() && isThreat(e) && threatTier(e) <= 1 && this.hasLineOfSight(e))) {
 			double d = e.distanceToSqr(this);
 			if (d <= bestDist) {
 				bestDist = d;
@@ -6070,7 +6128,13 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private ActionOutcome startAttack(ActionIntent intent) {
 		if (!CobbieConfig.isCombatAllowed()) return ActionOutcome.fail("attack", "combat is switched off");
 		LivingEntity target = chooseAttackTarget(intent.target());
-		if (target == null) return ActionOutcome.fail("attack", "nothing I am allowed to fight is nearby");
+		if (target == null) {
+			// An animal in reach that the hunting rule refused is a different refusal from "nothing
+			// here": the owner pointed at the cow, so the answer has to be the rule and not a shrug.
+			String animal = refusedAnimalNear(intent.target());
+			return ActionOutcome.fail("attack", animal == null
+					? "nothing I am allowed to fight is nearby" : animal);
+		}
 		this.setTarget(target);
 		hunted = target.getUUID();
 		huntedName = target.getName().getString();
@@ -6104,6 +6168,28 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (around.isEmpty()) return null;
 		List<LivingEntity> visible = around.stream().filter(this::hasLineOfSight).toList();
 		return realThreat(visible.isEmpty() ? around : visible);
+	}
+
+	/**
+	 * Why an animal he can see is not his to take, or null when there is none in reach.
+	 *
+	 * <p>The line is {@link com.rishi.cobbie.safety.Hunting#RULE} rather than a second sentence written
+	 * here, so what he says when the rule stops him is the rule.
+	 */
+	private String refusedAnimalNear(String typeHint) {
+		String hint = typeHint == null ? "" : typeHint.trim().toLowerCase(Locale.ROOT);
+		for (net.minecraft.world.entity.animal.Animal animal : level().getEntitiesOfClass(
+				net.minecraft.world.entity.animal.Animal.class,
+				new AABB(this.blockPosition()).inflate(8),
+				net.minecraft.world.entity.animal.Animal::isAlive)) {
+			if (isLegalTarget(animal)) continue;   // legal, so it is not what stopped him
+			String id = BuiltInRegistries.ENTITY_TYPE.getKey(animal.getType()).toString()
+					.toLowerCase(Locale.ROOT);
+			if (!hint.isEmpty() && !id.contains(hint)) continue;
+			return "a " + animal.getName().getString() + " is here and I am not taking it: "
+					+ com.rishi.cobbie.safety.Hunting.RULE;
+		}
+		return null;
 	}
 
 	/** Chase and hit, revalidating the target immediately before every swing. */
@@ -6487,12 +6573,36 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return findThreatToDefendAgainst();
 	}
 
+	/**
+	 * An animal he may take for food, in sight, or null.
+	 *
+	 * <p>The hunting rule's own question, asked of the world: it answers only while {@link #mayHunt()} is
+	 * true and only for an animal that is nobody's pet and standing in no pen. The assessor offers a hunt
+	 * through this and the attack verb selects through {@link #isLegalTarget}, so there is one rule in two
+	 * places that both ask it — not two rules.
+	 */
+	public LivingEntity huntableNear(int radius) {
+		if (!mayHunt()) return null;
+		LivingEntity best = null;
+		double bestDistance = Double.MAX_VALUE;
+		for (LivingEntity e : level().getEntitiesOfClass(LivingEntity.class,
+				new AABB(this.blockPosition()).inflate(radius),
+				e -> e instanceof net.minecraft.world.entity.animal.Animal && e.isAlive()
+						&& this.hasLineOfSight(e) && isLegalTarget(e))) {
+			double distance = e.distanceToSqr(this);
+			if (distance >= bestDistance) continue;
+			bestDistance = distance;
+			best = e;
+		}
+		return best;
+	}
+
 	/** A hostile in sight that is not coming for anyone yet: worth going after, never urgent. */
 	public LivingEntity idleHostileNear(int radius) {
 		if (!CobbieConfig.isCombatAllowed()) return null;
 		List<LivingEntity> around = level().getEntitiesOfClass(LivingEntity.class,
 				new AABB(this.blockPosition()).inflate(radius),
-				e -> e.isAlive() && isLegalTarget(e) && threatTier(e) == 2 && this.hasLineOfSight(e));
+				e -> e.isAlive() && isThreat(e) && threatTier(e) == 2 && this.hasLineOfSight(e));
 		return realThreat(around);
 	}
 
@@ -6509,7 +6619,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		boolean sighted = false;
 		for (LivingEntity e : level().getEntitiesOfClass(LivingEntity.class,
 				new AABB(this.blockPosition()).inflate(radius),
-				e -> e.isAlive() && isLegalTarget(e) && this.hasLineOfSight(e))) {
+				e -> e.isAlive() && isThreat(e) && this.hasLineOfSight(e))) {
 			if (threatTier(e) <= 1) engaging = true;
 			else sighted = true;
 		}

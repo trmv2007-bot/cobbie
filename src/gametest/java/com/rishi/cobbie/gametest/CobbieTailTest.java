@@ -238,6 +238,10 @@ public final class CobbieTailTest implements FabricClientGameTest {
             // 9. Prime TNT with flint and steel. The primed entity is the receipt; it is defused
             //    immediately so the harness does not grade the rest of the run against a crater.
             run(failures, "prime TNT with flint and steel", server, () -> {
+                // The hazard guard refuses TNT within sixteen blocks of the owner whoever asked, so this
+                // case lights it where somebody who wanted it lit would: with the owner standing clear.
+                // The refusal beside them is proved in CobbiePermissionTest.
+                CobbieTestSupport.teleportOwner(server, 32, 0, 0);
                 BlockPos bomb = base.offset(8, -1, 0);
                 server.computeOnServer(s -> {
                     CobbieTestSupport.command(s, "setblock " + bomb.getX() + " " + bomb.getY() + " "

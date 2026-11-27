@@ -58,9 +58,10 @@ What replaces them is narrower, and none of it is plumbing:
 2. **His body is a mob's body.** No `Pose.SNEAKING`, no crawl dimensions, no air supply, no fall-flying,
    no sleeping, no riding a saddled animal. These are `Player` state or `EntityDimensions`, not verbs, and
    a `PathfinderMob` cannot have them without becoming something else.
-3. **Taste, not reach: he does not choose.** He will mine a block with the cheapest tool that harvests it
-   and he will not attack a cow, because `isLegalTarget` says hostiles only. Both are policy decisions that
-   read as capability gaps from the outside.
+3. **Taste, not reach: what he does not choose.** He mines a block with the cheapest tool that harvests it,
+   which is a policy that reads as a capability gap and is not one. The other half of this — that he would
+   not attack an animal at all — **closed at 0.89.0**: `isLegalTarget` admits a hunted animal while he is
+   hungry with nothing to eat, never a pet and never one in a pen (`safety/Hunting.java`).
 
 ## Where the four planned phases actually landed
 
@@ -74,14 +75,15 @@ What replaces them is narrower, and none of it is plumbing:
 ## What this means for "everything a player can do"
 
 It is closer than the old document claimed, and the shape of what is left has changed. Of the 150 rows
-below: **93 are yes** — 84 with a named in-game class behind them and 9 more that are one API call with no
-class isolating them — **13 are partial**, **10 are untested**, and **31 are no**, of which roughly a third
+below: **94 are yes** — 85 with a named in-game class behind them and 9 more that are one API call with no
+class isolating them — **12 are partial**, **10 are untested**, and **31 are no**, of which roughly a third
 are structural (sleeping, elytra, crits, sailing a boat by hand) rather than unimplemented. One row is
-answered from the evidence, one is incidental and one is `n/a`.
+answered from the evidence, one is incidental and one is `n/a`. The one row that moved since 0.87 is
+"kill a mob and take the loot", from partial to yes, and that is the whole of the player-visible change.
 
 The remainder that a player would actually notice is short and is listed in order at the end of this
-document. The one that is a genuine gap rather than a nicety is the hunting rule: he will not attack an
-animal, so a companion cannot feed himself without the owner killing for him.
+document. The hunting rule, which was the one genuine gap rather than a nicety, **shipped at 0.89.0**, and
+with it the guard that keeps TNT, fire and lava away from the owner's things.
 
 ---
 
@@ -127,7 +129,7 @@ Three shape facts in 26.3 govern this area, and they are why the `no`s here are 
 | Ender pearl (throw and teleport) | `Items.ENDER_PEARL`, `EntityTypes.ENDER_PEARL` → `ThrownEnderpearl`; `ThrownEnderpearl.isAllowedToTeleportOwner(Entity, Level)` limits teleporting to a `ServerPlayer` owner | **untested.** The same air-use path would throw it and the game would teleport him where it lands. Unproven, and a teleport nobody asked for needs a decision more than an implementation. | an aim decision, and a deliberate teleport verb if the owner wants one | low |
 | Arrows and tipped arrows | `Arrow(Level, LivingEntity, ItemStack weapon, ItemStack ammo)`; `Arrow.addEffect(MobEffectInstance)`; `AbstractArrow.setBaseDamage(double)`, `setCritArrow(boolean)`, `setBaseDamageFromMob(float)`; `DataComponents.POTION_CONTENTS` read off the ammo stack; `Items.TIPPED_ARROW` | **no.** There is no bow to fire them from (see above) and no projectile path at all. | follows the bow | low |
 | Fishing rod as an item | `Items.FISHING_ROD`, `FishingRodItem.use(Level, Player, InteractionHand)` (**Player-typed**), `EntityTypes.FISHING_BOBBER`, `EnchantmentHelper.getFishingLuckBonus(...)`, `getFishingTimeReduction(...)` | **no, refused with the reason.** `NO_FISHING` (`:212`) and the refusal at `:5011`. `CobbieInteractTest` proves the refusal *and* that no bobber is left behind, because a bobber whose `FishingHook.getPlayerOwner()` finds nobody is discarded on its first tick. | a bobber owner that survives `getPlayerOwner()` — the actor is not in the player list, so the hook dies. High cost, low reward | low |
-| Target selection rules (never the owner, hostiles only, ignore pets) | `Player` check + `net.minecraft.world.entity.monster.Enemy` marker interface; `LivingEntity.getLastHurtByMob()` / `getLastHurtMob()`; `Mob.getTarget()` | **yes.** `isLegalTarget` (`:5794-5805`): never the owner, other players behind their own flag, never a tamed pet, hostiles only. `CobbieCombatTest` proves a passive animal beside a fight is untouched and `CobbieThreatTest` proves the owner is never a target. | nothing | done |
+| Target selection rules (never the owner, hostiles *or* a hungry hunt, ignore pets) | `Player` check + `net.minecraft.world.entity.monster.Enemy` marker; `EntityType.getCategory()`-free `Animal` check; `OwnableEntity.getOwner()`; `BlockTags.FENCES` / `FENCE_GATES` / `WALLS` for the pen | **yes.** `isLegalTarget`: never the owner, other players behind their own flag, never a tamed pet; a hostile whenever combat is on, and an animal only while he is hungry with nothing to eat and it stands clear of a pen (`safety/Hunting.java`, 0.89.0). **The one sentence:** he may take an animal only while he is hungry and carrying nothing to eat, and never one that is someone's pet or standing in a pen. `CobbieCombatTest` proves a passive animal beside a fight is untouched while he is fed; `CobbiePermissionTest` proves the same cow reads legal on open ground and illegal inside a fence, and that the penned one takes no damage. | nothing | done |
 | Being hurt, dying, and what he loses | `LivingEntity.hurtServer`, `die(DamageSource)`, `dropEquipment(ServerLevel)`; `LivingEntity.doHurtEquipment(DamageSource, float, EquipmentSlot...)` | **yes.** `die` (`:1603`) drains the bag **and** every `EquipmentSlot` into the owner's inventory rather than the floor. `CobbieDeathLootTest` proves it by walking the owner onto the spot afterwards. | nothing | done |
 | Effect bookkeeping for himself | `LivingEntity.getActiveEffects()`, `getActiveEffectsMap()`, `hasEffect(Holder<MobEffect>)`, `getEffect(...)`, `removeEffect(...)`, `canBeAffected(MobEffectInstance)`; `MobEffects` (SPEED … BREATH_OF_THE_NAUTILUS, 42 constants) | **yes.** Effects are `LivingEntity`'s, so they tick, hurt and expire on their own, and `Hunger` reads and clears them (`Hunger.java:196-212`, proved by the milk case in `CobbieHungerTest`). | list them in `/cobbie status` | low |
 | Using the item in hand at all (right-click verb) | `LivingEntity.startUsingItem(InteractionHand)`, `getUseItemRemainingTicks()`, `completeUsingItem()` (protected), `releaseUsingItem()`, `Item.use(Level, Player, InteractionHand)` (**Player-typed**) | **yes.** The `use` verb (`:4961`) drives `ServerPlayerGameMode.useItemOn` and `ItemStack.use` through the actor, block-then-item exactly like a player's single click (`:5245-5264`). Proved by `CobbieUseTest`. | nothing | done |
@@ -295,7 +297,7 @@ is the strongest evidence in this document, and it is the reason rows 294-299 ar
 | Tame a wolf | `Wolf.mobInteract` → `tryToTame(Player)`, `TamableAnimal.tame(Player)`, `isTame()` | **yes.** `use` with bones on a wolf: `Player.interactOn` → `Wolf.tryToTame`, so the chance per bone is the game's. Proved by `CobbieTailTest`, which keeps handing him bones until the wolf is his. | nothing | done |
 | Tame a cat | `Cat.mobInteract` → `tryToTame(Player)`, `Cat.setTame(boolean, boolean)` | **untested.** Same call as the wolf — `Cat.tryToTame` — and nothing in the code singles wolves out, but no class does a cat. | one case in `CobbieTailTest` | low |
 | Fish | `FishingRodItem.use(Level, Player, InteractionHand)`, `net.minecraft.world.entity.projectile.FishingHook` | **no, refused with the reason.** A bobber whose `getPlayerOwner()` finds nobody is discarded on its first tick, so `NO_FISHING` (`:212`, `:5011`) is the honest answer. `CobbieInteractTest` proves no bobber is left behind. | a bobber owner that survives `getPlayerOwner()`; the actor is not in the player list | low |
-| Kill a mob and take the loot | `Mob.doHurtTarget(ServerLevel, Entity)`, `LivingEntity.dropAllDeathLoot`, `ItemEntity` pickup | **partial.** `attackTick` (`:6092`) fights until the target is dead, and the drops come to him through the reach pickup (`:1370`). What is missing is the *choice*: `isLegalTarget` (`:5804`) returns true only for `Enemy`, so no cow, pig, chicken or sheep may be attacked, and there is no hunt-for-food permission. | a hunt permission that admits `Animal`, plus the food he would then be able to cook. This is the one combat gap a person would notice | high |
+| Kill a mob and take the loot | `Mob.doHurtTarget(ServerLevel, Entity)`, `LivingEntity.dropAllDeathLoot`, `ItemEntity` pickup | **yes, animals included (0.89.0).** `attackTick` fights until the target is dead and the drops come to him through the reach pickup (`:1370`) — and the thing that was missing was the *choice*, not the mechanism: `isLegalTarget` now admits an `Animal` under the hunting rule, and the assessor offers the kill as a `replenish` candidate, so a hungry companion with an empty bag feeds himself. `CobbiePermissionTest` proves the kill, the meat, and the pen case beside it. | nothing | done |
 | Item frames | `HangingEntityItem.useOn(UseOnContext)`, `ItemFrameItem`, `ItemFrame.setItem(ItemStack)`, `ItemFrame.interact(Player, ...)` | **yes.** `useOnHanging` (`:5115`) puts an item in and takes it out again, reading the frame's own state as the receipt. Proved by `CobbieDecorTest` (a diamond in, a diamond out). | nothing | done |
 | Armour stands | `ArmorStandItem.useOn(UseOnContext)`, `ArmorStand`, `LivingEntity.setItemSlot(EquipmentSlot, ItemStack)`, `ArmorStand.canUseSlot` | **no.** `ArmorStand` is not a `HangingEntity`, so `namedHanging` (`:5090`) never finds one, and it is filtered out of perception (`WorldPerception.java:109`). | treat an armour stand as a container-like holder: the stand's slots are `setItemSlot`-able once it can be seen and named | low |
 | Lever | `LeverBlock.useWithoutItem(...)`, `LeverBlock.pull(BlockState, Level, BlockPos, Player)`, `POWERED` | **yes.** `use` on the block; `CobbieRedstoneTest` proves it powers. | nothing | done |
@@ -305,8 +307,8 @@ is the strongest evidence in this document, and it is the reason rows 294-299 ar
 | Pistons and redstone dust | `PistonBaseBlock`, `RedStoneWireBlock`, `PoweredBlock`, `DiodeBlock` signal propagation | **no.** `CobbieRedstoneTest` proves a piston answers `Pass` to a hand and stays exactly as it was: it responds to redstone, and driving a redstone graph is an actor job rather than an interactor's. | a redstone-power model (`RedStoneWireBlock.getConnectionState`); deliberately out of scope for a companion | low |
 | Note block | `NoteBlock.useItemOn`/`useWithoutItem`, `NOTE` (0–24), `INSTRUMENT`, `playNote(...)` | **yes.** `use` advances `NOTE`; `CobbieRedstoneTest`. | nothing | done |
 | Jukebox | `JukeboxBlock.useItemOn(ItemStack, BlockState, Level, BlockPos, Player, InteractionHand, BlockHitResult)` (insert record), `useWithoutItem(BlockState, Level, BlockPos, Player, BlockHitResult)` (eject) | **yes.** `use` with a disc, and the block's own `HAS_RECORD` is the receipt. Proved by `CobbieTailTest`. | nothing | done |
-| TNT with flint and steel | `TntBlock.prime(Level, BlockPos, LivingEntity, ItemStack)` (static), `TntBlock.UNSTABLE`, `FlintAndSteelItem.useOn` | **yes, with no guard of its own.** `use` with flint and steel on TNT primes it — proved by `CobbieTailTest`, which defuses it immediately — and nothing checks what is standing next to it. | a refusal to prime near the owner's build, as the old survey asked for. He will do exactly what he is told today, which for a companion holding explosives is the risk | medium |
-| Flint and steel on anything else | `FlintAndSteelItem.useOn(UseOnContext)`, `FireBlock`, `BaseFireBlock` | **yes.** `CobbieInteractTest` proves fire appears above the block he clicked. | nothing | done |
+| TNT with flint and steel | `TntBlock.prime(Level, BlockPos, LivingEntity, ItemStack)` (static), `TntBlock.UNSTABLE`, `FlintAndSteelItem.useOn` | **yes, and guarded (0.89.0).** `use` with flint and steel on TNT primes it, and he refuses within 16 blocks of the owner, their bed or respawn point, or a place they named (`safety/Hazards.java`). `CobbieTailTest` primes it with the owner 32 blocks clear; `CobbiePermissionTest` proves the refusal word for word beside the owner and the priming away from them. | nothing | done |
+| Flint and steel on anything else | `FlintAndSteelItem.useOn(UseOnContext)`, `FireBlock`, `BaseFireBlock` | **yes, and guarded (0.89.0)** by the same sixteen-block rule as TNT; the fire charge is on the same list. `CobbieInteractTest` proves fire appears above the block he clicked with the owner standing clear, and `CobbiePermissionTest` proves the refusal beside them. | nothing | done |
 | Sleep in a bed / set respawn | `Player.startSleepInBed(AbstractBedBlock, BlockState, BedRule, BlockPos)` → `Either<BedSleepingProblem, Unit>`, `stopSleeping()`, `ServerPlayer.setRespawnPosition` | **no, structural.** `Player.startSleepInBed` and `setRespawnPosition` are player-only. | not implementable without making him a `Player` | n/a |
 | Villager trading | `Villager.mobInteract` → `Merchant.openTradingScreen(Player, Component, int)`; `MerchantMenu(int, Inventory, Merchant)`, `MerchantOffer.getItemCostA()/getItemCostB()/getResult()` | **yes.** `tradeWithVillager` (`:4573`); `CobbieTradeTest` proves payment, goods and the villager's counter. | nothing | done |
 | Beehive: honey bottle / honeycomb | `BeehiveBlock.HONEY_LEVEL` (0–5), `BeehiveBlock.dropHoneycomb(ServerLevel, ItemStack, BlockState, BlockEntity, Entity, BlockPos)`, `resetHoneyLevel(...)`, `releaseBeesAndResetHoneyLevel(...)` | **yes.** `use` with shears (or a bottle) at honey level 5, and the game's own `releaseBeesAndResetHoneyLevel` does the rest. Proved by `CobbieTailTest`, which asserts honeycomb and a hive back at level 0. | the glass-bottle half is the same click; one case would cover it | low |
@@ -321,30 +323,27 @@ is the strongest evidence in this document, and it is the reason rows 294-299 ar
 One line each, in the order a person playing with him would hit them. Nothing here is a re-run of work
 that shipped; every item is either absent, partial, or real but unproven.
 
-1. **He will not attack an animal.** `isLegalTarget` is hostiles-only (`:5804`), so "kill a cow for
-   dinner" has no route and a companion cannot feed himself. Needs a hunting permission, not new code.
-2. **He pops blocks.** `destroyBlock` takes the whole block in one call (`:2685`): no swing, no crack, no
+1. **He pops blocks.** `destroyBlock` takes the whole block in one call (`:2685`): no swing, no crack, no
    tool-dependent duration. The largest remaining fidelity gap.
-3. **Bows, crossbows, tridents.** One missing thing — a hold-and-release pair in the actor. Everything
+2. **Bows, crossbows, tridents.** One missing thing — a hold-and-release pair in the actor. Everything
    one-click already works.
-4. **He cannot drive what he rides.** A boat or minecart carries him and nothing steers; a saddled animal
+3. **He cannot drive what he rides.** A boat or minecart carries him and nothing steers; a saddled animal
    refuses him entirely.
-5. **Mending never fires.** His levels are real, but the repair lives on `Player`'s experience path. A loop
+4. **Mending never fires.** His levels are real, but the repair lives on `Player`'s experience path. A loop
    in `absorbExperience` (`:3412`) is the whole fix.
-6. **Tool-on-material anvil repair.** Tool-on-tool and books work; an iron ingot on an iron pickaxe does
+5. **Tool-on-material anvil repair.** Tool-on-tool and books work; an iron ingot on an iron pickaxe does
    not.
-7. **No hunting means no cooked food chain**, which is the same gap as 1 seen from the kitchen.
-8. **Cats, saplings, silk touch and a picked-up water bucket** — real code paths, no test. Three cheap
+6. **Cooked food.** He can now kill for meat (0.89.0) and he can smelt, but nothing joins the two: a
+   hunted cow gives raw beef, and nobody has written "cook what I just took".
+7. **Cats, saplings, silk touch and a picked-up water bucket** — real code paths, no test. Three cheap
    cases in `CobbieTailTest` and one in `CobbieMineTest` would turn them into facts.
-9. **TNT has no guard.** He will prime it wherever he is told (`CobbieTailTest`), including beside the
-   owner's house.
-10. **A dead body stays dead.** Identity, bag and levels persist, and the memory book is keyed by owner, so
-    a respawn hook is all that is missing.
-11. **Splash and lingering potions, snowballs, eggs, ender pearls** are reachable through `use` in the air
-    and unproven, and none of them chooses an aim.
-12. **Double slabs, sugar cane on a bank, tall flowers** — placement paths exist, no case asserts them.
-13. **Reply with an effect he cannot see:** a thorns hit and an active potion effect are never narrated,
+8. **A dead body stays dead.** Identity, bag and levels persist, and the memory book is keyed by owner, so
+   a respawn hook is all that is missing.
+9. **Splash and lingering potions, snowballs, eggs, ender pearls** are reachable through `use` in the air
+   and unproven, and none of them chooses an aim.
+10. **Double slabs, sugar cane on a bank, tall flowers** — placement paths exist, no case asserts them.
+11. **Reply with an effect he cannot see:** a thorns hit and an active potion effect are never narrated,
     which reads as a missing capability even though both work.
-14. **Structural, and staying that way:** sleeping in a bed, elytra, crits, sweep, steering a saddled
+12. **Structural, and staying that way:** sleeping in a bed, elytra, crits, sweep, steering a saddled
     animal, fishing (the bobber dies), pistons and redstone graphs, armour stands, beacons. Each is
     `Player` state or a second visible player, and none of them is worth what it would cost.

@@ -119,7 +119,30 @@ final class CobbieTestSupport {
         } catch (Throwable t) {
             throw new AssertionError("/spawncobbie never produced a companion near the owner", t);
         }
-        return server.computeOnServer(s -> cobbie(s).orElseThrow());
+        CobbieEntity spawned = server.computeOnServer(s -> cobbie(s).orElseThrow());
+        forgetEverything(server);
+        return spawned;
+    }
+
+    /**
+     * Empty the companion's memory book for this owner.
+     *
+     * <p>The world is built fresh for every test class, but {@code config/cobbie_memories.json} is not: it
+     * is one file in the run directory, shared by every class in a run and kept from the run before. A place
+     * the last class (or the last run) named is therefore a real remembered place in this world's
+     * coordinates — and from 0.89.0 a remembered place is a guard radius around the owner's things. That
+     * poisoned three classes before anybody thought to look at the file, so a fresh world now starts with an
+     * empty book.
+     */
+    static void forgetEverything(TestServerContext server) {
+        server.computeOnServer(s -> {
+            java.util.UUID owner = owner(s).getUUID();
+            int known = com.rishi.cobbie.memory.OperationalMemory.entries(owner).size();
+            for (int i = 0; i < known; i++) {
+                com.rishi.cobbie.memory.WorldMemory.forget(owner, 1);
+            }
+            return null;
+        });
     }
 
     /** Wait for the connection probe to settle into "connected" (nameplate "§eCobbie"). */
