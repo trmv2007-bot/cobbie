@@ -72,8 +72,14 @@ public final class CobbieFatalDigTest implements FabricClientGameTest {
             String healthyVerdict = dig(server, drop.stand);
             boolean dug = server.computeOnServer(s -> s.overworld().getBlockState(drop.stand).isAir());
             // He is in the air the instant the block goes; the landing and its damage are a second later.
-            CobbieTestSupport.elapsed(server, 40);
-            float afterHealthy = health(server);
+            // The health is watched tick by tick and its lowest value kept: since 0.85.0 a fed companion
+            // regenerates like a fed player, and one sample forty ticks later would measure the game's
+            // healing as much as its fall damage.
+            float afterHealthy = beforeHealthy;
+            for (int tick = 0; tick < 40; tick++) {
+                CobbieTestSupport.elapsed(server, 1);
+                afterHealthy = Math.min(afterHealthy, health(server));
+            }
             if (!dug) {
                 throw new AssertionError("He refused a nine-block drop at " + beforeHealthy + " health, where the"
                         + " fall costs six: " + healthyVerdict);

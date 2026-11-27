@@ -30,7 +30,8 @@ public record CobbiePanelPayload(
 		int heldIndex,
 		int xpLevel,
 		int xpProgress,
-		int xpNeeded) implements CustomPacketPayload {
+		int xpNeeded,
+		String hunger) implements CustomPacketPayload {
 
 	/** Which drawn slot is the one in his hand, or -1 when he is carrying nothing there. */
 	public boolean isHeld(int index) {
@@ -57,6 +58,7 @@ public record CobbiePanelPayload(
 					ByteBufCodecs.VAR_INT, CobbiePanelPayload::xpLevel,
 					ByteBufCodecs.VAR_INT, CobbiePanelPayload::xpProgress,
 					ByteBufCodecs.VAR_INT, CobbiePanelPayload::xpNeeded,
+					ByteBufCodecs.STRING_UTF8, CobbiePanelPayload::hunger,
 					CobbiePanelPayload::new);
 
 	public CobbiePanelPayload {
@@ -69,6 +71,7 @@ public record CobbiePanelPayload(
 		xpLevel = Math.max(0, xpLevel);
 		xpProgress = Math.max(0, xpProgress);
 		xpNeeded = Math.max(1, xpNeeded);
+		hunger = hunger == null ? "" : hunger;
 	}
 
 	@Override

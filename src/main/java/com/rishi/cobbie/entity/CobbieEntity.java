@@ -240,6 +240,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	// ---- inventory (the bag; a held tool is a bag slot that has been raised) ----
 	private final Container inventory;
 
+	/**
+	 * His own hunger, in the game's own {@code FoodData}. A mob adds no exhaustion and heals no food
+	 * back, so this piece of a player is carried for him and ticked by the game.
+	 */
+	private final Hunger hunger = new Hunger(this);
+
 	// ---- action execution ----
 	private final TaskRunner tasks;
 	private ActionIntent active;
@@ -1312,6 +1318,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		spillOverflow();
 		absorbExperience();
+		// The game's own food tick: exhaustion drains it, high food heals him, zero food starves him,
+		// and he eats what he carries when it runs low. Before the actions, so a heal from a full bar
+		// lands before he decides what to do next.
+		hunger.tick();
 		// Keeps him findable by the server tick if his chunk ever stops ticking.
 		CrossDimensionFollow.remember(this);
 		watchWorldChange();
@@ -1540,7 +1550,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		}
 		return new CobbiePanelPayload(this.getId(), companionName(), statusWord(), job, steps, states, items,
 				heldIndex,
-				experienceLevel, Math.round(experienceProgress), experienceNeeded());
+				experienceLevel, Math.round(experienceProgress), experienceNeeded(), hunger.describe());
 	}
 
 	/** Everything the owner asked for: current job, its steps, and anything waiting behind it. */
@@ -2404,7 +2414,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (!(level() instanceof ServerLevel serverLevel)) return false;
 		lastSwingTick = this.tickCount;
 		this.swingForAttack(InteractionHand.MAIN_HAND);
-		return this.doHurtTarget(serverLevel, target);
+		boolean landed = this.doHurtTarget(serverLevel, target);
+		// A landed hit costs what the game charges one in Player.attack; a swing that lands nothing
+		// costs nothing. One line, so the combat slice keeps the rest of this method.
+		if (landed) hunger.hit();
+		return landed;
 	}
 
 	/**
@@ -2666,6 +2680,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (!serverLevel.getBlockState(pos).isAir()) {
 			return ActionOutcome.fail("mine", id + " is still standing at " + describe(pos));
 		}
+		// One block broken costs one block's worth of hunger, the number the game charges in
+		// Block.playerDestroy — not a guess about hardness.
+		hunger.mined();
 
 		if (fits) {
 			int stored = 0;
@@ -6139,6 +6156,102 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return add(stack, inventory);
 	}
 
+	// ==================================================================
+	// Hunger — the game's numbers, and what a person can see of them
+	// ==================================================================
+
+	/** Food points, 0..{@code FoodConstants.MAX_FOOD}. */
+	public int foodLevel() {
+		return hunger.foodLevel();
+	}
+
+	public float saturationLevel() {
+		return hunger.saturation();
+	}
+
+	public float exhaustionLevel() {
+		return hunger.exhaustion();
+	}
+
+	/** One line with all three numbers, for `/cobbie status` and his panel. */
+	public String hungerLine() {
+		return hunger.describe();
+	}
+
+	/** Eat the worst food he carries; false when the game would refuse or he has none. */
+	public boolean eatSomething() {
+		return hunger.tryEat();
+	}
+
+	/** Milk for a harmful effect, a healing potion when badly hurt; false when neither applies. */
+	public boolean drinkSomething() {
+		return hunger.tryDrink();
+	}
+
+	/** Whether the game's own rule lets him sprint at the food he has right now. */
+	public boolean canSprintNow() {
+		return hunger.maySprint();
+	}
+
+	/** What the actor behind his hunger actually sees, for a probe when the predicate disagrees. */
+	public String hungerDebug() {
+		return hunger.debugSprint();
+	}
+
+	/** Put the bar where a test or a debug command needs it. The game still owns what happens next. */
+	public void setHunger(int food, float saturation) {
+		hunger.set(food, saturation);
+	}
+
+	/** Charge exhaustion through the game's own method, exposed so a test can isolate one action. */
+	public void addExhaustion(float amount) {
+		hunger.addExhaustion(amount);
+	}
+
+	ItemStack bagStack(int slot) {
+		return inventory.getItem(slot);
+	}
+
+	void setBagStack(int slot, ItemStack stack) {
+		inventory.setItem(slot, stack == null ? ItemStack.EMPTY : stack);
+	}
+
+	int bagSize() {
+		return inventory.getContainerSize();
+	}
+
+	/**
+	 * The game's own sprint rule, enforced on him: a player below
+	 * {@code FoodConstants.SPRINT_LEVEL} food cannot sprint, and neither can he.
+	 */
+	@Override
+	public void setSprinting(boolean sprinting) {
+		if (sprinting && !hunger.maySprint()) {
+			super.setSprinting(false);
+			return;
+		}
+		super.setSprinting(sprinting);
+	}
+
+	/** A jump costs what the game charges a player for one, sprint jump included. */
+	@Override
+	public void jumpFromGround() {
+		super.jumpFromGround();
+		hunger.jumped();
+	}
+
+	/**
+	 * Damage costs the exhaustion its own source names — the same call and the same number
+	 * {@code Player.hurtServer} applies — so starvation, fire and a mob's claws cost what they cost.
+	 */
+	@Override
+	public boolean hurtServer(ServerLevel level, net.minecraft.world.damagesource.DamageSource source,
+			float amount) {
+		boolean hurt = super.hurtServer(level, source, amount);
+		if (amount > 0 && source != null) hunger.damaged(source);
+		return hurt;
+	}
+
 	public int countItem(String registryId) {
 		if (registryId == null) return 0;
 		int count = 0;
@@ -6436,6 +6549,8 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		out.putFloat("CobbieXpProgress", experienceProgress);
 		// Written blank when nothing is in flight, so a marker can never outlive the project it names.
 		out.putString("CobbieInterrupted", interruptedPlan);
+		// The game's own four food fields, written by FoodData's own save method, beside the bag.
+		hunger.save(out.child("CobbieFood"));
 		if (ownerUuid != null) {
 			out.putLong("CobbieOwnerMost", ownerUuid.getMostSignificantBits());
 			out.putLong("CobbieOwnerLeast", ownerUuid.getLeastSignificantBits());
@@ -6464,6 +6579,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		// A level he earned is his: death does not take it back, unlike a player's.
 		experienceLevel = Math.max(0, in.getIntOr("CobbieXpLevel", 0));
 		experienceProgress = Math.max(0.0f, in.getFloatOr("CobbieXpProgress", 0.0f));
+		// Food, saturation, the tick timer and exhaustion, read back by the game's own method. An older
+		// save has no such child, and FoodData's defaults are a full bar — which is what he spawned with.
+		in.child("CobbieFood").ifPresent(hunger::load);
 
 		// A project does not survive a reload: its plan, its steps and where it had got to were memory.
 		// The marker says one was running, so he owes the owner a line about it — spoken on a tick, not

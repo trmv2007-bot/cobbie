@@ -214,6 +214,12 @@ public class CobbiePanelScreen extends Screen {
 		String title = data.job().isBlank() ? "Nothing right now — tell me what to do." : data.job();
 		y = graphics.textWithWordWrap(font, Component.literal(title), x, y, PANEL_W - 136, TEXT);
 		y += 5;
+		// His hunger, in the same column as the job: a bar is three numbers, and a person reading the
+		// panel should not have to ask whether the companion who just said he was hungry is.
+		if (data.hunger() != null && !data.hunger().isBlank()) {
+			graphics.text(font, Component.literal(data.hunger()), x, y, MUTED);
+			y += 11;
+		}
 
 		List<String> steps = data.steps();
 		if (steps.isEmpty()) return;
@@ -291,6 +297,11 @@ public class CobbiePanelScreen extends Screen {
 	/** The stacks the panel draws, in slot order. */
 	public List<ItemStack> shownItems() {
 		return data.items();
+	}
+
+	/** The hunger line the panel draws, for the gametest. */
+	public String shownHungerLine() {
+		return data.hunger();
 	}
 
 	/** The level line the panel draws, for the gametest. */

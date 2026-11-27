@@ -50,6 +50,10 @@ public final class CobbiePersistenceTest implements FabricClientGameTest {
             CobbieTestSupport.command(world.getServer(), "cobbie stay");
 
             cobbie.addItem(new ItemStack(Items.STONE, STONE));
+            // His hunger is saved beside his bag: three of the game's own numbers, off full so the
+            // round trip is visible and with no food in the bag so he cannot eat them away.
+            cobbie.setHunger(12, 3.0f);
+            cobbie.addExhaustion(1.5f);
             int stocked = cobbie.countItem("minecraft:stone");
             if (stocked != STONE) {
                 throw new AssertionError("Test setup failed: gave " + STONE + " stone but he holds " + stocked);
@@ -92,6 +96,17 @@ public final class CobbiePersistenceTest implements FabricClientGameTest {
             if (carried != STONE) {
                 throw new AssertionError("He came back with " + carried + " stone instead of " + STONE);
             }
+            // And the food bar came back with him, the same three numbers the game writes.
+            int[] hunger = server.computeOnServer(s -> {
+                CobbieEntity c = CobbieTestSupport.cobbie(s).orElseThrow();
+                return new int[] {c.foodLevel(), Math.round(c.saturationLevel() * 10.0f),
+                        Math.round(c.exhaustionLevel() * 10.0f)};
+            });
+            if (hunger[0] != 12 || hunger[1] != 30 || hunger[2] != 15) {
+                throw new AssertionError("His hunger did not survive the relog: food " + hunger[0]
+                        + ", saturation " + (hunger[1] / 10.0f) + ", exhaustion " + (hunger[2] / 10.0f)
+                        + " (saved 12 / 3.0 / 1.5)");
+            }
 
             // The negative: this save had nothing in flight, so waking must be silent. Sixty ticks is
             // long enough for the first-tick line and for anything the brain might add afterwards.
@@ -112,20 +127,29 @@ public final class CobbiePersistenceTest implements FabricClientGameTest {
                     + ", and a reload with nothing in flight was silent");
 
             // The positive: hand him work that cannot finish inside the save window, check the marker
-            // really carries that request, and save while it runs. Twenty blocks, not eight: a short walk
-            // can finish while a full run's save is being written, and then the save legitimately carries
-            // nothing — a save-timing race the fixture had, not a defect in him.
+            // really carries that request, and save while it runs. A short walk can finish while a full
+            // run's save is still being written, and then the save legitimately carries nothing — a
+            // save-timing race in the fixture, not a defect in him. Eight legs of eight blocks is a walk
+            // no save can outlast, where three legs stopped being enough once the suite grew.
             interruptedSave = null;
             for (int attempt = 1; attempt <= 2 && interruptedSave == null; attempt++) {
-                // Three short legs rather than one long one: each has to be reachable in a normal world or the
-                // plan dies before the write, and together they take long enough that a save cannot outrun them.
+                // Short legs rather than one long one: each has to be reachable in a normal world or the
+                // plan dies before the write; together they take far longer than a save.
                 String refused = server.computeOnServer(s -> {
                     CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
                     BlockPos from = cobbie.blockPosition();
-                    return cobbie.offerPlan(WALK_REQUEST, List.of(
-                            new ActionIntent(ActionVocabulary.WALK_TO, "", from.getX() + 8, from.getY(), from.getZ(), ""),
-                            new ActionIntent(ActionVocabulary.WALK_TO, "", from.getX() + 8, from.getY(), from.getZ() + 8, ""),
-                            new ActionIntent(ActionVocabulary.WALK_TO, "", from.getX(), from.getY(), from.getZ() + 8, "")));
+                    // The same three legs that are known walkable here, repeated three times: no new
+                    // terrain to path across, and a walk three times longer than the old fixture's.
+                    List<ActionIntent> legs = new java.util.ArrayList<>();
+                    for (int round = 0; round < 3; round++) {
+                        legs.add(new ActionIntent(ActionVocabulary.WALK_TO, "",
+                                from.getX() + 8, from.getY(), from.getZ(), ""));
+                        legs.add(new ActionIntent(ActionVocabulary.WALK_TO, "",
+                                from.getX() + 8, from.getY(), from.getZ() + 8, ""));
+                        legs.add(new ActionIntent(ActionVocabulary.WALK_TO, "",
+                                from.getX(), from.getY(), from.getZ() + 8, ""));
+                    }
+                    return cobbie.offerPlan(WALK_REQUEST, legs);
                 });
                 if (refused != null) {
                     throw new AssertionError("The test's own plan was refused: " + refused);
