@@ -194,6 +194,18 @@ final class Hunger {
 	}
 
 	/**
+	 * Whether anything in the bag is food the game would give nutrition for.
+	 *
+	 * <p>The other half of the hunting rule: he hunts when he is hungry <em>and</em> carrying nothing to
+	 * eat, so a companion with bread in his bag never looks at a cow. Read from the same
+	 * {@link net.minecraft.core.component.DataComponents#FOOD} component his eating policy reads, so a food
+	 * added by a mod counts and a rock does not.
+	 */
+	boolean carriesFood() {
+		return worstFoodSlot() >= 0;
+	}
+
+	/**
 	 * Milk when a harmful effect is on him and he carries it; a healing potion when he is badly hurt.
 	 * Both go through the item's own use, so milk clears effects with the game's own
 	 * {@code ClearAllStatusEffectsConsumeEffect} and a potion applies the game's own instant health.

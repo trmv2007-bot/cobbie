@@ -45,7 +45,7 @@ import java.util.UUID;
  *   <tr><td>{@code return}</td><td>the owner is further than arm's reach, walked back in legal legs</td></tr>
  *   <tr><td>{@code mine}</td><td>three or more logs or stone he can actually break, or rubble to tidy</td></tr>
  *   <tr><td>{@code build}</td><td>a cairn from what he carries, on ground that is free</td></tr>
- *   <tr><td>{@code replenish}</td><td>something on the ground he can walk to and pick up — restocking</td></tr>
+ *   <tr><td>{@code replenish}</td><td>something on the ground he can walk to and pick up, or an animal he may hunt while he is hungry and carrying nothing to eat</td></tr>
  *   <tr><td>{@code farm}</td><td>ripe crops around his feet</td></tr>
  *   <tr><td>{@code fight}</td><td>a hostile in sight that is not yet engaging</td></tr>
  *   <tr><td>{@code find}</td><td>ground he has not walked, when exploring is allowed</td></tr>
@@ -91,6 +91,7 @@ public final class OpportunityAssessor {
 		mining(found, cobbie, level, feet);
 		building(found, cobbie, level, feet);
 		collecting(found, cobbie);
+		hunting(found, cobbie);
 		farming(found, cobbie, level, feet);
 		fighting(found, cobbie);
 		finding(found, cobbie);
@@ -157,10 +158,14 @@ public final class OpportunityAssessor {
 
 		Map<String, List<BlockPos>> useful = new LinkedHashMap<>();
 		List<BlockPos> rubble = new ArrayList<>();
+		List<com.rishi.cobbie.safety.Hazards.Protected> keep = ownersWork(cobbie, level, feet, GATHER_RADIUS);
 		for (BlockPos pos : BlockPos.betweenClosed(feet.offset(-GATHER_RADIUS, -1, -GATHER_RADIUS),
 				feet.offset(GATHER_RADIUS, 2, GATHER_RADIUS))) {
 			BlockState state = level.getBlockState(pos);
 			if (state.isAir() || !breakable(level, pos, state)) continue;
+			// Unprompted tidying stops at the owner's things: a stone pile and a stone wall are the same
+			// blockstate, so the only honest difference is whether he was told where the wall is.
+			if (com.rishi.cobbie.safety.Hazards.nearOwnersWork(keep, pos)) continue;
 			// The gate his first step will run. A promise made before the check is the defect.
 			if (!cobbie.canStartMining(pos)) continue;
 			if (state.is(BlockTags.LOGS) || stoneLike(state)) {
@@ -210,9 +215,12 @@ public final class OpportunityAssessor {
 	/** A cairn from what he carries: the one thing whose shape he decides, so it is a real choice. */
 	private static void building(List<Opportunity> out, CobbieEntity cobbie, ServerLevel level, BlockPos feet) {
 		if (!CobbieConfig.permits(ActionVocabulary.PLACE)) return;
+		List<com.rishi.cobbie.safety.Hazards.Protected> keep = ownersWork(cobbie, level, feet, 4);
 		for (String material : CAIRN_MATERIALS) {
 			if (cobbie.countOf(material) < MIN_BLOCKS) continue;
 			for (BlockPos site : flatSitesNear(level, feet)) {
+				// A cairn in the middle of a room is a block the owner has to take down again.
+				if (com.rishi.cobbie.safety.Hazards.nearOwnersWork(keep, site)) continue;
 				List<ActionIntent> steps = new ArrayList<>();
 				for (int i = 0; i < MAX_STEPS && cobbie.countOf(material) > steps.size(); i++) {
 					BlockPos pos = site.above(i);
@@ -266,6 +274,34 @@ public final class OpportunityAssessor {
 				List.of(new ActionIntent(ActionVocabulary.COLLECT, "", at.getX(), at.getY(), at.getZ(), ""))));
 	}
 
+	/**
+	 * Hungry with nothing to eat and an animal he may take: the one way he feeds himself unasked.
+	 *
+	 * <p>This is what closed the hole the capability document named first: he could not attack an animal,
+	 * so a companion with a hunger bar had to be fed by hand. The candidate is offered only when the hunting
+	 * rule already says yes ({@link CobbieEntity#mayHunt()}, with a pet and a pen both refused), so the
+	 * assessor never proposes a kill the executor would then refuse. It is a {@code replenish} because that
+	 * is what it is: restocking his own food, by the only route the game gives a body that is not a farmer.
+	 */
+	private static void hunting(List<Opportunity> out, CobbieEntity cobbie) {
+		if (!CobbieConfig.permits(ActionVocabulary.ATTACK)) return;
+		LivingEntity prey = cobbie.huntableNear(FIGHT_RADIUS);
+		if (prey == null) return;
+		String what = prey.getName().getString();
+		String request = "hunting the " + what + " for food";
+		out.add(new Opportunity(null, Opportunity.Kind.REPLENISH,
+				"nothing to eat and a " + what + " " + (int) Math.sqrt(cobbie.distanceToSqr(prey)) + " blocks off"
+						+ lastTime(cobbie, request),
+				"meat in my bag before I am too weak to hunt",
+				List.of(),
+				120,
+				Opportunity.Risk.LOW,
+				1,
+				List.of("you speak", "I find something to eat", "it moves out of sight"),
+				request,
+				List.of(swingAt(prey))));
+	}
+
 	/** Ripe crops within arm's reach: food without leaving his owner. */
 	private static void farming(List<Opportunity> out, CobbieEntity cobbie, ServerLevel level, BlockPos feet) {
 		if (!CobbieConfig.permits(ActionVocabulary.FARM)) return;
@@ -288,6 +324,16 @@ public final class OpportunityAssessor {
 		if (!CobbieConfig.permits(ActionVocabulary.ATTACK) || cobbie.isRetreating()) return;
 		LivingEntity hostile = cobbie.idleHostileNear(FIGHT_RADIUS);
 		if (hostile == null) return;
+		// A creeper he walks up to explodes where it stands. He will still fight one that is already
+		// coming for him — the alternative is being blown up without a fight — but going after one beside
+		// the owner's things is a demolition with extra steps.
+		if (hostile instanceof net.minecraft.world.entity.monster.Creeper
+				&& com.rishi.cobbie.safety.Hazards.nearOwnersWork(
+						ownersWork(cobbie, cobbie.level() instanceof ServerLevel world ? world : null,
+								hostile.blockPosition(), 2),
+						hostile.blockPosition())) {
+			return;
+		}
 		String what = hostile.getName().getString();
 		out.add(new Opportunity(null, Opportunity.Kind.FIGHT,
 				"a " + what + " in sight, " + (int) Math.sqrt(cobbie.distanceToSqr(hostile)) + " blocks off",
@@ -319,6 +365,32 @@ public final class OpportunityAssessor {
 	// ------------------------------------------------------------------
 	// Helpers
 	// ------------------------------------------------------------------
+
+	/**
+	 * The owner's things he must not go rearranging, read once per assessment rather than per square.
+	 *
+	 * <p>What the owner named and where they respawn, plus any bed in the box being searched: a bed is a
+	 * block, and the game will not say whose it is, so the only honest reading is "there is a bed here" —
+	 * the same reading the fire guard uses. The owner's own body is not on this list: mining beside a
+	 * companion's owner is what a companion is for.
+	 */
+	private static List<com.rishi.cobbie.safety.Hazards.Protected> ownersWork(CobbieEntity cobbie,
+			ServerLevel level, BlockPos from, int radius) {
+		List<com.rishi.cobbie.safety.Hazards.Protected> keep = new ArrayList<>();
+		try {
+			keep.addAll(com.rishi.cobbie.safety.Hazards.structures(cobbie));
+		} catch (Throwable ignored) {
+			// An unreadable memory is no reason to offer nothing; it only means he cannot tell where the
+			// owner's things are, and everything else about the candidate still stands.
+		}
+		if (level == null) return keep;
+		for (BlockPos pos : BlockPos.betweenClosed(from.offset(-radius, -2, -radius), from.offset(radius, 2, radius))) {
+			if (!level.getBlockState(pos).is(BlockTags.BEDS)) continue;
+			keep.add(new com.rishi.cobbie.safety.Hazards.Protected("a bed",
+					pos.getX(), pos.getY(), pos.getZ()));
+		}
+		return keep;
+	}
 
 	private static ActionIntent swingAt(LivingEntity target) {
 		BlockPos at = target.blockPosition();

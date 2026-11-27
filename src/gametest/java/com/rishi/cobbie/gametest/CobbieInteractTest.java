@@ -119,6 +119,10 @@ public final class CobbieInteractTest implements FabricClientGameTest {
             if (bobbers != 0) throw new AssertionError("A bobber was left behind: " + bobbers);
 
             // 4. Flint and steel on the ground: there is fire, and it is above the block he clicked.
+            //    The owner stands clear first: the hazard guard refuses a fire within sixteen blocks of
+            //    him whoever asked for it, so proving the ability means putting the fire where an owner
+            //    who wanted one would put it. The refusal itself has a case in CobbiePermissionTest.
+            CobbieTestSupport.teleportOwner(server, 32, 0, 0);
             String lit = use(server, "flint_and_steel", at.getX(), at.getY() - 1, at.getZ() + 2, "");
             if (lit != null) throw new AssertionError("flint and steel refused outright: " + lit);
             CobbieTestSupport.awaitPlanSettled(server, 400);
