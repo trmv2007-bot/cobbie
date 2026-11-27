@@ -47,8 +47,12 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.PathfinderMob;
+import net.minecraft.world.entity.OwnableEntity;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.tags.ItemTags;
 import net.minecraft.world.entity.ai.goal.FloatGoal;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
@@ -146,6 +150,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private static final int RETREAT_COOLDOWN_TICKS = 1200;
 	/** How close a hostile must be, and engaged, before a wound is worth running from. */
 	private static final double RETREAT_THREAT_RANGE = 12.0;
+	/**
+	 * How far away a hostile may be and still be worth raising a shield against. A shield takes five
+	 * ticks to come up (the game's own block delay), so this is a charge's worth of time, not a reach.
+	 */
+	private static final double SHIELD_THREAT_RANGE = 6.0;
 	/** How far a replanned mine will look for the same block it was sent for, in blocks. */
 	private static final int MINE_REPLAN_RADIUS = 8;
 	/** How often he remarks on what he can see while he has nothing else to do (60s). */
@@ -267,7 +276,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	private int waveTicksLeft;
 	private int followRepathTick;
 	private int lastPickupTick;
-	private int attackCooldownUntil;
+	/**
+	 * The tick he last swung on. The weapon's own cooldown, not a timer of his own, decides when the
+	 * next one is allowed — see {@link #attackStrength()}.
+	 */
+	private int lastSwingTick;
 	/**
 	 * What he is fighting, by identity rather than by the entity handle: a target that dies or walks out of
 	 * a loaded chunk leaves {@code getTarget()} null, and "nothing left to fight" then has to be able to say
@@ -440,9 +453,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return PathfinderMob.createMobAttributes()
 				.add(Attributes.MAX_HEALTH, 20.0)
 				.add(Attributes.MOVEMENT_SPEED, 0.32)
-				.add(Attributes.ATTACK_DAMAGE, 3.0)
-				// A player's swings are paced by the weapon: a sword ~12 ticks, an axe ~20. Without
-				// this attribute a mob cannot even read the number, so every swing was a flat 16.
+				// A player's base, not a mob's. The game adds the held item's own modifier on top of
+				// this, so 1.0 is what makes his swing carry exactly the number the owner's does with
+				// the same item. A mob's 3.0 was three damage per hit that the game never chose.
+				.add(Attributes.ATTACK_DAMAGE, 1.0)
+				// The weapon's own pace, for a cooldown he does not invent: the game's own formula
+				// (20 ticks over this number) is what paces his swing, exactly as it paces a player's.
 				.add(Attributes.ATTACK_SPEED, 4.0)
 				// The pathfinder plans one-block rises (WalkNodeEvaluator.getMobJumpHeight is at least
 				// 1.125); at the mob default of 0.6 he planned steps his body could not take.
@@ -472,7 +488,15 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		this.targetSelector.addGoal(1, new OwnerDefenseGoal(this));
 	}
 
-	/** Melee chasing that refuses to run while combat is switched off. */
+	/**
+	 * Melee chasing that refuses to run while combat is switched off, and that swings on the weapon's
+	 * pace rather than this goal's fixed twenty-tick interval.
+	 *
+	 * <p>{@link MeleeAttackGoal} keeps its own countdown and hurts on it, which is a timer by another
+	 * name: a sword's cooldown is 12.5 ticks and a pickaxe's is 16.7, and a flat 20 made every weapon
+	 * slower than the game says. Its cooldown is bypassed here and {@link #trySwingAt} decides, so the
+	 * defensive fight and the asked-for one are paced by the same rule.
+	 */
 	private static final class GatedMeleeAttack extends MeleeAttackGoal {
 		private final CobbieEntity cobbie;
 
@@ -491,6 +515,12 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		public boolean canContinueToUse() {
 			return CobbieConfig.isCombatAllowed() && !cobbie.isRetreating()
 					&& cobbie.getTarget() != null && super.canContinueToUse();
+		}
+
+		@Override
+		protected void checkAndPerformAttack(LivingEntity target) {
+			if (target == null || !this.mob.getSensing().hasLineOfSight(target)) return;
+			cobbie.trySwingAt(target);
 		}
 	}
 
@@ -1288,6 +1318,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		wallRescueTick();
 		hazardRescueTick();
 		disengageTick();
+		shieldTick();
 		updateNameplate();
 		followOwnerTick();
 		swimTick();
@@ -2331,15 +2362,123 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		navigatingForAction = false;
 	}
 
-	/** How long this weapon makes him wait between swings, the way it paces a player. */
-	private int swingDelayTicks() {
-		double speed = 4.0;
-		try {
-			speed = this.getAttributeValue(Attributes.ATTACK_SPEED);
-		} catch (RuntimeException ignored) {
-			// An unregistered attribute throws; the default is a bare-handed pace.
+	/**
+	 * How far through the weapon's cooldown his next swing is, on the game's own arithmetic: the ticks
+	 * since the last swing over {@link #attackDelayTicks()}, the way a player's attack strength fills.
+	 *
+	 * <p>1.0 is a full-strength hit, and that is the number worth waiting for: the game scales a
+	 * player's damage by {@code 0.2 + strength² × 0.8}, so a swing half way through the cooldown
+	 * costs 40% of what it should and looks exactly like a full one. He has no ticker of his own
+	 * because a mob has none — the game only fills one for players — so this is that same fill,
+	 * computed from the tick he last swung.
+	 */
+	private float attackStrength() {
+		return Math.min(1.0f, (this.tickCount - lastSwingTick) / attackDelayTicks());
+	}
+
+	/** The game's own delay for the item he is holding: 20 ticks over the attack speed it gives him. */
+	private float attackDelayTicks() {
+		AttributeInstance speed = this.getAttribute(Attributes.ATTACK_SPEED);
+		double perSecond = speed == null ? 4.0 : speed.getValue();
+		return (float) (20.0 / Math.max(0.5, perSecond));
+	}
+
+	/**
+	 * One swing, if the game would let a player make one now: in reach for the item in his hand, able
+	 * to see the target, and past the weapon's cooldown. The melee goal and the attack verb both come
+	 * through here, so there is one answer to "may he swing" and it is the weapon's.
+	 *
+	 * @return whether a hit landed — false when the weapon is still coming back, the target is out of
+	 *         reach or a wall is in the way, which are all "not yet", never "missed"
+	 */
+	boolean trySwingAt(LivingEntity target) {
+		if (target == null || !isLegalTarget(target)) return false;
+		// The cheap answer first: a weapon is only worth reaching for when the swing is otherwise
+		// ready, so the bag is read once per cooldown instead of once per tick.
+		if (attackStrength() < 1.0f) return false;
+		raiseBestWeapon();
+		if (attackStrength() < 1.0f) return false;   // a weapon he just picked up needs its own cooldown
+		if (!this.hasLineOfSight(target)) return false;
+		if (!this.getAttackRangeWith(this.getMainHandItem())
+				.isInRange(this, target.getBoundingBox(), 0.0)) return false;
+		if (!(level() instanceof ServerLevel serverLevel)) return false;
+		lastSwingTick = this.tickCount;
+		this.swingForAttack(InteractionHand.MAIN_HAND);
+		return this.doHurtTarget(serverLevel, target);
+	}
+
+	/**
+	 * What the game says this stack is worth as a weapon in the main hand: the attack-damage modifiers
+	 * it carries for that slot, and the attack speed it brings.
+	 *
+	 * <p>Read off the item's own component data rather than a table of ours, so an item added in a
+	 * later version is ranked without anything here being edited — and so a pickaxe is judged by the
+	 * number the game gives it, not by being a pickaxe.
+	 */
+	private static double[] weaponFigure(ItemStack stack) {
+		double[] damage = {0.0};
+		double[] speed = {0.0};
+		stack.forEachModifier(EquipmentSlot.MAINHAND, (attribute, modifier) -> {
+			if (modifier.operation() != AttributeModifier.Operation.ADD_VALUE) return;
+			if (attribute.value() == Attributes.ATTACK_DAMAGE.value()) damage[0] += modifier.amount();
+			else if (attribute.value() == Attributes.ATTACK_SPEED.value()) speed[0] += modifier.amount();
+		});
+		return new double[] {damage[0], speed[0]};
+	}
+
+	/**
+	 * The stated order among weapons the game rates the same on both figures: a sword, then an axe,
+	 * then a pickaxe. It is a preference, not a damage figure — the damage is the game's, and this
+	 * only breaks a tie it leaves. A sword is the tool for a fight; a pickaxe is what he digs with.
+	 */
+	private static int weaponRung(ItemStack stack) {
+		if (stack.is(ItemTags.SWORDS)) return 0;
+		if (stack.is(ItemTags.AXES)) return 1;
+		if (stack.is(ItemTags.PICKAXES)) return 2;
+		return 3;
+	}
+
+	/** Whether {@code challenger} is the better weapon: the game's damage, then its speed, then the rung. */
+	private static boolean betterWeapon(ItemStack challenger, ItemStack incumbent) {
+		double[] a = weaponFigure(challenger);
+		double[] b = weaponFigure(incumbent);
+		if (a[0] != b[0]) return a[0] > b[0];
+		if (a[1] != b[1]) return a[1] > b[1];
+		return weaponRung(challenger) < weaponRung(incumbent);
+	}
+
+	/** The bag slot of the best weapon he carries, or -1 when he is carrying none. */
+	private int bestWeaponSlot() {
+		int best = -1;
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (stack.isEmpty() || weaponFigure(stack)[0] <= 0.0) continue;
+			if (best < 0 || betterWeapon(stack, inventory.getItem(best))) best = i;
 		}
-		return Math.max(4, (int) Math.round(20.0 / Math.max(0.5, speed)));
+		return best;
+	}
+
+	/**
+	 * Put the best weapon he carries into his hand when it beats what is already there.
+	 *
+	 * <p>Called before every swing attempt, which is once per weapon cooldown in practice — a scan
+	 * every tick would be a scan for nothing. Swapping restarts the cooldown, as it does for a player
+	 * who changes item, so he never lands a full-strength hit with a weapon he just picked up.
+	 */
+	private void raiseBestWeapon() {
+		int slot = bestWeaponSlot();
+		if (slot < 0) return;
+		ItemStack inHand = this.getMainHandItem();
+		if (!inHand.isEmpty() && weaponFigure(inHand)[0] > 0.0 && !betterWeapon(inventory.getItem(slot), inHand)) {
+			return;
+		}
+		ItemStack taken = inventory.getItem(slot).copyWithCount(1);
+		ItemStack rest = inventory.getItem(slot).copy();
+		rest.shrink(1);
+		inventory.setItem(slot, rest.isEmpty() ? ItemStack.EMPTY : rest);
+		this.setItemInHand(InteractionHand.MAIN_HAND, taken);
+		if (!inHand.isEmpty()) addItem(inHand);
+		lastSwingTick = this.tickCount;
 	}
 
 	private double reachSquared() {
@@ -5529,25 +5668,69 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 	// ---- combat ----
 
-	LivingEntity findThreatToDefendAgainst() {
-		if (!CobbieConfig.isCombatAllowed()) return null;
-		ServerPlayer owner = owner();
-		List<LivingEntity> around = level().getEntitiesOfClass(LivingEntity.class,
-				new AABB(this.blockPosition()).inflate(16.0), LivingEntity::isAlive);
+	/**
+	 * The one rule for "which of these is the real threat", stated here once and used by both the
+	 * defensive goal and the attack verb:
+	 *
+	 * <ol>
+	 *   <li>one that is coming for the owner outranks one that is coming for him — the owner is who he
+	 *       is there for;</li>
+	 *   <li>then the nearer one: the closer hostile is the one whose next blow lands soonest;</li>
+	 *   <li>then the harder hitter, by the game's own attack-damage figure;</li>
+	 *   <li>then the more wounded, so a fight ends instead of spreading thin.</li>
+	 * </ol>
+	 *
+	 * <p>Distance is compared in quarter-block buckets so two hostiles at the same stance tie on it
+	 * rather than on two floats that came out a bit apart.
+	 */
+	private LivingEntity realThreat(List<LivingEntity> candidates) {
 		LivingEntity best = null;
-		double bestDist = Double.MAX_VALUE;
-		for (LivingEntity e : around) {
-			if (e == this || !isLegalTarget(e)) continue;
-			boolean threatening = e instanceof Mob asMob
-					&& (asMob.getTarget() == this || (owner != null && asMob.getTarget() == owner));
-			if (!threatening) continue;
-			double d = e.distanceToSqr(this);
-			if (d < bestDist) {
-				bestDist = d;
-				best = e;
-			}
+		for (LivingEntity e : candidates) {
+			if (best == null || outranksAsThreat(e, best)) best = e;
 		}
 		return best;
+	}
+
+	private boolean outranksAsThreat(LivingEntity challenger, LivingEntity incumbent) {
+		int byTier = threatTier(challenger) - threatTier(incumbent);
+		if (byTier != 0) return byTier < 0;
+		long bucket = Math.round(Math.sqrt(this.distanceToSqr(challenger)) * 4.0);
+		long bestBucket = Math.round(Math.sqrt(this.distanceToSqr(incumbent)) * 4.0);
+		if (bucket != bestBucket) return bucket < bestBucket;
+		double damage = attackDamageOf(challenger);
+		double bestDamage = attackDamageOf(incumbent);
+		if (damage != bestDamage) return damage > bestDamage;
+		return challenger.getHealth() < incumbent.getHealth();
+	}
+
+	/** 0: coming for the owner; 1: coming for him; 2: hostile in sight but not yet engaged. */
+	private int threatTier(LivingEntity e) {
+		if (e instanceof Mob mob) {
+			ServerPlayer owner = owner();
+			if (owner != null && mob.getTarget() == owner) return 0;
+			if (mob.getTarget() == this) return 1;
+		}
+		return 2;
+	}
+
+	/** What the game says this hostile hits for. */
+	private static double attackDamageOf(LivingEntity e) {
+		AttributeInstance damage = e.getAttribute(Attributes.ATTACK_DAMAGE);
+		return damage == null ? 0.0 : damage.getValue();
+	}
+
+	/**
+	 * The hostile worth fighting right now: one already coming for him or for the owner, and one he
+	 * can see. A wall is a wall — swinging at what is behind it is the flailing this rule removes —
+	 * so a hostile with no line of sight is not a defensive target at all. (An owner who names a
+	 * target gets to send him around the corner; that is {@link #chooseAttackTarget}.)
+	 */
+	LivingEntity findThreatToDefendAgainst() {
+		if (!CobbieConfig.isCombatAllowed()) return null;
+		List<LivingEntity> around = level().getEntitiesOfClass(LivingEntity.class,
+				new AABB(this.blockPosition()).inflate(16.0),
+				e -> e.isAlive() && isLegalTarget(e) && threatTier(e) <= 1 && this.hasLineOfSight(e));
+		return realThreat(around);
 	}
 
 	/** The combat safety rules, in exactly one place. */
@@ -5557,6 +5740,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (e instanceof Player) {
 			return CobbieConfig.isPlayerCombatAllowed();     // players need their own separate switch
 		}
+		// Never a tamed pet, whoever tamed it: it belongs to someone, and a companion who kills a
+		// wolf because it is a mob has taken something that was not his to take.
+		if (e instanceof OwnableEntity pet && pet.getOwner() != null) return false;
 		if (!CobbieConfig.isCombatAllowed()) return false;
 		return e instanceof Enemy;                           // hostile mobs only; passives are untouchable
 	}
@@ -5609,6 +5795,71 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 				(int) this.getMaxHealth(), threat.getName().getString(),
 				stoppedThePlan ? "cancelled" : "none in flight");
 		driveRetreat();
+	}
+
+	/**
+	 * A shield he carries, raised while something hostile is close enough to hit him in the next few
+	 * seconds.
+	 *
+	 * <p>The block itself is the game's: {@code LivingEntity.applyItemBlocking} reads the shield's own
+	 * {@code BLOCKS_ATTACKS} component and decides how much of the blow it stops, including the
+	 * requirement that the blow arrives from in front of his head — so he also turns to face it. Two
+	 * limits are stated rather than hidden: the shield takes the component's block delay (five ticks
+	 * for a shield) to come up, so a blow in those five ticks is not blocked, and it only covers what
+	 * arrives inside the component's horizontal angle.
+	 */
+	private void shieldTick() {
+		if (level() == null || level().isClientSide()) return;
+		if (!CobbieConfig.isCombatAllowed()) {
+			lowerShield();
+			return;
+		}
+		LivingEntity threat = nearestEngagingThreatWithin(SHIELD_THREAT_RANGE);
+		if (threat == null || !raiseShieldIfCarried()) {
+			lowerShield();
+			return;
+		}
+		// The game blocks only what comes from in front of his head, so the raise is also a turn.
+		this.getLookControl().setLookAt(threat, 30.0f, 30.0f);
+		if (!this.isUsingItem()) this.startUsingItem(InteractionHand.OFF_HAND);
+	}
+
+	private void lowerShield() {
+		if (this.isUsingItem() && this.getUsedItemHand() == InteractionHand.OFF_HAND) this.stopUsingItem();
+	}
+
+	/** Put a shield in his off hand if he carries one there or in the bag. */
+	private boolean raiseShieldIfCarried() {
+		if (this.getOffhandItem().is(Items.SHIELD)) return true;
+		for (int i = 0; i < inventory.getContainerSize(); i++) {
+			ItemStack stack = inventory.getItem(i);
+			if (!stack.is(Items.SHIELD)) continue;
+			ItemStack previous = this.getOffhandItem().copy();
+			ItemStack taken = stack.copyWithCount(1);
+			ItemStack rest = stack.copy();
+			rest.shrink(1);
+			inventory.setItem(i, rest.isEmpty() ? ItemStack.EMPTY : rest);
+			this.setItemSlot(EquipmentSlot.OFFHAND, taken);
+			if (!previous.isEmpty()) addItem(previous);
+			return true;
+		}
+		return false;
+	}
+
+	/** The nearest hostile within {@code range} that is coming for him or for his owner, and visible. */
+	private LivingEntity nearestEngagingThreatWithin(double range) {
+		LivingEntity best = null;
+		double bestDist = range * range;
+		for (LivingEntity e : level().getEntitiesOfClass(LivingEntity.class,
+				new AABB(this.blockPosition()).inflate(range),
+				e -> e.isAlive() && isLegalTarget(e) && threatTier(e) <= 1 && this.hasLineOfSight(e))) {
+			double d = e.distanceToSqr(this);
+			if (d <= bestDist) {
+				bestDist = d;
+				best = e;
+			}
+		}
+		return best;
 	}
 
 	/** The nearest hostile that is actually coming for him or for his owner. */
@@ -5755,26 +6006,29 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return null; // resolves across ticks in attackTick()
 	}
 
+	/**
+	 * The hostile an attack was sent for, chosen by the same threat rule as a defensive fight: type
+	 * hint first when one was named, then the real threat among what matches.
+	 *
+	 * <p>Line of sight decides between candidates: among several hostiles, one behind a wall is not
+	 * the pick while a visible one is on offer. It is not required of the only candidate — walking
+	 * around a corner to the thing the owner pointed at is the job — but it is required before any
+	 * swing ({@link #trySwingAt}).
+	 */
 	private LivingEntity chooseAttackTarget(String typeHint) {
 		double scan = Math.max(8, CobbieConfig.getNavigationRange());
-		List<LivingEntity> around = level().getEntitiesOfClass(LivingEntity.class,
-				new AABB(this.blockPosition()).inflate(scan), LivingEntity::isAlive);
 		String hint = typeHint == null ? "" : typeHint.trim().toLowerCase(Locale.ROOT);
-		LivingEntity best = null;
-		double bestDist = Double.MAX_VALUE;
-		for (LivingEntity e : around) {
-			if (!isLegalTarget(e) || !canAttack(e)) continue;
-			if (!hint.isEmpty()) {
-				String id = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString().toLowerCase(Locale.ROOT);
-				if (!id.contains(hint)) continue;
-			}
-			double d = e.distanceToSqr(this);
-			if (d < bestDist) {
-				bestDist = d;
-				best = e;
-			}
-		}
-		return best;
+		List<LivingEntity> around = level().getEntitiesOfClass(LivingEntity.class,
+				new AABB(this.blockPosition()).inflate(scan), e -> {
+					if (!isLegalTarget(e) || !canAttack(e)) return false;
+					if (hint.isEmpty()) return true;
+					String id = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString()
+							.toLowerCase(Locale.ROOT);
+					return id.contains(hint);
+				});
+		if (around.isEmpty()) return null;
+		List<LivingEntity> visible = around.stream().filter(this::hasLineOfSight).toList();
+		return realThreat(visible.isEmpty() ? around : visible);
 	}
 
 	/** Chase and hit, revalidating the target immediately before every swing. */
@@ -5803,15 +6057,15 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			clearActive();
 			return ActionOutcome.fail("attack", "that target is off-limits");
 		}
-		if (isWithinMeleeAttackRange(target) && hasLineOfSight(target)) {
-			if (this.tickCount < attackCooldownUntil) return null;
-			if (!(level() instanceof ServerLevel serverLevel)) {
-				clearActive();
-				return ActionOutcome.fail("attack", "no server world");
-			}
-			attackCooldownUntil = this.tickCount + swingDelayTicks();
-			boolean hit = doHurtTarget(serverLevel, target);
-			if (!hit) return null; // swung and missed; try again inside the deadline
+		if (isRetreating()) {
+			// The retreat owns his feet while it runs, and trading blows during it is the death it
+			// exists to avoid. The wound itself cancels this plan; this is the belt to that brace,
+			// so no swing can land on the tick the wound arrives.
+			this.setTarget(null);
+			clearActive();
+			return ActionOutcome.fail("attack", "i am too badly hurt to keep fighting");
+		}
+		if (trySwingAt(target)) {
 			if (target.isAlive()) {
 				// "Kill that zombie" used to end after the first swing landed. A fight is not one
 				// hit, and a companion who stops mid-fight makes the owner finish his work.
@@ -5824,7 +6078,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			clearActive();
 			return outcome;
 		}
-		getNavigation().moveTo(target, 0.95);
+		if (!this.getAttackRangeWith(this.getMainHandItem())
+				.isInRange(this, target.getBoundingBox(), 0.0)) {
+			getNavigation().moveTo(target, 0.95);
+		}
 		return null;
 	}
 
