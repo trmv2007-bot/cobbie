@@ -701,3 +701,85 @@ satisfy either.
 - **`type=double` for slabs** is a placement over an existing slab, which `placementRefusal` refuses as an
   occupied square. That is the right answer for "put a block here", and it means the double slab is a thing
   this verb deliberately does not do.
+
+# Combat — the number, the pace and the pick, 0.84.0
+
+Placement was the first verb where the mod decided a fact the game owns. Combat was the second, and it had
+the same shape in four places at once. The hypothesis worth testing was not "does he kill the zombie" — he
+did — but **whose number is the damage**, and the answer was: ours.
+
+| what he did | what the game says | what the code did |
+|---|---|---|
+| a full swing with an iron sword | 5.904 health off a zombie | 5.904 — the same, but by a base `ATTACK_DAMAGE` of **3.0**, three more than a player's, under an item that added its own damage on top |
+| a swing half way through the cooldown | 40% of the damage (`0.2 + strength² × 0.8`) | full damage, because `Mob.doHurtTarget` has no strength term at all |
+| the asked-for fight | paced by the weapon: 12.5 ticks for a sword, 22.2 for an axe | a 5-tick timer of his own (`attackCooldownUntil`) |
+| the defensive fight | the same weapon pace | the melee goal's flat 20-tick interval — a *second* timer, in another file, for the same body |
+| carrying a sword and an axe | the sword | whichever he happened to hold; nothing ever chose |
+
+Two pacings in one body is the family this project already named: **a condition written for one caller,
+applied to all of them.** The verb swung on one clock and the defensive goal on another, so what a zombie
+cost him depended on which code path happened to reach it.
+
+## What the fix is, and what it is not
+
+It is not arithmetic of ours that reproduces the game's. The base `ATTACK_DAMAGE` is now a player's 1.0, so
+the game's own equipment modifier — the item's `ATTRIBUTE_MODIFIERS` component — supplies the weapon's damage
+exactly as it does for the owner. The cooldown is `20 / attack_speed`, which is literally
+`Player.getCurrentItemAttackStrengthDelay`, and the swing is gated on that fill reaching 1.0, which is where
+the game's scale factor is exactly 1. Both callers go through one `trySwingAt`, so "may he swing" has one
+answer.
+
+The measured consequence, from the owner's own `Player.attack` at full strength as the oracle:
+
+| item | owner | him |
+|---|---|---|
+| iron sword | 4 hits of `[5.904, 5.904, 5.904, 2.288]`, gaps `[13, 13, 13]`, cooldown 12.5 | identical, gaps `[13, 13, 13]` |
+| iron axe | 3 hits of `[8.856, 8.856, 2.288]`, gaps `[22, 22]`, cooldown 22.2 | identical damage and count, gaps `[23, 23]` |
+| bare hand | 22 hits of `0.94`, gaps `[10, …]`, cooldown 5.0 | identical, gaps `[10, …]` |
+
+The bare-hand row is the one that taught something: a five-tick cooldown lands every **ten** ticks, because
+the target cannot be hurt twice inside its own ten-tick hurt window. A test that asserted "gaps == cooldown"
+would have failed on a correct implementation, so the cooldown is asserted as a *floor* and the cadence is
+compared against the owner's own landed cadence. The gap between "the number from the API" and "the number in
+the world" is where a measurement quietly becomes an assumption.
+
+## The pick, and the stated preference
+
+The weapon is chosen by the same component data: the `ATTACK_DAMAGE` modifier the item carries for the main
+hand, then the `ATTACK_SPEED` it brings, then a **stated** order — sword, axe, pickaxe — that only breaks a tie
+the game leaves. Saying it out loud matters: with the figures the shipped items carry (iron sword damage 5,
+diamond pickaxe 4; golden sword 3, netherite pickaxe 5) the game's own numbers decide in both directions, and
+the test asserts the pickaxe wins when the game rates it higher. A preference that could not lose would be a
+hidden rule, not a preference.
+
+## Target selection, in one place
+
+One rule, used by the defensive goal and the attack verb: **the owner's attacker outranks his own; then the
+nearer one; then the harder hitter by the game's own attack-damage figure; then the more wounded.** Distances
+are compared in quarter-block buckets so two hostiles at the same stance tie on distance rather than on two
+floats that came out a bit apart. Line of sight decides between candidates — a hostile behind a wall is not
+the pick while a visible one is on offer — and a swing refuses without sight in any case. An owner who names
+one target still sends him around the corner; that is the verb's job.
+
+Six cases are asserted, each differing on exactly one axis so a pass cannot come from the wrong half of the
+rule: nearer wins at 3 vs 7 blocks; the owner's attacker at 9 blocks beats his own at 2; the wounded one wins
+an equal-distance tie; the visible one beats the hidden one behind a three-course wall. Never the owner, even
+with player combat switched on (`nothing I am allowed to fight is nearby`), and never a pet: a wolf tamed to
+the owner stands beside the zombie for the whole fight and keeps 40 of 40 health.
+
+## What the harness cannot drive honestly
+
+- **A mob's own AI, as a source of a blow.** For the shield the blow is `Zombie.doHurtTarget` called directly —
+  the same call the zombie's melee goal makes, and the same one that runs `applyItemBlocking`. What that
+  cannot prove is anything about the zombie's *decision* to swing; it proves what the game does with the
+  swing once it happens. The same zombie, the same spot, with and without a shield in his off hand: **3.0
+  health without it, 0.0 with it raised**.
+- **Real pathing around a wall.** "Never through a wall" is asserted as selection (the hidden zombie loses to
+  the visible one) and as the swing's own gate, not as "he failed to find a route", because the pathfinder
+  finding a legal way around is correct behaviour and would make the test pass for the wrong reason.
+- **The tamed-pet exclusion itself has no vanilla ownable hostile to exercise it.** The wolf case proves he
+  fights the zombie and not the creature standing beside it; the `OwnableEntity` branch in `isLegalTarget` is a
+  safety net for a future ownable enemy, and this sentence is the honest label on it.
+- **He does not crit.** A player's critical hit needs `fallDistance > 0` and `!onGround`; he fights standing,
+  like the owner in every oracle above, so the 1.5× crit multiplier is never in either number. Adding crits
+  would be a new behaviour, not a defect repaired.

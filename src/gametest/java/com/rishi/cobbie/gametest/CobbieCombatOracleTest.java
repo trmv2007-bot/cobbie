@@ -76,6 +76,9 @@ public final class CobbieCombatOracleTest implements FabricClientGameTest {
             CobbieTestSupport.spawn(context, server);
             CobbieTestSupport.command(server, "cobbie stay");
             CobbieTestSupport.permit(server, "combat", true);
+            // Midnight, and pinned: a summoned zombie burns in daylight, and a fire tick is a health
+            // drop that is not his swing — the one number this measurement cannot have inside it.
+            CobbieTestSupport.command(server, "time set midnight");
             // The owner must survive being next to a zombie while he measures; resistance does not
             // change what the zombie takes, only what the owner does.
             CobbieTestSupport.command(server, "effect give @p minecraft:resistance 600 4 true");
@@ -122,10 +125,14 @@ public final class CobbieCombatOracleTest implements FabricClientGameTest {
             throw new AssertionError(what + ": the owner needed " + player.hits() + " hit(s) and he needed "
                     + cobbie.hits() + " (" + cobbie.describe() + ", owner: " + player.describe() + ")");
         }
+        // The game's cooldown is a floor, not the whole story: a target's own hurt-immunity window can
+        // stretch the gap further (a bare hand's five-tick cooldown lands every ten ticks because the
+        // zombie cannot be hurt twice inside ten). So the floor is asserted here and the actual cadence
+        // is compared against the owner's own landed cadence below.
         for (Integer gap : cobbie.gaps()) {
-            if (Math.abs(gap - playerCooldown) > 1.5f) {
+            if (gap < playerCooldown - 1.5f) {
                 throw new AssertionError(what + ": the game's cooldown for this item is " + playerCooldown
-                        + " ticks, and his landed hits were " + gap + " apart (" + cobbie.describe() + ")");
+                        + " ticks, and his landed hits were only " + gap + " apart (" + cobbie.describe() + ")");
             }
         }
         List<Integer> playerGaps = player.gaps();
@@ -152,6 +159,9 @@ public final class CobbieCombatOracleTest implements FabricClientGameTest {
      * comparison allows one tick either side of the game's cooldown.
      */
     private static Kill measure(TestServerContext server, boolean byOwner, Item weapon) {
+        // A corpse from the last case stands in exactly this spot: a dead zombie is still an entity,
+        // and picking it up would report "one hit, zero damage" for a fight that never happened.
+        clearZombies(server);
         BlockPos spot = server.computeOnServer(s -> {
             ServerPlayer owner = CobbieTestSupport.owner(s);
             CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
@@ -183,7 +193,7 @@ public final class CobbieCombatOracleTest implements FabricClientGameTest {
                     + " {NoAI:1b}");
             return s.overworld().getEntitiesOfClass(LivingEntity.class,
                             new net.minecraft.world.phys.AABB(spot).inflate(6),
-                            e -> e instanceof net.minecraft.world.entity.monster.zombie.Zombie)
+                            e -> e instanceof net.minecraft.world.entity.monster.zombie.Zombie && e.isAlive())
                     .stream().map(Entity::getUUID).findFirst()
                     .orElseThrow(() -> new AssertionError("the zombie never appeared at " + spot));
         });

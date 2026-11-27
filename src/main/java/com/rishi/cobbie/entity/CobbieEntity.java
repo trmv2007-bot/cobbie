@@ -2367,9 +2367,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 * since the last swing over {@link #attackDelayTicks()}, the way a player's attack strength fills.
 	 *
 	 * <p>1.0 is a full-strength hit, and that is the number worth waiting for: the game scales a
-	 * player's damage by {@code 0.2 + strength² × 0.8}, so a swing at 0.6 strength costs a third of
-	 * what it should. He has no ticker of his own because a mob has none — the game only fills one for
-	 * players — so this is that same fill, computed from the tick he last swung.
+	 * player's damage by {@code 0.2 + strength² × 0.8}, so a swing half way through the cooldown
+	 * costs 40% of what it should and looks exactly like a full one. He has no ticker of his own
+	 * because a mob has none — the game only fills one for players — so this is that same fill,
+	 * computed from the tick he last swung.
 	 */
 	private float attackStrength() {
 		return Math.min(1.0f, (this.tickCount - lastSwingTick) / attackDelayTicks());
@@ -2392,8 +2393,11 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 */
 	boolean trySwingAt(LivingEntity target) {
 		if (target == null || !isLegalTarget(target)) return false;
-		raiseBestWeapon();
+		// The cheap answer first: a weapon is only worth reaching for when the swing is otherwise
+		// ready, so the bag is read once per cooldown instead of once per tick.
 		if (attackStrength() < 1.0f) return false;
+		raiseBestWeapon();
+		if (attackStrength() < 1.0f) return false;   // a weapon he just picked up needs its own cooldown
 		if (!this.hasLineOfSight(target)) return false;
 		if (!this.getAttackRangeWith(this.getMainHandItem())
 				.isInRange(this, target.getBoundingBox(), 0.0)) return false;
@@ -6006,8 +6010,10 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 	 * The hostile an attack was sent for, chosen by the same threat rule as a defensive fight: type
 	 * hint first when one was named, then the real threat among what matches.
 	 *
-	 * <p>Line of sight is not required here — walking around a corner to something the owner pointed
-	 * at is the job — but it is required before any swing ({@link #trySwingAt}).
+	 * <p>Line of sight decides between candidates: among several hostiles, one behind a wall is not
+	 * the pick while a visible one is on offer. It is not required of the only candidate — walking
+	 * around a corner to the thing the owner pointed at is the job — but it is required before any
+	 * swing ({@link #trySwingAt}).
 	 */
 	private LivingEntity chooseAttackTarget(String typeHint) {
 		double scan = Math.max(8, CobbieConfig.getNavigationRange());
@@ -6020,7 +6026,9 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 							.toLowerCase(Locale.ROOT);
 					return id.contains(hint);
 				});
-		return around.isEmpty() ? null : realThreat(around);
+		if (around.isEmpty()) return null;
+		List<LivingEntity> visible = around.stream().filter(this::hasLineOfSight).toList();
+		return realThreat(visible.isEmpty() ? around : visible);
 	}
 
 	/** Chase and hit, revalidating the target immediately before every swing. */
