@@ -142,6 +142,7 @@ not a feature.
 | `runClientGameTest -PcobbieTests=Opportunity --no-build-cache --rerun-tasks` | **1 passed of 1**, 12.6 s |
 | `runClientGameTest --no-build-cache --rerun-tasks` (whole suite, exact pushed tree) | **81 passed, 3 failed of 84** — `CobbieGameTests` registers 84 classes (82 at 0.86.0, plus `CobbieTailTest` from 0.87.0 and `CobbieOpportunityTest` here) |
 | the reds | `CobbieSmokeTest` and `CobbieChatTest`, both "never reached a connected brain": nothing answers at 11434 on this machine, and `tools/gametest-preflight.ps1` said so before the run. They are the two brain-gated classes and fail for that reason alone, exactly as the 0.86.0 run recorded them. The third red was a flake in a class this slice does not touch — see below |
+| `runClientGameTest -PcobbieTests=MemoryWorld,MemoryRecall --no-build-cache --rerun-tasks` (after the flake fix) | **2 passed of 2** |
 | `CobbiePerfTest` | green in the same run (243 s), so the fingerprint read twice a second did not put an entity query in every tick of every body |
 
 Three things the runs taught, recorded rather than papered over:
