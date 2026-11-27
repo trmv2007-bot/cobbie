@@ -55,10 +55,10 @@ interaction — which is mechanical once those pieces exist, and which grows in 
 
 Three capabilities will stay deliberately different rather than absent, and the reason matters:
 
-- **Hunger.** Mobs do not starve, and `FoodProperties.onConsume` only calls `Player.getFoodData()` inside
-  an `instanceof Player` branch. He can eat and be seen to eat, and food with effects will work, but a
-  real hunger bar is a reimplementation of `FoodData.tick`, not an API call. Decide separately whether
-  a companion should need feeding at all.
+- **Hunger — no longer a difference (0.85.0).** Rishi decided he should eat and drink as a player does.
+  He carries the game's own `FoodData`, saved by `FoodData`'s own methods, and `FoodData.tick` runs on a
+  phantom actor whose food bar, health and effects are his (`Hunger.Actor`). Mobs still do not starve;
+  he is no longer just a mob.
 - **Sleeping and respawning.** `Player.startSleepInBed` and `setRespawnPosition` are player-only, and the
   result is evaluated against a player's respawn anchor. He can stand by the bed; he cannot set your
   spawn.
@@ -252,12 +252,13 @@ shim is built, it should be a never-spawned `ServerPlayer` (no `addFreshEntity`,
 connection) purely as an `InteractionHand` context holder — a second visible player entity would break the
 "companion, not a second player" premise.
 
-**Hunger is a design question, not an implementation one.** `FoodData` is constructible on its own and
-`Consumable`/`FoodProperties` are `LivingEntity`-safe, but `FoodProperties.onConsume` grants nutrition only
-inside an `instanceof Player` branch, and `FoodData.tick(ServerPlayer)` drives natural regeneration and
-starvation. Giving Cobbie a `FoodData` therefore means reimplementing `tick` (regen at saturation ≥ 5,
-starvation below 0) by hand. The cheaper and probably better product choice is: no hunger, but a full
-consume path so milk cures him, golden apples heal him, and potions work — which requires none of the above.
+**Hunger was a design question until 0.85.0, and the answer was not to reimplement `tick`.**
+`FoodProperties.onConsume` grants nutrition only inside an `instanceof Player` branch, and
+`FoodData.tick(ServerPlayer)` drives regeneration and starvation against a player. The way through was to
+give the game a player whose bar, health and effects are the companion's (`Hunger.Actor`, a `FakePlayer`
+with the inherited `foodData` field set to his `FoodData` and every body question forwarded), so
+`FoodData.tick` runs unchanged. Eating and drinking then work through `ItemStack.use` on that actor, and
+nothing in the mod knows a food's values.
 
 ---
 

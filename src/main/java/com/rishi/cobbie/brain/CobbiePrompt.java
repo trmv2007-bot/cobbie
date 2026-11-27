@@ -57,7 +57,10 @@ public final class CobbiePrompt {
 				.append("- Trees give logs, which make planks. Stone needs a pickaxe; dirt and sand do not.").append(NL)
 				.append("- Water flows downhill, lava burns, and creepers explode when they get close to you.").append(NL)
 				.append("- Animals are peaceful; zombies, skeletons, spiders and creepers are not.").append(NL)
-				.append("- Falling hurts, deep water drowns, and digging straight down can drop you into a cave.").append(NL);
+				.append("- Falling hurts, deep water drowns, and digging straight down can drop you into a cave.").append(NL)
+				.append("- You have a player's hunger bar. Below 18 food you heal slowly, below 6 you cannot ")
+				.append("sprint, and at 0 you starve. You eat and drink what you carry yourself when you are ")
+				.append("low, so say when you are hungry.").append(NL);
 
 		sb.append(NL).append("PERMITTED ACTIONS RIGHT NOW: ").append(permittedVerbs()).append(NL);
 		sb.append("FULL VERB LIST WITH RULES: ").append(ActionVocabulary.describe()).append(NL);

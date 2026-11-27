@@ -50,6 +50,10 @@ public final class CobbiePersistenceTest implements FabricClientGameTest {
             CobbieTestSupport.command(world.getServer(), "cobbie stay");
 
             cobbie.addItem(new ItemStack(Items.STONE, STONE));
+            // His hunger is saved beside his bag: three of the game's own numbers, off full so the
+            // round trip is visible and with no food in the bag so he cannot eat them away.
+            cobbie.setHunger(12, 3.0f);
+            cobbie.addExhaustion(1.5f);
             int stocked = cobbie.countItem("minecraft:stone");
             if (stocked != STONE) {
                 throw new AssertionError("Test setup failed: gave " + STONE + " stone but he holds " + stocked);
@@ -91,6 +95,17 @@ public final class CobbiePersistenceTest implements FabricClientGameTest {
                     .countItem("minecraft:stone"));
             if (carried != STONE) {
                 throw new AssertionError("He came back with " + carried + " stone instead of " + STONE);
+            }
+            // And the food bar came back with him, the same three numbers the game writes.
+            int[] hunger = server.computeOnServer(s -> {
+                CobbieEntity c = CobbieTestSupport.cobbie(s).orElseThrow();
+                return new int[] {c.foodLevel(), Math.round(c.saturationLevel() * 10.0f),
+                        Math.round(c.exhaustionLevel() * 10.0f)};
+            });
+            if (hunger[0] != 12 || hunger[1] != 30 || hunger[2] != 15) {
+                throw new AssertionError("His hunger did not survive the relog: food " + hunger[0]
+                        + ", saturation " + (hunger[1] / 10.0f) + ", exhaustion " + (hunger[2] / 10.0f)
+                        + " (saved 12 / 3.0 / 1.5)");
             }
 
             // The negative: this save had nothing in flight, so waking must be silent. Sixty ticks is

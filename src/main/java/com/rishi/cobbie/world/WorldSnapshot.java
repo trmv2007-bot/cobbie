@@ -16,8 +16,9 @@ import java.util.List;
  *  - ids (dimension / equippedItem / block+entity ids / inventoryIds) are full
  *    registry ids, e.g. "minecraft:stone"; describe() strips the "minecraft:"
  *    prefix to save room (the game defaults to that namespace).
- *  - foodLevel is Cobbie's <i>owner's</i> hunger (Cobbie does not eat); 20 when
- *    the owner is offline or absent.
+ *  - foodLevel is Cobbie's <i>owner's</i> hunger; 20 when the owner is offline or absent.
+ *  - hungerFood and hungerSaturation are <i>Cobbie's own</i> food bar, from his own FoodData, so the
+ *    prompt can say he is hungry and he can answer for himself.
  *  - coordinates in BlockNote/EntityNote are absolute world coords; distance is
  *    straight-line distance from Cobbie in blocks.
  */
@@ -40,7 +41,22 @@ public record WorldSnapshot(
         List<String> inventoryIds,
         String currentTask,
         String currentAction,
-        String lastActionResult) {
+        String lastActionResult,
+        int hungerFood,
+        float hungerSaturation) {
+
+	/**
+	 * The shape every caller had before he had a hunger bar of his own. A snapshot built this way says
+	 * he is full, which is what a companion with no body state would be.
+	 */
+	public WorldSnapshot(String dimension, String biome, long timeOfDay, boolean raining, boolean thundering,
+			int x, int y, int z, double health, double maxHealth, int foodLevel, String equippedItem,
+			List<BlockNote> nearbyBlocks, List<EntityNote> nearbyEntities, List<String> nearbyPlayerNames,
+			List<String> inventoryIds, String currentTask, String currentAction, String lastActionResult) {
+		this(dimension, biome, timeOfDay, raining, thundering, x, y, z, health, maxHealth, foodLevel,
+				equippedItem, nearbyBlocks, nearbyEntities, nearbyPlayerNames, inventoryIds, currentTask,
+				currentAction, lastActionResult, 20, 5.0f);
+	}
 
 	/** Sampling / output caps, shared by WorldPerception and describe(). */
 	public static final int MAX_BLOCKS = 40;
@@ -79,7 +95,7 @@ public record WorldSnapshot(
 	 * Compact prompt block, e.g.
 	 * <pre>
 	 * at 10 64 -3 in overworld/plains, time 6234 (day), rain
-	 * hp 18/20, owner food 20, holding stone_pickaxe
+	 * hp 18/20, my food 14/20 (saturation 3.0), owner food 20, holding stone_pickaxe
 	 * blocks: stone@10 63 -3 d1.1s, dirt@9 64 -3 d1.4s
 	 * entities: zombie@12 64 -1 d5.2 hp20 HOSTILE
 	 * players: Rishi
@@ -99,6 +115,8 @@ public record WorldSnapshot(
 			sb.append('\n');
 
 			sb.append("hp ").append(num(health)).append('/').append(num(maxHealth))
+					.append(", my food ").append(hungerFood).append("/20 (saturation ")
+					.append(num(hungerSaturation)).append(')')
 					.append(", owner food ").append(foodLevel)
 					.append(", holding ").append(held()).append('\n');
 

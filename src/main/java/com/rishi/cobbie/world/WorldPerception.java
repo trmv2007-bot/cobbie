@@ -86,7 +86,8 @@ public final class WorldPerception {
 					entityNotes(entity, seen),
 					playerNames(seen),
 					inventoryIds(entity),
-					currentTask, currentAction, lastActionResult);
+					currentTask, currentAction, lastActionResult,
+					entity.foodLevel(), entity.saturationLevel());
 		} catch (Throwable t) {
 			Cobbie.LOGGER.warn("Cobbie perception failed: {}", t.toString());
 			return WorldSnapshot.unknown();

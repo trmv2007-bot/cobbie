@@ -112,6 +112,9 @@ public final class CobbieCommands {
 				+ String.format("%.0f", cobbie.getMaxHealth())
 				+ ", at " + cobbie.blockPosition().getX() + " " + cobbie.blockPosition().getY()
 				+ " " + cobbie.blockPosition().getZ());
+		// His own hunger bar, in the same sentence shape as everything else here: the three numbers the
+		// game keeps, so an owner can see what the companion is doing about it.
+		reply(ctx, "§fFood: " + cobbie.hungerLine());
 		reply(ctx, "§fTask: " + cobbie.currentTaskDescription());
 		reply(ctx, "§fLast result: " + cobbie.lastActionResult());
 		reply(ctx, "§fCarrying: " + cobbie.describeInventory());
