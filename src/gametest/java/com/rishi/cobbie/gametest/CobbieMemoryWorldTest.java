@@ -206,13 +206,25 @@ public final class CobbieMemoryWorldTest implements FabricClientGameTest {
             throw new AssertionError("Working at an anvil left no memory of it. "
                     + OperationalMemory.listing(ownerId));
         }
-        if (!"chipped".equals(atAnvil.fact())) {
-            throw new AssertionError("The anvil's state was not read off the block: \"" + atAnvil.fact() + "\"");
+        // The anvil chips and then dents as it is used — the game's own rule, and one use is enough to take
+        // a chipped anvil to a damaged one. So what is asserted is that the memory *is the block's current
+        // state*, read back off the block, not the state it was placed in: pinning "chipped" here fails on
+        // the dice rather than on the code, which is how this class went red once in a full run with
+        // nothing wrong with the memory.
+        String onTheBlock = server.computeOnServer(s -> {
+            String path = net.minecraft.core.registries.BuiltInRegistries.BLOCK
+                    .getKey(s.overworld().getBlockState(anvil).getBlock()).getPath();
+            return path.contains("chipped") ? "chipped" : path.contains("damaged") ? "damaged" : "intact";
+        });
+        if (!onTheBlock.equals(atAnvil.fact())) {
+            throw new AssertionError("The anvil's state was not read off the block: memory says \""
+                    + atAnvil.fact() + "\", the block says \"" + onTheBlock + "\"");
         }
         if (atAnvil.x() != anvil.getX() || atAnvil.z() != anvil.getZ()) {
             throw new AssertionError("The anvil memory is not at the anvil: " + atAnvil);
         }
-        System.out.println("[gametest] station learned from the world: " + atAnvil.subject() + " is " + atAnvil.fact());
+        System.out.println("[gametest] station learned from the world: " + atAnvil.subject() + " is "
+                + atAnvil.fact() + " (the block says " + onTheBlock + ")");
 
         String repaired = server.computeOnServer(s -> {
             CobbieTestSupport.command(s, "setblock " + anvil.getX() + " " + anvil.getY() + " "

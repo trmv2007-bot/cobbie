@@ -140,8 +140,8 @@ not a feature.
 |---|---|
 | `JAVA_HOME=C:/Users/rishi/jdk25 ./gradlew cleanTest test` | **369 tests, 0 failed, 6 skipped** in 40 classes (325 before this slice); the six skips are the opt-in live-provider checks |
 | `runClientGameTest -PcobbieTests=Opportunity --no-build-cache --rerun-tasks` | **1 passed of 1**, 12.6 s |
-| `runClientGameTest --no-build-cache --rerun-tasks` (whole suite, exact pushed tree) | **81 passed, 2 failed of 83** — `CobbieGameTests` registers 83 classes, was 82 at 0.86.0 |
-| the two reds | `CobbieSmokeTest` and `CobbieChatTest`, both "never reached a connected brain": nothing answers at 11434 on this machine, and `tools/gametest-preflight.ps1` said so before the run. They are the two brain-gated classes and fail for that reason alone, exactly as the 0.86.0 run recorded them |
+| `runClientGameTest --no-build-cache --rerun-tasks` (whole suite, exact pushed tree) | **81 passed, 3 failed of 84** — `CobbieGameTests` registers 84 classes (82 at 0.86.0, plus `CobbieTailTest` from 0.87.0 and `CobbieOpportunityTest` here) |
+| the reds | `CobbieSmokeTest` and `CobbieChatTest`, both "never reached a connected brain": nothing answers at 11434 on this machine, and `tools/gametest-preflight.ps1` said so before the run. They are the two brain-gated classes and fail for that reason alone, exactly as the 0.86.0 run recorded them. The third red was a flake in a class this slice does not touch — see below |
 | `CobbiePerfTest` | green in the same run (243 s), so the fingerprint read twice a second did not put an entity query in every tick of every body |
 
 Three things the runs taught, recorded rather than papered over:
@@ -157,6 +157,15 @@ Three things the runs taught, recorded rather than papered over:
   boundary it would cross (`OpportunitySelector.parse` then `OpportunityCycle.apply`), so the assessor,
   the parser, the dispatcher and the plan runner are all the shipped ones; what is lost is the claim that
   a running system starts work with nobody watching, and that claim is now measured only by a live session.
+- **A flaky assertion in `CobbieMemoryWorldTest`, found by this run and fixed rather than re-rolled.**
+  It placed a `chipped_anvil`, worked at it, and demanded the memory say `chipped`. The game's own rule
+  is `AnvilMenu`: when the finished work is taken out, `player.getRandom().nextFloat() < 0.12f` damages
+  the anvil, and `AnvilBlock.damage` takes `chipped_anvil` to `damaged_anvil` — so one use in eight turns
+  the placement into a different block. The memory said `damaged`, which is the block's own answer and
+  correct. The assertion now reads the state off the block and demands the
+  memory match *that*, so the test measures "the memory is the block's current state" instead of "the
+  dice came up chipped". It is outside this slice's brief and is named here because a red that is really
+  a coin toss costs the next thread the same hour.
 - **`/cobbie opportunities` is asserted, not assumed.** The instrument had to read back from inside the
   game — `read back 8 candidates and the last decision` — because an inspection surface nobody has
   opened is a log line with extra steps.
