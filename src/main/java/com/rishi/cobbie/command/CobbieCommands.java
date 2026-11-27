@@ -1,5 +1,6 @@
 package com.rishi.cobbie.command;
 
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.rishi.cobbie.brain.BrainPresets;
@@ -10,6 +11,8 @@ import com.rishi.cobbie.brain.OllamaDiscovery;
 import com.rishi.cobbie.config.CobbieConfig;
 import com.rishi.cobbie.entity.CobbieEntity;
 import com.rishi.cobbie.memory.CobbieMemory;
+import com.rishi.cobbie.memory.OperationalMemory;
+import com.rishi.cobbie.memory.WorldMemory;
 import com.rishi.cobbie.skill.Skill;
 import com.rishi.cobbie.skill.SkillRegistry;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
@@ -67,8 +70,12 @@ public final class CobbieCommands {
 								.then(Commands.argument("action", StringArgumentType.greedyString())
 										.executes(CobbieCommands::skills)))
 						.then(Commands.literal("memory")
+								.executes(CobbieCommands::memoryList)
 								.then(Commands.argument("action", StringArgumentType.word())
-										.executes(CobbieCommands::memory)))));
+										.executes(CobbieCommands::memory)))
+						.then(Commands.literal("forget")
+								.then(Commands.argument("which", IntegerArgumentType.integer(1))
+										.executes(CobbieCommands::forget)))));
 	}
 
 	// ---- helpers ----
@@ -265,6 +272,34 @@ public final class CobbieCommands {
 			return 1;
 		}
 		reply(ctx, "§cUsage: /cobbie skills [list|on <name>|off <name>|delete <name>]");
+		return 0;
+	}
+
+	/**
+	 * What he knows, numbered, with how he came to know it. The numbers are the ones
+	 * {@code /cobbie forget <n>} takes, because a list you cannot act on is a list you cannot correct.
+	 */
+	private static int memoryList(CommandContext<CommandSourceStack> ctx) {
+		ServerPlayer player = player(ctx);
+		if (player == null) return 0;
+		String listing = WorldMemory.listing(player.getUUID());
+		if (listing.isBlank()) {
+			reply(ctx, "§fI do not know this world yet. Tell me things with: cobbie remember home is at 12 64 -7");
+			return 1;
+		}
+		reply(ctx, "§fWhat I remember (/cobbie forget <n> drops one):\n" + listing);
+		return 1;
+	}
+
+	private static int forget(CommandContext<CommandSourceStack> ctx) {
+		ServerPlayer player = player(ctx);
+		if (player == null) return 0;
+		int which = IntegerArgumentType.getInteger(ctx, "which");
+		if (WorldMemory.forget(player.getUUID(), which)) {
+			reply(ctx, "§fForgot number " + which + ".");
+			return 1;
+		}
+		reply(ctx, "§cI have no memory number " + which + " — /cobbie memory lists what I know.");
 		return 0;
 	}
 

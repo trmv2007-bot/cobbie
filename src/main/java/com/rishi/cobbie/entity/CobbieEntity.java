@@ -1364,6 +1364,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 
 		flushNarration();
 		observeWhenIdle();
+		memorySweepTick();
 
 		// Pick up what is already within arm's reach. Quietly, no project attached.
 		if (CobbieConfig.isCollectionAllowed() && this.tickCount - lastPickupTick >= PICKUP_INTERVAL) {
@@ -1379,6 +1380,16 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		}
 
 		initiativeTick();
+	}
+
+	/**
+	 * Re-read what he remembers against the world, every {@link com.rishi.cobbie.memory.WorldMemory#SWEEP_TICKS}
+	 * ticks. A memory he is about to act on is checked at that moment; this is the other end of the same
+	 * rule, so {@code /cobbie memory} stops listing a chest that was emptied an hour ago.
+	 */
+	private void memorySweepTick() {
+		if (this.tickCount % com.rishi.cobbie.memory.WorldMemory.SWEEP_TICKS != 0) return;
+		com.rishi.cobbie.memory.WorldMemory.sweep(this);
 	}
 
 	/**
@@ -2167,6 +2178,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 			case ActionVocabulary.FARM -> farmAround(intent);
 			case ActionVocabulary.BREED -> breedNearby(intent);
 			case ActionVocabulary.TRADE -> tradeWithVillager(intent);
+			case ActionVocabulary.REMEMBER -> rememberWhatOwnerSaid(intent);
 			case ActionVocabulary.MINE -> startMine(intent);
 			case ActionVocabulary.PLACE -> startPlace(intent);
 			case ActionVocabulary.WRITE -> startWrite(intent);
@@ -3568,6 +3580,31 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		return takeFrom(pos, intent);
 	}
 
+	/**
+	 * Write down what the owner just told him: a place when they gave coordinates, their wish when they
+	 * did not. The claim is about the owner's words, not about the world — {@code ActionEvidence.ownAct}
+	 * — because nothing here was read off the world. The world gets its say later, when the memory is
+	 * re-read before he acts on it.
+	 */
+	private ActionOutcome rememberWhatOwnerSaid(ActionIntent intent) {
+		UUID ownerId = getOwner();
+		if (ownerId == null) return ActionOutcome.fail("remember", "I have no owner to remember things for");
+		String subject = intent.target() == null ? "" : intent.target().trim();
+		if (subject.isBlank()) {
+			return ActionOutcome.fail("remember", "tell me what this is about, like \"home\" or \"the iron\"");
+		}
+		String fact = intent.data() == null ? "" : intent.data().trim();
+		boolean at = intent.x() != 0 || intent.y() != 0 || intent.z() != 0;
+		com.rishi.cobbie.memory.WorldMemory.learnFromOwner(this, ownerId, subject, fact, at,
+				intent.x(), intent.y(), intent.z());
+		// Said without the numbers: what the owner needs to hear is that it was written down, not a
+		// coordinate they just gave him.
+		String line = at ? "noted where " + subject + " is"
+				: "noted " + subject + (fact.isBlank() ? "" : ": " + fact);
+		return ActionOutcome.ok("remember", line, ActionEvidence.ownAct(
+				"I wrote down what you told me about " + subject));
+	}
+
 	private ActionOutcome takeFrom(BlockPos pos, ActionIntent intent) {
 		if (!(level() instanceof ServerLevel serverLevel)) return ActionOutcome.fail("take", "no server world");
 		Container container = Containers.resolve(serverLevel, pos, owner(), CobbieConfig.isEnderChestAllowed());
@@ -3586,6 +3623,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (gained != moved) {
 			return ActionOutcome.fail("take", "I moved " + moved + " item(s) but my bag grew by " + gained);
 		}
+		com.rishi.cobbie.memory.WorldMemory.observeContainer(this, pos);
 		return ActionOutcome.ok("take", "took " + moved + (what.isBlank() ? " item(s)" : " " + what)
 				+ " from the " + Containers.nameOf(serverLevel, pos),
 				ActionEvidence.world("my bag grew by exactly the " + moved + " that left the "
@@ -3640,6 +3678,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (lost != moved) {
 			return ActionOutcome.fail("put", "I moved " + moved + " item(s) but my bag shrank by " + lost);
 		}
+		com.rishi.cobbie.memory.WorldMemory.observeContainer(this, pos);
 		return ActionOutcome.ok("put", "put " + moved + (what.isBlank() ? " item(s)" : " " + what)
 				+ " in the " + Containers.nameOf(serverLevel, pos),
 				ActionEvidence.world("my bag shrank by exactly the " + moved + " that went into the "
@@ -3901,6 +3940,7 @@ public class CobbieEntity extends PathfinderMob implements TaskRunner.Executor, 
 		if (finished == null) {
 			return ActionOutcome.fail("anvil", "the anvil returned nothing enchanted");
 		}
+		com.rishi.cobbie.memory.WorldMemory.observeStation(this, anvil);
 		return ActionOutcome.ok("anvil", "put an enchantment on " + itemId(finished) + " for "
 				+ used.levelsSpent() + " level(s)",
 				ActionEvidence.world("i am carrying an enchanted " + itemId(finished) + ", "

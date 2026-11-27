@@ -6,6 +6,8 @@ import com.rishi.cobbie.action.ActionVocabulary;
 import com.rishi.cobbie.config.CobbieConfig;
 import com.rishi.cobbie.entity.CobbieEntity;
 import com.rishi.cobbie.memory.CobbieMemory;
+import com.rishi.cobbie.memory.OwnerWords;
+import com.rishi.cobbie.memory.WorldMemory;
 import com.rishi.cobbie.presence.ActionTiming;
 import com.rishi.cobbie.presence.Narrator;
 import com.rishi.cobbie.skill.ActionStep;
@@ -274,6 +276,7 @@ public final class CobbieBrain {
 		final List<LlmClient.Msg> turns = conversationTurns(speakerId);
 		final String system = CobbiePrompt.systemPrompt(body.companionName(), snapshot.value,
 				CobbieConfig.isMemoryEnabled() ? CobbieMemory.longTermSummary(speakerId) : "",
+				WorldMemory.promptBlock(body, speakerId, text),
 				CobbieConfig.isMemoryEnabled() ? CobbieMemory.currentObjective(speakerId) : "",
 				SkillRegistry.describeForPrompt(4), body.takeRenameNote());
 		final String user = CobbiePrompt.userMessage(name, text);
@@ -544,6 +547,7 @@ public final class CobbieBrain {
 		return t.startsWith("cobbie follow") || t.startsWith("cobbie stay") || t.startsWith("cobbie stop")
 				|| t.startsWith("cobbie cancel") || t.startsWith("cobbie come") || t.startsWith("cobbie wait")
 				|| t.startsWith("cobbie inventory") || t.startsWith("cobbie bag") || t.startsWith("cobbie skills")
+				|| t.startsWith("cobbie remember") || t.startsWith("cobbie forget")
 				|| t.startsWith("cobbie do ");
 	}
 
@@ -584,6 +588,44 @@ public final class CobbieBrain {
 		}
 		if (t.startsWith("cobbie skills")) {
 			sender.sendSystemMessage(cobbieSays(body, "skills I know:\n" + SkillExecutor.describeAll()));
+			return;
+		}
+		if (t.startsWith("cobbie remember")) {
+			// The owner's own words, written down without the model in the loop: a correction that
+			// depends on a model call is a correction that sometimes does not happen.
+			String said = text.trim().substring("cobbie remember".length()).trim();
+			OwnerWords.Said statement = OwnerWords.parse(said);
+			if (statement == null) {
+				sender.sendSystemMessage(cobbieSays(body,
+						"remember what? try: cobbie remember home is at 12 64 -7"));
+				return;
+			}
+			UUID ownerId = body.getOwner();
+			WorldMemory.learnFromOwner(body, ownerId, statement.subject(), statement.fact(),
+					statement.at(), statement.x(), statement.y(), statement.z());
+			sender.sendSystemMessage(cobbieSays(body, statement.at()
+					? "noted where " + statement.subject() + " is"
+					: "noted: " + statement.subject()
+							+ (statement.fact().isBlank() ? "" : " — " + statement.fact())));
+			return;
+		}
+		if (t.startsWith("cobbie forget")) {
+			String arg = text.trim().substring("cobbie forget".length()).trim();
+			int index = -1;
+			try {
+				index = Integer.parseInt(arg);
+			} catch (NumberFormatException notANumber) {
+				index = -1;
+			}
+			if (index < 1) {
+				sender.sendSystemMessage(cobbieSays(body,
+						"which one? /cobbie memory numbers them, and /cobbie forget <n> drops one"));
+				return;
+			}
+			boolean dropped = WorldMemory.forget(speakerId, index);
+			sender.sendSystemMessage(cobbieSays(body, dropped
+					? "forgot number " + index
+					: "I have no memory number " + index + " — /cobbie memory lists what I know"));
 			return;
 		}
 		if (t.startsWith("cobbie do ") && owner) {
@@ -686,6 +728,7 @@ public final class CobbieBrain {
 			}
 
 			TaskPlan finished = cobbie.lastPlan();
+			WorldMemory.recordOutcome(cobbie, ownerId, finished);
 			if (finished != null) {
 				SkillExecutor.recordForPlanRequest(finished.request(),
 						finished.status() == TaskPlan.Status.COMPLETED);
@@ -791,6 +834,7 @@ public final class CobbieBrain {
 
 		final String system = CobbiePrompt.systemPrompt(cobbie.companionName(), cobbie.perceive(),
 				CobbieConfig.isMemoryEnabled() ? CobbieMemory.longTermSummary(ownerId) : "",
+				WorldMemory.promptBlock(cobbie, ownerId, instruction),
 				"", SkillRegistry.describeForPrompt(4), cobbie.takeRenameNote());
 
 		client.complete(system, List.of(), instruction).thenAccept(result -> {

@@ -98,9 +98,10 @@ class ActionContractTest {
 	void everyVerbIsClassifiedWithoutAGap() {
 		Set<String> owesNothing = Set.of(ActionVocabulary.ANSWER, ActionVocabulary.CHAT,
 				ActionVocabulary.FOLLOW, ActionVocabulary.STAY, ActionVocabulary.WAVE,
-				ActionVocabulary.EXPLORE, ActionVocabulary.LOOKUP, ActionVocabulary.WAIT);
+				ActionVocabulary.EXPLORE, ActionVocabulary.REMEMBER, ActionVocabulary.LOOKUP,
+				ActionVocabulary.WAIT);
 
-		assertEquals(36, ActionVocabulary.allowed().size(), "the verb list is the thing this table is over");
+		assertEquals(37, ActionVocabulary.allowed().size(), "the verb list is the thing this table is over");
 
 		int worldVerbs = 0;
 		for (String verb : ActionVocabulary.allowed()) {
@@ -109,8 +110,8 @@ class ActionContractTest {
 			assertEquals(!owesNothing.contains(verb), owes,
 					verb + " is classified on the wrong side of the world line");
 		}
-		assertEquals(28, worldVerbs, "28 verbs change or read the world; the other 8 claim nothing about it");
-		assertEquals(8, owesNothing.size());
+		assertEquals(28, worldVerbs, "28 verbs change or read the world; the other 9 claim nothing about it");
+		assertEquals(9, owesNothing.size());
 	}
 
 	@Test

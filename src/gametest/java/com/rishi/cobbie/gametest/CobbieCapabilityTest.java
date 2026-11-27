@@ -60,7 +60,7 @@ public final class CobbieCapabilityTest implements FabricClientGameTest {
 
             // The prompt is the model's only knowledge of itself: every permitted verb must appear.
             String prompt = server.computeOnServer(s ->
-                    CobbiePrompt.systemPrompt("Cobbie", null, null, null, null, ""));
+                    CobbiePrompt.systemPrompt("Cobbie", null, null, null, null, null, ""));
             for (String verb : ActionVocabulary.allowed()) {
                 if (!prompt.contains(verb)) {
                     throw new AssertionError("verb \"" + verb + "\" is permitted but absent from the prompt");

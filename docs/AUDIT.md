@@ -783,3 +783,40 @@ the owner stands beside the zombie for the whole fight and keeps 40 of 40 health
 - **He does not crit.** A player's critical hit needs `fallDistance > 0` and `!onGround`; he fights standing,
   like the owner in every oracle above, so the 1.5× crit multiplier is never in either number. Adding crits
   would be a new behaviour, not a defect repaired.
+
+# Memory — the note and the world that may contradict it, 0.86.0
+
+Every slice before this one was about a claim made *now*. This one is about a claim made *earlier*: he
+writes down that a chest holds iron, and then a week later says it — minutes after you emptied the
+chest. A stale note is the same defect family as a stale flag, at a slower clock.
+
+The rule the code keeps is one sentence, and it is enforced by the type of the store rather than by
+each caller: **a memory is a hint about where to look, never evidence for a claim.** No `ActionOutcome`
+is built from one. A `put` at a remembered chest resolves the container itself and refuses when there
+is nothing there, so the note cannot make a false success possible; it can only save him a search, or
+send him to the wrong square where the world then corrects him.
+
+Three of the five kinds are checkable and two are not, which is why the kinds are a closed list rather
+than a string bag:
+
+| kind | checkable | what a contradiction does |
+|---|---|---|
+| `PLACE` | yes — ground within three blocks of the feet | dropped |
+| `CONTAINER` | yes — the slots, re-read | corrected to what is really there |
+| `BLOCK` | yes — the block's own state | corrected while the block stands, dropped when it is gone |
+| `OUTCOME` | no — it is history | cannot be contradicted, and is never used as evidence |
+| `PREFERENCE` | no — it is the owner's word | overwritten only by the owner |
+
+Two things this slice deliberately did *not* do, and both are the audit's own families:
+
+- **A miss in the owner's phrasing is not silent.** `cobbie remember home is at 12 64 -7` is parsed
+  without a model; a sentence the parser cannot read returns null and goes to the model exactly as
+  before. A miss costs a model call and never a false "noted" — which is the difference between the
+  allowlist family and a parser that declines.
+- **An entry out of sight is not a contradiction.** A square in an unloaded chunk, or a memory from
+  another dimension, leaves the entry alone. Deleting things because he cannot see them is the failure
+  mode on the other side of "the world wins", and it is a one-line mistake to make.
+
+What this slice cannot prove is the half that needs a brain: that an 8B model, handed three scored
+lines labelled as hints, actually looks before it acts. The prompt says so and the code enforces it at
+the verb; the model's obedience is measured by nothing in this repository.
