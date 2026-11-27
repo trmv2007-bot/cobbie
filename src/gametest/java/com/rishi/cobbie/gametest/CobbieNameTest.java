@@ -83,7 +83,7 @@ public final class CobbieNameTest implements FabricClientGameTest {
             }
 
             String prompt = server.computeOnServer(s -> CobbiePrompt.systemPrompt(
-                    CobbieTestSupport.cobbie(s).orElseThrow().companionName(), null, "", "", "", ""));
+                    CobbieTestSupport.cobbie(s).orElseThrow().companionName(), null, "", "", "", "", ""));
             if (!prompt.contains("You are " + NAME)) {
                 throw new AssertionError("His prompt still does not know his name: it says \""
                         + prompt.substring(0, Math.min(80, prompt.length())) + "...\"");

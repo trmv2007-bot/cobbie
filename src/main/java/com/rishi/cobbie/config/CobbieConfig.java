@@ -506,8 +506,9 @@ public final class CobbieConfig {
 			// Brewing is a station job like smelting: a stand in the world he puts things into.
 			case "brew" -> containersAllowed;
 			// Riding is how he comes along; it changes nothing he carries and nothing in the world.
+			// Remembering is a note in his own head: it changes nothing in the world and nothing he carries.
 			case "board", "follow", "stay", "wave", "chat", "answer", "wait", "walk-to", "give", "drop",
-					"equip", "lookup" -> true;
+					"equip", "remember", "lookup" -> true;
 			default -> false;
 		};
 	}

@@ -9,6 +9,8 @@ import net.fabricmc.fabric.api.client.gametest.v1.context.TestSingleplayerContex
 import net.minecraft.client.gui.screens.worldselection.WorldCreationUiState;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.commands.CommandSource;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -174,6 +176,42 @@ final class CobbieTestSupport {
             } finally {
                 owner.setShiftKeyDown(false);
             }
+        });
+    }
+
+    /**
+     * Run a slash command as the owner and return everything it answered.
+     *
+     * <p>A command's reply is chat, which a test cannot read back — so the owner's own source stack is
+     * used with only the sink swapped: permissions, entity and position are the real ones, and the text
+     * lands in a string instead of in his chat window.
+     */
+    static String captureCommand(TestServerContext server, String command) {
+        return server.computeOnServer(s -> {
+            StringBuilder out = new StringBuilder();
+            CommandSource sink = new CommandSource() {
+                @Override
+                public void sendSystemMessage(Component component) {
+                    out.append(component.getString()).append(' ');
+                }
+
+                @Override
+                public boolean acceptsSuccess() {
+                    return true;
+                }
+
+                @Override
+                public boolean acceptsFailure() {
+                    return true;
+                }
+
+                @Override
+                public boolean shouldInformAdmins() {
+                    return false;
+                }
+            };
+            s.getCommands().performPrefixedCommand(owner(s).createCommandSourceStack().withSource(sink), command);
+            return out.toString();
         });
     }
 

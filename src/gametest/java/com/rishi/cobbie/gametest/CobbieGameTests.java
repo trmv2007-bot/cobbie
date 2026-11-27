@@ -104,7 +104,9 @@ public final class CobbieGameTests implements FabricClientGameTest {
             new CobbieBlockStateTest(),
             new CobbieApproachTest(),
             new CobbieStationTest(),
-            new CobbieHungerTest());
+            new CobbieHungerTest(),
+            new CobbieMemoryRecallTest(),
+            new CobbieMemoryWorldTest());
 
     @Override
     public void runTest(ClientGameTestContext context) {

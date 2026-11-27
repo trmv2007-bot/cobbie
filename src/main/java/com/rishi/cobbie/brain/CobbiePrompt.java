@@ -22,7 +22,7 @@ public final class CobbiePrompt {
 	private CobbiePrompt() {}
 
 	public static String systemPrompt(String name, WorldSnapshot world, String memorySummary,
-			String objective, String skillsBlock, String renameNote) {
+			String remembered, String objective, String skillsBlock, String renameNote) {
 		StringBuilder sb = new StringBuilder(2400);
 
 		String self = com.rishi.cobbie.identity.CompanionName.orDefault(name);
@@ -45,6 +45,14 @@ public final class CobbiePrompt {
 		}
 		if (memorySummary != null && !memorySummary.isBlank()) {
 			sb.append("WHAT YOU REMEMBER ABOUT THIS PLAYER: ").append(memorySummary).append(NL);
+		}
+		// Deliberately labelled as hints. A memory is a note from before, and the only thing in the
+		// prompt that is allowed to be a fact is WHAT YOU SEE NOW — the same rule the code keeps when it
+		// re-reads a container before trusting its own record of it.
+		if (remembered != null && !remembered.isBlank()) {
+			sb.append(NL).append("WHAT YOU REMEMBER FROM EARLIER — these are notes, not things you can see now. ")
+					.append("Go and look before you act on one. If the world is different, the world is right.").append(NL)
+					.append(remembered).append(NL);
 		}
 		if (skillsBlock != null && !skillsBlock.isBlank()) {
 			sb.append("SKILLS YOU HAVE LEARNED (you may reuse the steps):").append(NL).append(skillsBlock).append(NL);
@@ -112,7 +120,11 @@ public final class CobbiePrompt {
 				.append("14. Anything in your INVENTORY is yours to work on. When the player says \"my sword\" or ")
 				.append("\"this axe\" and you are carrying one, that is the thing they mean: brew, grind, smith, ")
 				.append("enchant or use it without asking whose it is. Only ask them for an item when it is not ")
-				.append("in your bag at all.").append(NL);
+				.append("in your bag at all.").append(NL)
+				.append("15. When the owner tells you something to keep — where their home is, which chest holds ")
+				.append("something, what they want you to do from now on — queue remember: target = what it is ")
+				.append("about (\"home\", \"iron\"), data = what they said, and x, y, z when they gave you a place. ")
+				.append("Your own notes are in WHAT YOU REMEMBER; use their coordinates instead of guessing.").append(NL);
 
 		// Repeated last, on purpose: a long prompt loses a line it mentions once in the middle, and
 		// inventing inventory is the failure players notice most.
