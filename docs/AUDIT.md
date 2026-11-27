@@ -820,3 +820,63 @@ Two things this slice deliberately did *not* do, and both are the audit's own fa
 What this slice cannot prove is the half that needs a brain: that an 8B model, handed three scored
 lines labelled as hints, actually looks before it acts. The prompt says so and the code enforces it at
 the verb; the model's obedience is measured by nothing in this repository.
+
+# Opportunity — what the assessor may not decide, 0.88.0
+
+Every slice before this one was about a claim the code makes about the world. This one is about a claim
+the code made about *itself*: that he chose what to do next.
+
+`Initiative.choose` iterated a `LinkedHashMap` of block types and returned the first entry holding three
+blocks. There was no lie in it — the pile was real, the project finished — and the decision was made by
+iteration order. Nobody wrote it down, which is why nobody questioned it. The audit's shape is here in
+its purest form: **an ordering is a decision whether or not anybody wrote one down.** The second-best
+thing in sight was never considered, and no test could see that, because the test asked "did a project
+start", which the ordering answered yes to.
+
+## The four authorities, and the one rule each
+
+| component | may | may not |
+|---|---|---|
+| assessor | list what can start this second | rank, score, prefer, or fill a quota |
+| model | name one id, or reject all | plan, describe, or invent a candidate |
+| dispatcher | re-check the id against the list it was given | substitute a candidate on a bad answer |
+| executor | run the steps and report what happened | accept a claim without evidence |
+
+The rule that keeps them apart is one line in `OpportunityCycle.apply`: a decision naming something the
+list does not hold becomes a rejection, never a pick. And the rule that keeps the *assessor* out of the
+choice is that no path falls back — a failed request, an empty answer, an array, prose, an unparseable
+object all end in WAIT with a reason on record. A fallback would look exactly like a model that chose.
+
+## The three defects this slice was written around, and how each is closed by construction
+
+- **A promise made before the check.** Every candidate is built only after the gate its own first step
+  will run — `canStartMining`, `canPlace`, `canWalkTo`, `permits`. Stone with no pickaxe in the bag
+  produces no `mine` candidate at all, and the in-game test asserts the square appears nowhere in the
+  shortlist rather than asserting a count.
+- **A shortlist shaped by its author.** The cap is ten and the list is never padded. A candidate that
+  exists to reach a number is by definition one that cannot start, so padding is the same defect as
+  offering unstartable work, one level up.
+- **An ordering quietly deciding.** Ids are assigned after suppression, the prompt says in as many words
+  that the order means nothing, and the in-game test chooses the *second* candidate and asserts the
+  second candidate's work ran — then, from a fresh shortlist, chooses the pile and asserts the pile came
+  down. A preference for the first would fail one of the two.
+
+## Two fingerprints, and why the coarse one is the honest one
+
+The cadence wakes on a change of: owner distance bucket, health in fourteenths, hunger in quarters, the
+threat *state*, the bag in powers of two, a job starting or finishing, a different plan id, and the
+owner's last word — plus one minute of heartbeat for an unchanged scene, a forty-tick floor between
+questions, and a stretch after a rejection.
+
+Both exceptions are deliberate and both are the family this file is about, in the other direction. A raw
+bag hash would call "one more flower" a new situation; a hostile *count* would call a second zombie
+walking into view a change worth a model call. The bucketed versions ask the question that actually
+matters — *can he do something different now?* — and the cost of being too coarse is bounded by the
+heartbeat, while the cost of being too fine is a poll in a companion's clothing.
+
+## What this slice deliberately leaves unmeasured
+
+Whether `lfm2.5:8b`, handed eight compact lines about a scene, picks the one a person would have picked.
+The tests inject the answer at the boundary it would cross, so the parse, the dispatch and the executor
+are all real, and the model's judgement is not. Named, not glossed: that is a live-session question, and
+the log line exists so a session can be read afterwards and scored by hand.

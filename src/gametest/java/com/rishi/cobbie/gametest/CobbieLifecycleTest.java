@@ -60,8 +60,10 @@ public final class CobbieLifecycleTest implements FabricClientGameTest {
             // --- 1. The owner interrupts HIS OWN project. ---
             //
             // The contract is that a self-started project is cancelled by an owner instruction; two owner
-            // instructions queue behind each other, which is a different rule. So the project here comes from
-            // initiative: creative autonomy, a pile in sight, and nothing asked for.
+            // instructions queue behind each other, which is a different rule. So the project here is one of
+            // his own: a pile in sight, a choice made through the shipped parser and dispatcher, and nothing
+            // asked for. Since 0.88.0 the choice is the model's, and the model is not in the harness — the
+            // answer is injected as the JSON it would send, at the same boundary it would cross.
             long beforeInitiative = latestId(server);
             server.computeOnServer(s -> {
                 CobbieEntity cobbie = CobbieTestSupport.cobbie(s).orElseThrow();
@@ -71,6 +73,24 @@ public final class CobbieLifecycleTest implements FabricClientGameTest {
                             + base.getZ() + " minecraft:oak_log");
                 }
                 CobbieTestSupport.command(s, "cobbie autonomy creative");
+                com.rishi.cobbie.opportunity.Shortlist list =
+                        com.rishi.cobbie.opportunity.OpportunityAssessor.assess(cobbie);
+                String id = null;
+                for (com.rishi.cobbie.opportunity.Opportunity o : list.items()) {
+                    if (o.kind() == com.rishi.cobbie.opportunity.Opportunity.Kind.MINE) {
+                        id = o.id();
+                        break;
+                    }
+                }
+                if (id == null) {
+                    throw new AssertionError("A pile of three logs beside him was not offered: " + list.describe());
+                }
+                String refusal = com.rishi.cobbie.opportunity.OpportunityCycle.apply(cobbie, list,
+                        com.rishi.cobbie.opportunity.OpportunitySelector.parse(list, "{\"choice\":\"" + id + "\"}"));
+                if (refusal != null) throw new AssertionError("His own gather did not start: " + refusal);
+                // The cycle stands down again for the rest of this scenario: a second self-started project
+                // would be noise, and phase 3 asks for assistive anyway.
+                CobbieTestSupport.command(s, "cobbie autonomy assistive");
                 return null;
             });
             awaitPlan(server, beforeInitiative, INITIATIVE, 900,

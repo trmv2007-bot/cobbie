@@ -345,6 +345,47 @@ class LlmClientTest {
 		assertFalse(bodies.get(1).contains("\"think\""), "second attempt must not send the rejected field");
 	}
 
+	// ---- forced JSON: the shape of the answer is asked of the server, not of the model's obedience ----
+
+	@Test
+	void jsonModeUsesOllamasOwnFormatField() throws Exception {
+		reset(200, "{\"message\":{\"content\":\"ok\"}}");
+		LlmClient.Result r = await(ollama("", 0).completeJson("choose", "the list"));
+		assertTrue(r.success(), r.error());
+		assertTrue(bodies.get(0).contains("\"format\":\"json\""), bodies.get(0));
+		assertFalse(bodies.get(0).contains("response_format"), "the OpenAI field is not Ollama's");
+	}
+
+	@Test
+	void jsonModeUsesTheOpenAiResponseFormatForAnOpenAiCompatibleServer() throws Exception {
+		reset(200, "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}");
+		LlmClient.Result r = await(openai("", 0).completeJson("choose", "the list"));
+		assertTrue(r.success(), r.error());
+		assertTrue(bodies.get(0).contains("\"response_format\":{\"type\":\"json_object\"}"), bodies.get(0));
+		assertFalse(bodies.get(0).contains("\"format\":\"json\""), "the Ollama field is not the OpenAI one");
+	}
+
+	@Test
+	void aServerThatRejectsTheJsonFieldRetriesWithoutItAndStillAnswers() throws Exception {
+		reset(200, "{\"message\":{\"content\":\"ok\"}}");
+		script.add(new String[]{"400", "{\"error\":\"unknown field: format\"}"});
+		LlmClient.Result r = await(ollama("", 0).completeJson("choose", "the list"));
+
+		assertTrue(r.success(), "a server that does not know the field must not cost the turn: " + r.error());
+		assertEquals(2, calls);
+		assertTrue(bodies.get(0).contains("\"format\""), bodies.get(0));
+		assertFalse(bodies.get(1).contains("\"format\""), "the second attempt must not send the rejected field");
+	}
+
+	@Test
+	void anOrdinaryRequestDoesNotAskForJson() throws Exception {
+		reset(200, "{\"message\":{\"content\":\"ok\"}}");
+		await(ollama("", 0).completeOnce("s", "u"));
+		String body = bodies.get(0);
+		assertFalse(body.contains("\"format\""), body);
+		assertFalse(body.contains("response_format"), body);
+	}
+
 	@Test
 	void conversationHistoryIsSentWithItsRoles() throws Exception {
 		reset(200, "{\"message\":{\"content\":\"ok\"}}");

@@ -73,6 +73,7 @@ public final class CobbieCommands {
 								.executes(CobbieCommands::memoryList)
 								.then(Commands.argument("action", StringArgumentType.word())
 										.executes(CobbieCommands::memory)))
+						.then(Commands.literal("opportunities").executes(CobbieCommands::opportunities))
 						.then(Commands.literal("forget")
 								.then(Commands.argument("which", IntegerArgumentType.integer(1))
 										.executes(CobbieCommands::forget)))));
@@ -103,6 +104,30 @@ public final class CobbieCommands {
 	}
 
 	// ---- subcommands ----
+
+	/**
+	 * What he could start right now, and what he chose last time.
+	 *
+	 * <p>Instrumentation, not a feature: the shortlist is what the model reads, so being able to look at it
+	 * in the same game it is choosing in is how a decision that went wrong gets explained later. Reading
+	 * it does not wake anything — the cadence is untouched, and no model call is made.
+	 */
+	private static int opportunities(CommandContext<CommandSourceStack> ctx) {
+		CobbieEntity cobbie = requireCompanion(ctx);
+		if (cobbie == null) return 0;
+		com.rishi.cobbie.opportunity.Shortlist list =
+				com.rishi.cobbie.opportunity.OpportunityAssessor.assess(cobbie);
+		reply(ctx, "§fLast decision: " + com.rishi.cobbie.opportunity.OpportunityCycle.lastDecision());
+		if (list.isEmpty()) {
+			reply(ctx, "§fOffered now: nothing that could start here");
+			return 1;
+		}
+		reply(ctx, "§fOffered now (" + list.size() + "):");
+		for (com.rishi.cobbie.opportunity.Opportunity o : list.items()) {
+			reply(ctx, "  " + o.brief());
+		}
+		return 1;
+	}
 
 	private static int status(CommandContext<CommandSourceStack> ctx) {
 		ConnectionState state = CobbieBrain.lastState();
